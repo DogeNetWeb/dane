@@ -1,0 +1,344 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Sat, 24 Oct 2026 18:16:07 -0500
+Subject: [PATCH 002/144] GreatDANE M2: about:greatdane, fail-closed
+ interstitials, sync gating, branding, suggest-leak guard, restart timer fix
+
+---
+ browser/app/profile/firefox.js                |   3 +
+ .../components/greatdane/GreatDANE.sys.mjs    |  74 ++++++++--
+ .../greatdane/GreatDANEAbout.sys.mjs          | 133 ++++++++++++++++++
+ browser/components/greatdane/moz.build        |   1 +
+ .../UrlbarProviderSearchSuggestions.sys.mjs   |  15 ++
+ browser/moz.configure                         |   2 +-
+ 6 files changed, 212 insertions(+), 16 deletions(-)
+ create mode 100644 browser/components/greatdane/GreatDANEAbout.sys.mjs
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index 4248ee469c..21570120d5 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -3639,3 +3639,6 @@ pref("greatdane.node.dataDir", "");
+ pref("greatdane.dev.mintedCA", true); // dev builds only; release uses TLSA (M3)
+ pref("browser.fixup.domainsuffixwhitelist.pepe", true);
+ pref("browser.startup.homepage", "https://pepecoin.surf/");
++// Typed text is not sent to a search engine as you type (chain names would
++// leak before the TLD is complete). Users may re-enable; .pepe stays guarded.
++pref("browser.search.suggest.enabled", false);
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index 0ed09e8d59..c34cf588e8 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -4,11 +4,18 @@
+ 
+ import { AppConstants } from "resource://gre/modules/AppConstants.sys.mjs";
+ import { Subprocess } from "resource://gre/modules/Subprocess.sys.mjs";
++import { setTimeout } from "resource://gre/modules/Timer.sys.mjs";
+ 
+ const PREF = "greatdane.";
+ const DEAD_PORT = 9; // discard; never a listener on loopback here
+ const log = (...a) => console.log("GreatDANE:", ...a);
+ 
++const lazy = {};
++ChromeUtils.defineESModuleGetters(lazy, {
++  registerAbout: "resource:///modules/GreatDANEAbout.sys.mjs",
++  ErrorTrap: "resource:///modules/GreatDANEAbout.sys.mjs",
++});
++
+ const pps = Cc["@mozilla.org/network/protocol-proxy-service;1"].getService(
+   Ci.nsIProtocolProxyService
+ );
+@@ -32,9 +39,16 @@ export const GreatDANE = {
+       this._spawn(c);
+     }
+     Services.obs.addObserver(this, "quit-application");
++    lazy.registerAbout();
++    Services.obs.addObserver(this, "browser-delayed-startup-finished");
+   },
+ 
+   observe(subject, topic) {
++    if (topic == "browser-delayed-startup-finished") {
++      // subject is the new browser window: watch its tabs for error pages
++      subject.gBrowser?.addTabsProgressListener(lazy.ErrorTrap);
++      return;
++    }
+     if (topic == "quit-application") {
+       this._quitting = true;
+       for (let c of this._chains.values()) {
+@@ -78,22 +92,17 @@ export const GreatDANE = {
+       });
+       this._drainStderr(c.proc);
+       let buf = "";
+-      while (!c.ports) {
++      for (;;) {
+         let s = await c.proc.stdout.readString();
+-        if (!s) throw new Error("node exited before ready");
++        if (!s) break; // EOF: node exited
+         buf += s;
+-        let nl = buf.indexOf("\n");
+-        if (nl < 0) continue;
+-        let msg = JSON.parse(buf.slice(0, nl));
+-        buf = buf.slice(nl + 1);
+-        if (msg.event == "ready" && msg.tld == c.tld) {
+-          if (Services.prefs.getBoolPref(PREF + "dev.mintedCA", false)) {
+-            await this._importDevCA(msg.ca);
+-          }
+-          c.ports = { pac: msg.pac, dns: msg.dns, proxy: msg.proxy };
+-          c.state = "ready";
+-          c.restarts = 0;
+-          log(c.coin, "ready", JSON.stringify(c.ports));
++        let nl;
++        while ((nl = buf.indexOf("\n")) >= 0) {
++          let line = buf.slice(0, nl);
++          buf = buf.slice(nl + 1);
++          let msg;
++          try { msg = JSON.parse(line); } catch (e) { continue; }
++          await this._onNodeMsg(c, msg);
+         }
+       }
+       let { exitCode } = await c.proc.wait();
+@@ -102,12 +111,46 @@ export const GreatDANE = {
+       log(c.coin, "node failure", e);
+     }
+     c.ports = null;
++    c.status = null;
+     c.state = "down";
++    c.lastExit = Date.now();
+     if (this._quitting) return;
+     let delay = Math.min(30000, 500 * 2 ** c.restarts++);
+     setTimeout(() => this._spawn(c), delay);
+   },
+ 
++  async _onNodeMsg(c, msg) {
++    if (msg.event == "ready" && msg.tld == c.tld) {
++      if (Services.prefs.getBoolPref(PREF + "dev.mintedCA", false)) {
++        await this._importDevCA(msg.ca);
++      }
++      c.ports = { pac: msg.pac, dns: msg.dns, proxy: msg.proxy, pf: msg.pf };
++      c.state = "ready";
++      c.restarts = 0;
++      c.since = Date.now();
++      log(c.coin, "ready", JSON.stringify(c.ports));
++    } else if (msg.event == "status" && msg.coin == c.coin) {
++      c.status = msg;
++    }
++  },
++
++  // Synced = the node finished at least one pass and is not behind what its
++  // peers advertise. Until then chain names are not resolvable, by design.
++  _synced(c) {
++    let st = c.status;
++    if (c.state != "ready" || !st || st.passes < 1) return false;
++    // An empty or stale chain is never "synced", even with no peers to ask.
++    if (!st.height || st.height < (st.activation || 0)) return false;
++    return !st.peer_height || st.height + 2 >= st.peer_height;
++  },
++
++  // What a navigation to a chain host would hit right now, or null if open.
++  blockReason(c) {
++    if (c.state != "ready") return "GD_NODE_NOT_READY";
++    if (!this._synced(c)) return "GD_NODE_SYNCING";
++    return null;
++  },
++
+   async _drainStderr(proc) {
+     try {
+       let s;
+@@ -147,7 +190,8 @@ export const GreatDANE = {
+       cb.onProxyFilterResult(proxyInfo);
+       return;
+     }
+-    let port = c.state == "ready" ? c.ports.pac : DEAD_PORT;
++    // Fail closed: not ready or still syncing -> dead proxy, never DIRECT.
++    let port = this.blockReason(c) ? DEAD_PORT : c.ports.pac;
+     cb.onProxyFilterResult(
+       pps.newProxyInfo("http", "127.0.0.1", port, "", "", 0, 0xffffffff, null)
+     );
+diff --git a/browser/components/greatdane/GreatDANEAbout.sys.mjs b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+new file mode 100644
+index 0000000000..eca093ae9d
+--- /dev/null
++++ b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+@@ -0,0 +1,133 @@
++/* GreatDANE: about:greatdane (status + fail-closed interstitials) and the
++ * tab trap that swaps any Firefox error page for a chain host to ours.
++ * The page is generated in the parent, has no script and no override
++ * button; it meta-refreshes and auto-continues once the chain is usable. */
++
++import { GreatDANE } from "resource:///modules/GreatDANE.sys.mjs";
++
++const CID = Components.ID("{6d1b6f0e-5a7e-4f43-9e64-2f1c3c0de6a1}");
++const CONTRACT = "@mozilla.org/network/protocol/about;1?what=greatdane";
++
++const ERRORS = {
++  GD_NODE_NOT_READY: ["The PepeNet node is not running yet",
++    "GreatDANE resolves chain names with its own built-in node. It is starting (or restarting after a crash). This page will continue on its own when the node is up."],
++  GD_NODE_SYNCING: ["Still syncing the chain",
++    "Names are only trusted once the node has caught up with the network, so nothing for this site is loaded until then. This page will continue on its own when sync finishes."],
++  GD_TLS_UNTRUSTED: ["Could not verify this site's key",
++    "The connection did not verify against the key published on chain. GreatDANE will not let you continue to an unverified chain site."],
++  GD_SITE_UNREACHABLE: ["Site unreachable",
++    "The name is on the chain but its server could not be reached through the node."],
++};
++
++const esc = s => String(s ?? "").replace(/[&<>"']/g, ch => "&#" + ch.charCodeAt(0) + ";");
++
++function safeTarget(u) {
++  try {
++    let uri = Services.io.newURI(u);
++    if ((uri.scheme == "https" || uri.scheme == "http") && GreatDANE._chainFor(uri.host)) {
++      return uri.spec;
++    }
++  } catch (e) {}
++  return null;
++}
++
++function chainRows() {
++  let rows = "";
++  for (let c of GreatDANE._chains.values()) {
++    let st = c.status || {};
++    let state = c.state == "ready" ? (GreatDANE._synced(c) ? "ready" : "syncing") : c.state;
++    let up = c.since && c.state == "ready" ? Math.round((Date.now() - c.since) / 1000) + " s" : "-";
++    rows += `<tr><td>.${esc(c.tld)} (${esc(c.coin)})</td><td class="${esc(state)}">${esc(state)}</td>
++      <td>${esc(st.height ?? "-")}</td><td>${esc(st.peer_height || "-")}</td>
++      <td>${esc(st.peers_pepenet ?? "-")} / ${esc(st.peers_known ?? "-")}</td>
++      <td>${esc(st.passes ?? "-")}</td><td>${esc(st.dane_ok ?? "-")} / ${esc(st.dane_fail ?? "-")}</td>
++      <td>${c.ports ? esc(c.ports.pac) : "-"}</td><td>${up}</td><td>${esc(c.restarts)}</td></tr>`;
++  }
++  return rows;
++}
++
++function render(uri) {
++  let q = new URLSearchParams(uri.query || "");
++  let code = q.get("e");
++  let target = safeTarget(q.get("u") || "");
++  let refresh = 3;
++  let head = "";
++  if (code && target) {
++    let c = GreatDANE._chainFor(Services.io.newURI(target).host);
++    let now = c && GreatDANE.blockReason(c);
++    if ((code == "GD_NODE_NOT_READY" || code == "GD_NODE_SYNCING") && c && !now) {
++      // cleared: continue to the site
++      head = `<meta http-equiv="refresh" content="0;url=${esc(target)}">`;
++    } else {
++      if (now) code = now; // e.g. not-ready became syncing
++      if (!ERRORS[code]) code = "GD_SITE_UNREACHABLE";
++    }
++  }
++  if (!head) head = `<meta http-equiv="refresh" content="${refresh}">`;
++  let err = code && ERRORS[code];
++  let box = err ? `<div class="err"><h1>${esc(err[0])}</h1><p>${esc(err[1])}</p>
++      <p class="u">${esc(target || "")}</p><p class="code">${esc(code)}</p></div>` :
++    `<h1>GreatDANE</h1>`;
++  return `<!DOCTYPE html><html><head><meta charset="utf-8">${head}
++<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
++<title>${err ? esc(err[0]) : "GreatDANE status"}</title><style>
++body{font:15px system-ui,sans-serif;background:#0f1a12;color:#e6efe8;margin:40px auto;max-width:900px}
++.err{border-left:4px solid #e0a030;padding:4px 20px;margin-bottom:30px}
++.u{font-family:monospace;color:#9fc}.code{color:#888;font-size:12px}
++table{border-collapse:collapse;width:100%}td,th{padding:6px 8px;border-bottom:1px solid #2a3a2e;text-align:left}
++.ready{color:#6f6}.syncing{color:#fc4}.starting,.down{color:#f66}</style></head><body>
++${box}<h2>Chains</h2><table><tr><th>Chain</th><th>Node</th><th>Height</th><th>Peer height</th>
++<th>PepeNet / known peers</th><th>Passes</th><th>DANE ok / fail</th><th>Port</th><th>Up</th><th>Restarts</th></tr>
++${chainRows()}</table><p class="code">Updates every ${refresh} s.</p></body></html>`;
++}
++
++const AboutGreatDANE = {
++  newChannel(uri, loadInfo) {
++    let stream = Cc["@mozilla.org/io/string-input-stream;1"].createInstance(Ci.nsIStringInputStream);
++    stream.setUTF8Data(render(uri));
++    let isc = Cc["@mozilla.org/network/input-stream-channel;1"].createInstance(Ci.nsIInputStreamChannel);
++    isc.setURI(uri);
++    isc.contentStream = stream;
++    let ch = isc.QueryInterface(Ci.nsIChannel);
++    ch.contentType = "text/html";
++    ch.contentCharset = "UTF-8";
++    ch.loadInfo = loadInfo;
++    ch.originalURI = uri;
++    return ch;
++  },
++  getURIFlags() { return Ci.nsIAboutModule.HIDE_FROM_ABOUTABOUT; },
++  getChromeURI(uri) { return uri; },
++  QueryInterface: ChromeUtils.generateQI(["nsIAboutModule"]),
++};
++
++export function registerAbout() {
++  let reg = Components.manager.QueryInterface(Ci.nsIComponentRegistrar);
++  if (reg.isCIDRegistered(CID)) return;
++  reg.registerFactory(CID, "about:greatdane", CONTRACT, {
++    createInstance(iid) { return AboutGreatDANE.QueryInterface(iid); },
++    QueryInterface: ChromeUtils.generateQI(["nsIFactory"]),
++  });
++}
++
++// Any Firefox error page for a chain host (proxy refused, cert error, net
++// error) is replaced by ours: no "Accept the risk", no "try again" bypass.
++export const ErrorTrap = {
++  onLocationChange(browser, webProgress, request, location, flags) {
++    if (!webProgress.isTopLevel || !(flags & Ci.nsIWebProgressListener.LOCATION_CHANGE_ERROR_PAGE)) return;
++    let c = null;
++    try { c = GreatDANE._chainFor(location.host); } catch (e) { return; }
++    if (!c) return;
++    let code = GreatDANE.blockReason(c);
++    if (!code) {
++      let status = 0;
++      try { status = request?.QueryInterface(Ci.nsIChannel).status; } catch (e) {}
++      let mod = ((status >>> 16) & 0x7fff) - 0x45;
++      code = mod == 21 ? "GD_TLS_UNTRUSTED" : "GD_SITE_UNREACHABLE";
++    }
++    let u = "about:greatdane?e=" + code + "&u=" + encodeURIComponent(location.spec);
++    browser.loadURI(Services.io.newURI(u), {
++      triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
++      loadFlags: Ci.nsIWebNavigation.LOAD_FLAGS_REPLACE_HISTORY,
++    });
++  },
++};
+diff --git a/browser/components/greatdane/moz.build b/browser/components/greatdane/moz.build
+index 348d53a250..83c8fb0488 100644
+--- a/browser/components/greatdane/moz.build
++++ b/browser/components/greatdane/moz.build
+@@ -4,4 +4,5 @@ with Files("**"):
+ 
+ EXTRA_JS_MODULES += [
+     "GreatDANE.sys.mjs",
++    "GreatDANEAbout.sys.mjs",
+ ]
+diff --git a/browser/components/urlbar/UrlbarProviderSearchSuggestions.sys.mjs b/browser/components/urlbar/UrlbarProviderSearchSuggestions.sys.mjs
+index 6414a62442..7a11aef4fd 100644
+--- a/browser/components/urlbar/UrlbarProviderSearchSuggestions.sys.mjs
++++ b/browser/components/urlbar/UrlbarProviderSearchSuggestions.sys.mjs
+@@ -192,6 +192,21 @@ export class UrlbarProviderSearchSuggestions extends UrlbarProvider {
+       return false;
+     }
+ 
++    // GreatDANE: never send a chain name (e.g. "foo.pepe") to a search
++    // engine's suggestion endpoint, even if the user re-enabled suggestions.
++    let gdTlds = Services.prefs
++      .getStringPref("greatdane.chains", "")
++      .split(",")
++      .map(spec => spec.split(":")[1]?.trim())
++      .filter(Boolean);
++    for (let s of [searchString, queryContext.searchString]) {
++      for (let tld of gdTlds) {
++        if (new RegExp("\\." + tld + "\\.?(?:[:/?#\\s]|$)", "i").test(s || "")) {
++          return false;
++        }
++      }
++    }
++
+     // Allow remote suggestions if trending suggestions are enabled.
+     if (this.#shouldFetchTrending(queryContext)) {
+       return true;
+diff --git a/browser/moz.configure b/browser/moz.configure
+index 3ea3d88b93..d4047ef11c 100644
+--- a/browser/moz.configure
++++ b/browser/moz.configure
+@@ -11,7 +11,7 @@ imply_option("MOZ_NORMANDY", True)
+ imply_option("MOZ_PROFILE_MIGRATOR", True)
+ 
+ 
+-imply_option("MOZ_APP_VENDOR", "Mozilla")
++imply_option("MOZ_APP_VENDOR", "Pepecoin")  # GreatDANE
+ imply_option("MOZ_APP_ID", "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}")
+ # Include the DevTools client, not just the server (which is the default)
+ imply_option("MOZ_DEVTOOLS", "all")
