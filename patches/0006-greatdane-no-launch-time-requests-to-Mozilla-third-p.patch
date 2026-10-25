@@ -1,0 +1,109 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Sat, 24 Oct 2026 22:18:27 -0500
+Subject: [PATCH 006/144] greatdane: no launch-time requests to Mozilla/third
+ parties (first-run/onboarding/default-browser nag, telemetry, normandy,
+ pocket/sponsored, captive portal, GMP downloads, push, updates, prefetch)
+
+---
+ browser/app/profile/firefox.js | 87 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 87 insertions(+)
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index 9492d04b51..f995c2c201 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -3636,6 +3636,93 @@ pref("greatdane.enabled", true);
+ pref("greatdane.chains", "pep:pepe,doge:doge");
+ pref("greatdane.node.path", "");
+ pref("greatdane.node.dataDir", "");
++
++// ── GreatDANE: no launch-time requests to Mozilla/third parties ──────────────
++// First run / onboarding / what's new / default-browser nag
++pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);
++pref("datareporting.policy.firstRunURL", "");
++pref("browser.aboutwelcome.enabled", false);
++pref("browser.startup.homepage_override.mstone", "ignore");
++pref("startup.homepage_welcome_url", "");
++pref("startup.homepage_welcome_url.additional", "");
++pref("startup.homepage_override_url", "");
++pref("browser.shell.checkDefaultBrowser", false);
++pref("browser.messaging-system.whatsNewPanel.enabled", false);
++pref("browser.uitour.enabled", false);
++pref("browser.newtabpage.activity-stream.asrouter.userprefs.cfr.addons", false);
++pref("browser.newtabpage.activity-stream.asrouter.userprefs.cfr.features", false);
++pref("messaging-system.rsexperimentloader.enabled", false);
++// Telemetry / health report / studies / crash reports
++pref("datareporting.healthreport.uploadEnabled", false);
++pref("datareporting.policy.dataSubmissionEnabled", false);
++pref("datareporting.usage.uploadEnabled", false);
++pref("toolkit.telemetry.enabled", false);
++pref("toolkit.telemetry.unified", false);
++pref("toolkit.telemetry.archive.enabled", false);
++pref("toolkit.telemetry.server", "data:,");
++pref("toolkit.telemetry.newProfilePing.enabled", false);
++pref("toolkit.telemetry.firstShutdownPing.enabled", false);
++pref("toolkit.telemetry.shutdownPingSender.enabled", false);
++pref("toolkit.telemetry.updatePing.enabled", false);
++pref("toolkit.telemetry.bhrPing.enabled", false);
++pref("toolkit.coverage.endpoint.base", "");
++pref("toolkit.coverage.opt-out", true);
++pref("browser.ping-centre.telemetry", false);
++pref("browser.newtabpage.activity-stream.feeds.telemetry", false);
++pref("browser.newtabpage.activity-stream.telemetry", false);
++pref("app.shield.optoutstudies.enabled", false);
++pref("app.normandy.enabled", false);
++pref("app.normandy.api_url", "");
++pref("browser.tabs.crashReporting.sendReport", false);
++pref("browser.crashReports.unsubmittedCheck.autoSubmit2", false);
++pref("dom.private-attribution.submission.enabled", false);
++pref("browser.discovery.enabled", false);
++// New tab: no Pocket, sponsored tiles/stories, weather, top-sites fetches
++pref("extensions.pocket.enabled", false);
++pref("browser.newtabpage.activity-stream.feeds.section.topstories", false);
++pref("browser.newtabpage.activity-stream.feeds.topsites", false);
++pref("browser.newtabpage.activity-stream.showSponsored", false);
++pref("browser.newtabpage.activity-stream.showSponsoredTopSites", false);
++pref("browser.newtabpage.activity-stream.feeds.weatherfeed", false);
++pref("browser.newtabpage.activity-stream.showWeather", false);
++pref("browser.newtabpage.activity-stream.discoverystream.enabled", false);
++pref("browser.topsites.contile.enabled", false);
++pref("browser.urlbar.quicksuggest.enabled", false);
++pref("browser.urlbar.suggest.quicksuggest.sponsored", false);
++pref("browser.urlbar.suggest.quicksuggest.nonsponsored", false);
++// Captive portal / connectivity checks (detectportal.firefox.com)
++pref("network.captive-portal-service.enabled", false);
++pref("network.connectivity-service.enabled", false);
++// Updates: Mozilla's AUS would offer stock Firefox; GreatDANE's own channel comes later
++pref("app.update.auto", false);
++pref("app.update.background.scheduling.enabled", false);
++pref("app.update.url", "");
++pref("app.update.checkInstallTime", false);
++pref("extensions.update.enabled", false);
++pref("extensions.getAddons.cache.enabled", false);
++pref("extensions.systemAddon.update.enabled", false);
++pref("extensions.systemAddon.update.url", "");
++pref("browser.region.network.url", "");
++pref("browser.region.update.enabled", false);
++pref("geo.provider.network.url", "");
++// Media plugins: no OpenH264/Widevine auto-download (aus5, openh264.org, Google CDN)
++pref("media.gmp-manager.url", "");
++pref("media.gmp-manager.updateEnabled", false);
++pref("media.gmp-gmpopenh264.autoupdate", false);
++pref("media.gmp-gmpopenh264.enabled", false);
++pref("media.gmp-widevinecdm.autoupdate", false);
++pref("media.gmp-widevinecdm.visible", false);
++pref("media.gmp-widevinecdm.enabled", false);
++pref("media.eme.enabled", false);
++// Web Push: no persistent socket to push.services.mozilla.com
++pref("dom.push.connection.enabled", false);
++pref("dom.push.serverURL", "");
++// Prefetch/speculation towards sites the user didn't open
++pref("network.prefetch-next", false);
++pref("network.dns.disablePrefetch", true);
++pref("network.predictor.enabled", false);
++pref("browser.urlbar.speculativeConnect.enabled", false);
++pref("browser.places.speculativeConnect.enabled", false);
+ pref("browser.fixup.domainsuffixwhitelist.pepe", true);
+ pref("browser.startup.homepage", "https://pepecoin.surf/");
+ // Typed text is not sent to a search engine as you type (chain names would
