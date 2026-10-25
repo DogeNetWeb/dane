@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Sat, 24 Oct 2026 22:03:10 -0500
+Subject: [PATCH 005/144] greatdane: dual-chain default (pep:pepe,doge:doge);
+ find greatdane-node next to the executable (Contents/MacOS in packaged .app)
+
+---
+ browser/app/profile/firefox.js                 | 2 +-
+ browser/components/greatdane/GreatDANE.sys.mjs | 4 +++-
+ 2 files changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index d11824c619..9492d04b51 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -3633,7 +3633,7 @@ pref("distribution.mozillaonline.ignore", true);
+ 
+ // GreatDANE:
+ pref("greatdane.enabled", true);
+-pref("greatdane.chains", "pep:pepe");
++pref("greatdane.chains", "pep:pepe,doge:doge");
+ pref("greatdane.node.path", "");
+ pref("greatdane.node.dataDir", "");
+ pref("browser.fixup.domainsuffixwhitelist.pepe", true);
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index 288cf912ae..b3571797bf 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -61,7 +61,9 @@ export const GreatDANE = {
+   _nodePath() {
+     let p = Services.prefs.getStringPref(PREF + "node.path", "");
+     if (p) return p;
+-    let f = Services.dirsvc.get("GreD", Ci.nsIFile);
++    // Next to the browser executable (Contents/MacOS on mac; GreD is Contents/Resources
++    // in a packaged .app, where a signed Mach-O must not live).
++    let f = Services.dirsvc.get("XREExeF", Ci.nsIFile).parent;
+     f.append(AppConstants.platform == "win" ? "greatdane-node.exe" : "greatdane-node");
+     return f.path;
+   },
