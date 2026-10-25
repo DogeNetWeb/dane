@@ -1,0 +1,160 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Sun, 25 Oct 2026 09:49:17 -0500
+Subject: [PATCH 009/144] GreatDANE: stock search suggestions on; local
+ .pepe/.doge name suggestions in urlbar
+
+---
+ browser/app/profile/firefox.js                |  7 +-
+ .../UrlbarProviderGreatDANENames.sys.mjs      | 96 +++++++++++++++++++
+ .../urlbar/UrlbarProvidersManager.sys.mjs     |  6 ++
+ browser/components/urlbar/moz.build           |  1 +
+ 4 files changed, 107 insertions(+), 3 deletions(-)
+ create mode 100644 browser/components/urlbar/UrlbarProviderGreatDANENames.sys.mjs
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index 6393afc0b6..e7b7510146 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -3691,6 +3691,7 @@ pref("app.update.url", "");
+ pref("app.update.checkInstallTime", false);
+ pref("browser.fixup.domainsuffixwhitelist.pepe", true);
+ pref("browser.startup.homepage", "https://pepecoin.surf/");
+-// Typed text is not sent to a search engine as you type (chain names would
+-// leak before the TLD is complete). Users may re-enable; .pepe stays guarded.
+-pref("browser.search.suggest.enabled", false);
++// Search suggestions are stock (on); a typed chain name with its suffix is
++// never sent (UrlbarProviderSearchSuggestions guard). Registered .pepe/.doge
++// names are suggested from the local nodes only (UrlbarProviderGreatDANENames).
++pref("greatdane.urlbar.names", true);
+diff --git a/browser/components/urlbar/UrlbarProviderGreatDANENames.sys.mjs b/browser/components/urlbar/UrlbarProviderGreatDANENames.sys.mjs
+new file mode 100644
+index 0000000000..267ff6c1fc
+--- /dev/null
++++ b/browser/components/urlbar/UrlbarProviderGreatDANENames.sys.mjs
+@@ -0,0 +1,96 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++/**
++ * GreatDANE: suggests registered chain names (.pepe, .doge) matching what the
++ * user typed. Names come only from the embedded local nodes' own databases via
++ * GET /gd/names on their loopback port; nothing typed leaves the machine.
++ */
++
++import {
++  UrlbarProvider,
++  UrlbarUtils,
++} from "moz-src:///browser/components/urlbar/UrlbarUtils.sys.mjs";
++
++const lazy = {};
++ChromeUtils.defineESModuleGetters(lazy, {
++  GreatDANE: "resource:///modules/GreatDANE.sys.mjs",
++  UrlbarResult: "chrome://browser/content/urlbar/UrlbarResult.mjs",
++  setTimeout: "resource://gre/modules/Timer.sys.mjs",
++});
++
++const LIMIT = 5;
++const INPUT = /^([a-z0-9][a-z0-9-]{0,62})(?:\.([a-z]{0,8})\.?)?$/;
++
++export class UrlbarProviderGreatDANENames extends UrlbarProvider {
++  get type() {
++    return UrlbarUtils.PROVIDER_TYPE.NETWORK;
++  }
++
++  _parse(queryContext) {
++    let s = queryContext.trimmedLowerCaseSearchString || "";
++    s = s.replace(/^https?:\/\//, "").replace(/\/$/, "");
++    let m = INPUT.exec(s);
++    if (!m) return null;
++    return { label: m[1], suffix: m[2] ?? null };
++  }
++
++  async isActive(queryContext) {
++    return (
++      Services.prefs.getBoolPref("greatdane.urlbar.names", true) &&
++      !queryContext.searchMode &&
++      !queryContext.restrictSource &&
++      queryContext.tokens.length == 1 &&
++      !!this._parse(queryContext)
++    );
++  }
++
++  async startQuery(queryContext, addCallback) {
++    let q = this._parse(queryContext);
++    let instance = this.queryInstance;
++    let chains = [...(lazy.GreatDANE._chains?.values() ?? [])].filter(
++      c => c.ports && (q.suffix === null || c.tld.startsWith(q.suffix))
++    );
++    let lists = await Promise.all(
++      chains.map(async c => {
++        try {
++          let r = await Promise.race([
++            fetch(
++              `http://127.0.0.1:${c.ports.pac}/gd/names?prefix=${encodeURIComponent(q.label)}&limit=${LIMIT}`,
++              { cache: "no-store" }
++            ),
++            new Promise((_, rej) => lazy.setTimeout(() => rej(new Error("timeout")), 500)),
++          ]);
++          let j = await r.json();
++          return (j.names || []).map(n => n + "." + c.tld);
++        } catch (e) {
++          return [];
++        }
++      })
++    );
++    if (instance != this.queryInstance) return;
++    let typed = q.label + (q.suffix !== null ? "." + q.suffix : "");
++    let hosts = lists
++      .flat()
++      .filter(h => /^[a-z0-9-]+\.[a-z]+$/.test(h) && h != typed.replace(/\.$/, ""))
++      .sort((a, b) => a.length - b.length || a.localeCompare(b))
++      .slice(0, LIMIT);
++    hosts.forEach((host, i) => {
++      let url = "https://" + host + "/";
++      addCallback(
++        this,
++        new lazy.UrlbarResult({
++          type: UrlbarUtils.RESULT_TYPE.URL,
++          source: UrlbarUtils.RESULT_SOURCE.OTHER_LOCAL,
++          suggestedIndex: 1 + i,
++          payload: { title: host, url, icon: "chrome://global/skin/icons/defaultFavicon.svg" },
++          highlights: {
++            title: UrlbarUtils.HIGHLIGHT.TYPED,
++            url: UrlbarUtils.HIGHLIGHT.TYPED,
++          },
++        })
++      );
++    });
++  }
++}
+diff --git a/browser/components/urlbar/UrlbarProvidersManager.sys.mjs b/browser/components/urlbar/UrlbarProvidersManager.sys.mjs
+index d2e2415e6b..465db4a636 100644
+--- a/browser/components/urlbar/UrlbarProvidersManager.sys.mjs
++++ b/browser/components/urlbar/UrlbarProvidersManager.sys.mjs
+@@ -75,6 +75,12 @@ var localProviderModules = [
+       "moz-src:///browser/components/urlbar/UrlbarProviderBookmarkKeywords.sys.mjs",
+     supportedSAPs: ["urlbar"],
+   },
++  {
++    name: "UrlbarProviderGreatDANENames",
++    module:
++      "moz-src:///browser/components/urlbar/UrlbarProviderGreatDANENames.sys.mjs",
++    supportedSAPs: ["urlbar"],
++  },
+   {
+     name: "UrlbarProviderCalculator",
+     module:
+diff --git a/browser/components/urlbar/moz.build b/browser/components/urlbar/moz.build
+index bc16c04662..326d5d96ed 100644
+--- a/browser/components/urlbar/moz.build
++++ b/browser/components/urlbar/moz.build
+@@ -30,6 +30,7 @@ MOZ_SRC_FILES += [
+     "UrlbarProviderCalculator.sys.mjs",
+     "UrlbarProviderClipboard.sys.mjs",
+     "UrlbarProviderGlobalActions.sys.mjs",
++    "UrlbarProviderGreatDANENames.sys.mjs",
+     "UrlbarProviderHeuristicFallback.sys.mjs",
+     "UrlbarProviderHistoryUrlHeuristic.sys.mjs",
+     "UrlbarProviderInputHistory.sys.mjs",
