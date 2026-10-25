@@ -1,0 +1,382 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Sat, 24 Oct 2026 19:30:58 -0500
+Subject: [PATCH 003/144] GreatDANE M3: DANE-EE TLSA verifier for chain TLDs;
+ drop dev CA; distinct unowned/no-TLSA errors
+
+---
+ browser/app/profile/firefox.js                |   1 -
+ .../components/greatdane/GreatDANE.sys.mjs    |  41 +++--
+ .../greatdane/GreatDANEAbout.sys.mjs          |  38 ++--
+ modules/libpref/init/StaticPrefList.yaml      |   9 +
+ .../manager/ssl/SSLServerCertVerification.cpp | 171 ++++++++++++++++++
+ 5 files changed, 235 insertions(+), 25 deletions(-)
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index 21570120d5..d11824c619 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -3636,7 +3636,6 @@ pref("greatdane.enabled", true);
+ pref("greatdane.chains", "pep:pepe");
+ pref("greatdane.node.path", "");
+ pref("greatdane.node.dataDir", "");
+-pref("greatdane.dev.mintedCA", true); // dev builds only; release uses TLSA (M3)
+ pref("browser.fixup.domainsuffixwhitelist.pepe", true);
+ pref("browser.startup.homepage", "https://pepecoin.surf/");
+ // Typed text is not sent to a search engine as you type (chain names would
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index c34cf588e8..7428c3a3e9 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -38,6 +38,7 @@ export const GreatDANE = {
+       this._chains.set(tld, c);
+       this._spawn(c);
+     }
++    this._publishEndpoints();
+     Services.obs.addObserver(this, "quit-application");
+     lazy.registerAbout();
+     Services.obs.addObserver(this, "browser-delayed-startup-finished");
+@@ -85,7 +86,7 @@ export const GreatDANE = {
+     try {
+       c.proc = await Subprocess.call({
+         command: this._nodePath(),
+-        arguments: ["--data", this._dataDir(), "--only", c.coin, "--ephemeral-ports", "--stdio"],
++        arguments: ["--data", this._dataDir(), "--only", c.coin, "--ephemeral-ports", "--dane-api", "--stdio"],
+         stdin: "pipe",
+         stdout: "pipe",
+         stderr: "pipe",
+@@ -113,6 +114,7 @@ export const GreatDANE = {
+     c.ports = null;
+     c.status = null;
+     c.state = "down";
++    this._publishEndpoints();
+     c.lastExit = Date.now();
+     if (this._quitting) return;
+     let delay = Math.min(30000, 500 * 2 ** c.restarts++);
+@@ -121,10 +123,12 @@ export const GreatDANE = {
+ 
+   async _onNodeMsg(c, msg) {
+     if (msg.event == "ready" && msg.tld == c.tld) {
+-      if (Services.prefs.getBoolPref(PREF + "dev.mintedCA", false)) {
+-        await this._importDevCA(msg.ca);
++      if (!msg.dane_api) {
++        log(c.coin, "node lacks --dane-api; refusing to use it");
++        return;
+       }
+       c.ports = { pac: msg.pac, dns: msg.dns, proxy: msg.proxy, pf: msg.pf };
++      this._publishEndpoints();
+       c.state = "ready";
+       c.restarts = 0;
+       c.since = Date.now();
+@@ -160,17 +164,30 @@ export const GreatDANE = {
+     } catch (e) {}
+   },
+ 
+-  // Dev builds only: trust the node's per-install root in THIS profile's NSS
+-  // store. Release builds use direct TLSA verification instead (M3).
+-  async _importDevCA(path) {
+-    if (!path) return;
+-    let pem = await IOUtils.readUTF8(path);
+-    let b64 = pem.replace(/-----[^-]+-----/g, "").replace(/\s+/g, "");
+-    let certdb = Cc["@mozilla.org/security/x509certdb;1"].getService(Ci.nsIX509CertDB);
++  // Tell the TLS verifier (SSLServerCertVerification.cpp) which TLDs are
++  // DANE-only and where each node's TLSA API is. A TLD with no live node is
++  // still listed (empty endpoint) so its hosts fail closed, never fall back
++  // to the web PKI.
++  _publishEndpoints() {
++    let v = [...this._chains.values()]
++      .map(c => c.tld + "=" + (c.ports ? "127.0.0.1:" + c.ports.pac : ""))
++      .join(",");
++    Services.prefs.setStringPref("security.greatdane.tlsa_endpoints", v);
++  },
++
++  // Ask the node why a chain host failed: ok | unowned | no_tlsa |
++  // bad_record | bad_name, or null if the node can't be asked.
++  async tlsaStatus(host) {
++    let c = this._chainFor(host);
++    if (!c?.ports) return null;
+     try {
+-      certdb.addCertFromBase64(b64, "C,,");
++      let r = await fetch(
++        "http://127.0.0.1:" + c.ports.pac + "/gd/tlsa?host=" + encodeURIComponent(host),
++        { cache: "no-store" }
++      );
++      return (await r.json()).status || null;
+     } catch (e) {
+-      log("CA import", e); // already present is fine
++      return null;
+     }
+   },
+ 
+diff --git a/browser/components/greatdane/GreatDANEAbout.sys.mjs b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+index eca093ae9d..a831f406f0 100644
+--- a/browser/components/greatdane/GreatDANEAbout.sys.mjs
++++ b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+@@ -13,8 +13,14 @@ const ERRORS = {
+     "GreatDANE resolves chain names with its own built-in node. It is starting (or restarting after a crash). This page will continue on its own when the node is up."],
+   GD_NODE_SYNCING: ["Still syncing the chain",
+     "Names are only trusted once the node has caught up with the network, so nothing for this site is loaded until then. This page will continue on its own when sync finishes."],
+-  GD_TLS_UNTRUSTED: ["Could not verify this site's key",
+-    "The connection did not verify against the key published on chain. GreatDANE will not let you continue to an unverified chain site."],
++  GD_TLS_UNTRUSTED: ["This site's key does not match the chain",
++    "The server presented a key that does not match the TLSA record its owner published on chain. This can mean an impostor is answering for this name. GreatDANE will not let you continue."],
++  GD_NAME_UNOWNED: ["Nobody owns this name",
++    "This name is not registered on the chain (or its registration lapsed), so there is no site here."],
++  GD_NO_TLSA: ["This site has not published a key",
++    "The name is registered, but its owner has not published a TLSA record, so there is no way to verify the site. GreatDANE only loads chain sites it can verify."],
++  GD_BAD_TLSA: ["This site's chain record is unusable",
++    "The name is registered, but its address or TLSA record is missing or not a supported kind (DANE-EE 3 1 1 on _443._tcp)."],
+   GD_SITE_UNREACHABLE: ["Site unreachable",
+     "The name is on the chain but its server could not be reached through the node."],
+ };
+@@ -118,16 +124,24 @@ export const ErrorTrap = {
+     try { c = GreatDANE._chainFor(location.host); } catch (e) { return; }
+     if (!c) return;
+     let code = GreatDANE.blockReason(c);
+-    if (!code) {
+-      let status = 0;
+-      try { status = request?.QueryInterface(Ci.nsIChannel).status; } catch (e) {}
+-      let mod = ((status >>> 16) & 0x7fff) - 0x45;
+-      code = mod == 21 ? "GD_TLS_UNTRUSTED" : "GD_SITE_UNREACHABLE";
+-    }
+-    let u = "about:greatdane?e=" + code + "&u=" + encodeURIComponent(location.spec);
+-    browser.loadURI(Services.io.newURI(u), {
+-      triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+-      loadFlags: Ci.nsIWebNavigation.LOAD_FLAGS_REPLACE_HISTORY,
++    let status = 0;
++    try { status = request?.QueryInterface(Ci.nsIChannel).status; } catch (e) {}
++    let mod = ((status >>> 16) & 0x7fff) - 0x45;
++    let go = code => {
++      let u = "about:greatdane?e=" + code + "&u=" + encodeURIComponent(location.spec);
++      browser.loadURI(Services.io.newURI(u), {
++        triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
++        loadFlags: Ci.nsIWebNavigation.LOAD_FLAGS_REPLACE_HISTORY,
++      });
++    };
++    if (code) { go(code); return; }
++    GreatDANE.tlsaStatus(location.host).then(st => {
++      if (st === null) go("GD_NODE_NOT_READY");
++      else if (st == "unowned" || st == "bad_name") go("GD_NAME_UNOWNED");
++      else if (st == "no_tlsa") go("GD_NO_TLSA");
++      else if (st == "bad_record") go("GD_BAD_TLSA");
++      else go(mod == 21 ? "GD_TLS_UNTRUSTED" : "GD_SITE_UNREACHABLE");
+     });
++    return;
+   },
+ };
+diff --git a/modules/libpref/init/StaticPrefList.yaml b/modules/libpref/init/StaticPrefList.yaml
+index ce7b15fbe9..7a47f2183e 100644
+--- a/modules/libpref/init/StaticPrefList.yaml
++++ b/modules/libpref/init/StaticPrefList.yaml
+@@ -18067,6 +18067,15 @@
+   value: false
+   mirror: always
+ 
++# GreatDANE: chain TLDs whose TLS is verified ONLY by on-chain DANE-EE TLSA
++# (never by the web PKI), and where to ask for it. Comma list of
++# "tld=127.0.0.1:port"; an empty endpoint ("pepe=") fails every such host
++# closed. Set at runtime by GreatDANE.sys.mjs from the node's ready line.
++- name: security.greatdane.tlsa_endpoints
++  type: DataMutexString
++  value: ""
++  mirror: always
++
+ - name: security.bad_cert_domain_error.url_fix_enabled
+   type: bool
+   value: true
+diff --git a/security/manager/ssl/SSLServerCertVerification.cpp b/security/manager/ssl/SSLServerCertVerification.cpp
+index 0b3918f9d5..629ed81a46 100644
+--- a/security/manager/ssl/SSLServerCertVerification.cpp
++++ b/security/manager/ssl/SSLServerCertVerification.cpp
+@@ -103,6 +103,13 @@
+ #include "SharedCertVerifier.h"
+ #include "VerifySSLServerCertChild.h"
+ #include "cert.h"
++#include "pk11pub.h"
++#include "prio.h"
++#include "prnetdb.h"
++#include <cctype>
++#include "pk11pub.h"
++#include "prio.h"
++#include "prnetdb.h"
+ #include "mozilla/Assertions.h"
+ #include "mozilla/RefPtr.h"
+ #include "mozilla/StaticPrefs_security.h"
+@@ -776,6 +783,143 @@ SECStatus SSLServerCertVerificationJob::Dispatch(
+   return SECWouldBlock;
+ }
+ 
++// ---- GreatDANE (M3): on-chain DANE-EE verification for chain TLDs ---------
++// For a host under a TLD listed in security.greatdane.tlsa_endpoints the web
++// PKI is never consulted: the leaf's SPKI must match the TLSA record the local
++// greatdane-node folded from the chain (3 1 1 = SHA-256 of the SPKI). Anything
++// else (unowned name, no TLSA, node unreachable, mismatch) fails closed with a
++// non-overridable error. Names/validity are ignored, as RFC 7671 says for EE.
++enum class GreatDANEVerdict { NotChain, Match, Fail };
++
++static bool GreatDANEEndpointFor(const nsACString& aHost, nsACString& aEndpoint) {
++  nsAutoCString host(aHost);
++  ToLowerCase(host);
++  if (StringEndsWith(host, "."_ns)) host.Truncate(host.Length() - 1);
++  nsAutoCString list;
++  {
++    auto lock = StaticPrefs::security_greatdane_tlsa_endpoints();
++    list.Assign(*lock);
++  }
++  for (const nsACString& entry : list.Split(',')) {
++    int32_t eq = entry.FindChar('=');
++    if (eq <= 0) continue;
++    nsAutoCString tld(Substring(entry, 0, eq));
++    tld.Trim(" ");
++    ToLowerCase(tld);
++    if (host.Equals(tld) || StringEndsWith(host, "."_ns + tld)) {
++      aEndpoint.Assign(Substring(entry, eq + 1));
++      aEndpoint.Trim(" ");
++      return true;
++    }
++  }
++  return false;
++}
++
++// Blocking loopback GET; runs on a cert verification thread, never main.
++static bool GreatDANEFetch(const nsACString& aEndpoint, const nsACString& aHost,
++                           nsACString& aBody) {
++  int32_t colon = aEndpoint.RFindChar(':');
++  if (colon <= 0) return false;
++  nsAutoCString ip(Substring(aEndpoint, 0, colon));
++  nsresult err;
++  int32_t port = nsAutoCString(Substring(aEndpoint, colon + 1)).ToInteger(&err);
++  if (NS_FAILED(err) || port <= 0 || port > 65535) return false;
++  if (!ip.EqualsLiteral("127.0.0.1")) return false;  // loopback only
++  for (uint32_t i = 0; i < aHost.Length(); i++) {
++    char ch = aHost.CharAt(i);
++    if (!(isalnum((unsigned char)ch) || ch == '.' || ch == '-')) return false;
++  }
++  PRNetAddr addr;
++  if (PR_StringToNetAddr(ip.get(), &addr) != PR_SUCCESS) return false;
++  addr.inet.port = PR_htons((uint16_t)port);
++  PRFileDesc* fd = PR_OpenTCPSocket(PR_AF_INET);
++  if (!fd) return false;
++  bool ok = false;
++  PRIntervalTime to = PR_SecondsToInterval(5);
++  if (PR_Connect(fd, &addr, to) == PR_SUCCESS) {
++    nsAutoCString req;
++    req.AppendLiteral("GET /gd/tlsa?host=");
++    req.Append(aHost);
++    req.AppendLiteral(" HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n");
++    if (PR_Send(fd, req.get(), req.Length(), 0, to) == (int32_t)req.Length()) {
++      nsAutoCString resp;
++      char buf[1024];
++      int32_t n;
++      while (resp.Length() < 16384 &&
++             (n = PR_Recv(fd, buf, sizeof buf, 0, to)) > 0) {
++        resp.Append(buf, n);
++      }
++      int32_t b = resp.Find("\r\n\r\n");
++      if (StringBeginsWith(resp, "HTTP/1.1 200"_ns) && b > 0) {
++        aBody.Assign(Substring(resp, b + 4));
++        ok = true;
++      }
++    }
++  }
++  PR_Close(fd);
++  return ok;
++}
++
++// The node emits flat JSON; pull one string or number field out of it.
++static nsAutoCString GreatDANEField(const nsACString& aJson, const char* aKey) {
++  nsAutoCString key;
++  key.AppendLiteral("\"");
++  key.Append(aKey);
++  key.AppendLiteral("\":");
++  nsAutoCString out;
++  int32_t i = aJson.Find(key);
++  if (i < 0) return out;
++  i += key.Length();
++  int32_t len = aJson.Length();
++  bool quoted = i < len && aJson[i] == '"';
++  if (quoted) i++;
++  while (i < len) {
++    char ch = aJson[i++];
++    if (quoted ? ch == '"' : (ch == ',' || ch == '}' || ch == ']')) break;
++    out.Append(ch);
++  }
++  return out;
++}
++
++static GreatDANEVerdict GreatDANEVerify(const nsACString& aHost,
++                                        const nsTArray<uint8_t>& aLeaf) {
++  nsAutoCString endpoint;
++  if (!GreatDANEEndpointFor(aHost, endpoint)) return GreatDANEVerdict::NotChain;
++  nsAutoCString body;
++  if (endpoint.IsEmpty() || !GreatDANEFetch(endpoint, aHost, body)) {
++    return GreatDANEVerdict::Fail;
++  }
++  if (!GreatDANEField(body, "status").EqualsLiteral("ok") ||
++      !GreatDANEField(body, "usage").EqualsLiteral("3") ||
++      !GreatDANEField(body, "selector").EqualsLiteral("1") ||
++      !GreatDANEField(body, "mtype").EqualsLiteral("1")) {
++    return GreatDANEVerdict::Fail;
++  }
++  nsAutoCString want = GreatDANEField(body, "data");
++  ToLowerCase(want);
++  if (want.Length() != 64) return GreatDANEVerdict::Fail;
++
++  Input leafInput;
++  if (leafInput.Init(aLeaf.Elements(), aLeaf.Length()) != Success) {
++    return GreatDANEVerdict::Fail;
++  }
++  BackCert leaf(leafInput, EndEntityOrCA::MustBeEndEntity, nullptr);
++  if (leaf.Init() != Success) return GreatDANEVerdict::Fail;
++  Input spki = leaf.GetSubjectPublicKeyInfo();
++  uint8_t digest[32];
++  if (PK11_HashBuf(SEC_OID_SHA256, digest, spki.UnsafeGetData(),
++                   spki.GetLength()) != SECSuccess) {
++    return GreatDANEVerdict::Fail;
++  }
++  static const char hex[] = "0123456789abcdef";
++  nsAutoCString got;
++  for (uint8_t b : digest) {
++    got.Append(hex[b >> 4]);
++    got.Append(hex[b & 15]);
++  }
++  return got.Equals(want) ? GreatDANEVerdict::Match : GreatDANEVerdict::Fail;
++}
++
+ NS_IMETHODIMP
+ SSLServerCertVerificationJob::Run() {
+   // Runs on a cert verification thread and only on parent process.
+@@ -792,6 +936,33 @@ SSLServerCertVerificationJob::Run() {
+     return NS_ERROR_FAILURE;
+   }
+ 
++  // GreatDANE: chain TLDs are verified by on-chain TLSA only (see above).
++  {
++    GreatDANEVerdict v =
++        GreatDANEVerify(mHostName, mPeerCertChain.ElementAt(0));
++    if (v != GreatDANEVerdict::NotChain) {
++      MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
++              ("[%" PRIx64 "] GreatDANE %s", mAddrForLogging,
++               v == GreatDANEVerdict::Match ? "match" : "fail"));
++      nsTArray<nsTArray<uint8_t>> builtChain;
++      if (v == GreatDANEVerdict::Match) {
++        builtChain.AppendElement(mPeerCertChain.ElementAt(0).Clone());
++      }
++      bool ok = v == GreatDANEVerdict::Match;
++      nsresult rv = mResultTask->Dispatch(
++          std::move(builtChain), std::move(mPeerCertChain),
++          nsITransportSecurityInfo::CERTIFICATE_TRANSPARENCY_NOT_APPLICABLE,
++          EVStatus::NotEV, ok,
++          ok ? 0 : (PRErrorCode)MOZILLA_PKIX_ERROR_KEY_PINNING_FAILURE,
++          nsITransportSecurityInfo::OverridableErrorCategory::ERROR_UNSET,
++          false, mProviderFlags, false);
++      if (NS_FAILED(rv)) {
++        mResultTask.forget().leak();
++      }
++      return rv;
++    }
++  }
++
+   TimeStamp jobStartTime = TimeStamp::Now();
+   EVStatus evStatus;
+   CertificateTransparencyInfo certificateTransparencyInfo;
