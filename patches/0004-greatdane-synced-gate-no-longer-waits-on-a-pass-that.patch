@@ -1,0 +1,57 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Sat, 24 Oct 2026 20:13:52 -0500
+Subject: [PATCH 004/144] greatdane: synced gate no longer waits on a pass that
+ never ends at tip; map cert-error pages to key-mismatch
+
+---
+ browser/components/greatdane/GreatDANE.sys.mjs      | 7 +++++--
+ browser/components/greatdane/GreatDANEAbout.sys.mjs | 8 +++++++-
+ 2 files changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index 7428c3a3e9..288cf912ae 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -142,10 +142,13 @@ export const GreatDANE = {
+   // peers advertise. Until then chain names are not resolvable, by design.
+   _synced(c) {
+     let st = c.status;
+-    if (c.state != "ready" || !st || st.passes < 1) return false;
++    if (c.state != "ready" || !st) return false;
+     // An empty or stale chain is never "synced", even with no peers to ask.
+     if (!st.height || st.height < (st.activation || 0)) return false;
+-    return !st.peer_height || st.height + 2 >= st.peer_height;
++    // A node at the tip keeps its pass open to follow new blocks, so
++    // passes can stay 0 forever: a peer's height claim settles it alone.
++    if (st.peer_height > 0) return st.height + 2 >= st.peer_height;
++    return st.passes >= 1;
+   },
+ 
+   // What a navigation to a chain host would hit right now, or null if open.
+diff --git a/browser/components/greatdane/GreatDANEAbout.sys.mjs b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+index a831f406f0..17dc92bc14 100644
+--- a/browser/components/greatdane/GreatDANEAbout.sys.mjs
++++ b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+@@ -127,6 +127,12 @@ export const ErrorTrap = {
+     let status = 0;
+     try { status = request?.QueryInterface(Ci.nsIChannel).status; } catch (e) {}
+     let mod = ((status >>> 16) & 0x7fff) - 0x45;
++    // The error-page load usually carries no failed channel (status 0), so
++    // also read which Firefox error page was shown: cert/NSS failures mean
++    // the server's key did not verify against the chain.
++    let doc = "";
++    try { doc = browser.documentURI?.spec || ""; } catch (e) {}
++    let tlsFail = mod == 21 || /^about:certerror|[?&]e=nss/.test(doc);
+     let go = code => {
+       let u = "about:greatdane?e=" + code + "&u=" + encodeURIComponent(location.spec);
+       browser.loadURI(Services.io.newURI(u), {
+@@ -140,7 +146,7 @@ export const ErrorTrap = {
+       else if (st == "unowned" || st == "bad_name") go("GD_NAME_UNOWNED");
+       else if (st == "no_tlsa") go("GD_NO_TLSA");
+       else if (st == "bad_record") go("GD_BAD_TLSA");
+-      else go(mod == 21 ? "GD_TLS_UNTRUSTED" : "GD_SITE_UNREACHABLE");
++      else go(tlsFail ? "GD_TLS_UNTRUSTED" : "GD_SITE_UNREACHABLE");
+     });
+     return;
+   },
