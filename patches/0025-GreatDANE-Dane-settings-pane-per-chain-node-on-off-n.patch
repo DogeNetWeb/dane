@@ -1,0 +1,536 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 15:56:00 -0500
+Subject: [PATCH 025/144] GreatDANE: Dane settings pane (per-chain node on/off,
+ node status, chain host pattern, update channel, first-run update window);
+ hide Mozilla data collection/VPN/Relay/More from Mozilla/Pocket in Settings;
+ greatdane.prefs.hideSync (default off); Marionette prefs tests
+
+---
+ browser/app/profile/firefox.js                |   9 +-
+ .../components/greatdane/GreatDANE.sys.mjs    |  39 ++++-
+ .../greatdane/test/marionette/run_gd_prefs.py | 121 ++++++++++++++
+ .../preferences/config/greatdane.mjs          | 153 ++++++++++++++++++
+ browser/components/preferences/jar.mn         |   1 +
+ browser/components/preferences/preferences.js |  34 ++++
+ .../components/preferences/preferences.xhtml  |   6 +
+ .../en-US/browser/preferences/greatdane.ftl   |  33 ++++
+ 8 files changed, 392 insertions(+), 4 deletions(-)
+ create mode 100644 browser/components/greatdane/test/marionette/run_gd_prefs.py
+ create mode 100644 browser/components/preferences/config/greatdane.mjs
+ create mode 100644 browser/locales/en-US/browser/preferences/greatdane.ftl
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index 062e4bd445..6c8b9a58f1 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -1413,7 +1413,7 @@ pref("accessibility.typeaheadfind.flashBar", 1);
+ // Whether we had to hide the "Firefox Labs" section because it would be empty.
+ pref("browser.preferences.experimental.hidden", false);
+ // Whether we show the "More from Mozilla" section.
+-pref("browser.preferences.moreFromMozilla", true);
++pref("browser.preferences.moreFromMozilla", false); // GreatDANE: no Mozilla product promos
+ // Whether we show the "AI Controls" pane.
+ pref("browser.preferences.aiControls", true);
+ // Whether to show unavailable AI controls regardless of region/locale
+@@ -2575,7 +2575,7 @@ pref("browser.send_to_device_locales", "de,en-GB,en-US,es-AR,es-CL,es-ES,es-MX,f
+ pref("browser.vpn_promo.disallowed_regions", "ae,by,cn,cu,iq,ir,kp,om,ru,sd,sy,tm,tr");
+ 
+ // Default to enabling VPN promo messages to be shown when specified and allowed
+-pref("browser.vpn_promo.enabled", true);
++pref("browser.vpn_promo.enabled", false); // GreatDANE: no VPN promo
+ // Only show vpn card to certain regions. Comma separated string of two letter ISO 3166-1 country codes.
+ // The most recent list of supported countries can be found at https://support.mozilla.org/en-US/kb/mozilla-vpn-countries-available-subscribe
+ // The full lists of supported country codes can also be found at https://github.com/mozilla/bedrock/search?q=VPN_COUNTRY_CODES and https://github.com/mozilla/bedrock/search?q=VPN_MOBILE_SUB_COUNTRY_CODES
+@@ -3639,6 +3639,11 @@ pref("greatdane.enabled", true);
+ pref("greatdane.chains", "pep:pepe,doge:doge");
+ pref("greatdane.node.path", "");
+ pref("greatdane.node.dataDir", "");
++// Per-chain node on/off (Dane settings pane). Off = that TLD fails closed.
++pref("greatdane.pep.enabled", true);
++pref("greatdane.doge.enabled", true);
++// Hide Firefox Account/Sync in Settings (off: Dane is Firefox minus nothing).
++pref("greatdane.prefs.hideSync", false);
+ // Fallback chain-host test (RegExp source, case-insensitive) used only when
+ // the chain lookup fails; error pages for matching hosts stay ours.
+ pref("greatdane.chainHostPattern", "\\.(pepe|doge)\\.?$");
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index c624ef02dc..330b027e57 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -36,16 +36,49 @@ export const GreatDANE = {
+       let [coin, tld] = spec.trim().split(":");
+       if (!coin || !tld) continue;
+       let c = { coin, tld, state: "starting", ports: null, proc: null, restarts: 0 };
++      c.off = !this._chainEnabled(coin);
+       this._chains.set(tld, c);
+-      this._spawn(c);
++      if (c.off) {
++        c.state = "off"; // fail closed: hosts get GD_NODE_NOT_READY
++      } else {
++        this._spawn(c);
++      }
+     }
+     this._publishEndpoints();
+     Services.obs.addObserver(this, "quit-application");
++    Services.prefs.addObserver(PREF, this);
+     lazy.registerAbout();
+     Services.obs.addObserver(this, "browser-delayed-startup-finished");
+   },
+ 
+-  observe(subject, topic) {
++  // greatdane.<coin>.enabled (default true): run that chain's node.
++  // TODO(node settings iface): greatdane.<coin>.listen / .port / .maxInbound /
++  // .maxOutbound once greatdane-node accepts them (it only takes --only/--data
++  // /--ephemeral-ports/--dane-api/--stdio today).
++  _chainEnabled(coin) {
++    return Services.prefs.getBoolPref(PREF + coin + ".enabled", true);
++  },
++
++  setChainEnabled(c, on) {
++    if (on == !c.off) return;
++    c.off = !on;
++    log(c.coin, on ? "enabled" : "disabled");
++    if (on) {
++      c.restarts = 0;
++      if (c.state == "off") this._spawn(c);
++    } else {
++      try { c.proc?.stdin.close(); } catch (e) {} // node exits; no restart
++      if (!c.proc) c.state = "off";
++    }
++  },
++
++  observe(subject, topic, data) {
++    if (topic == "nsPref:changed") {
++      let m = /^greatdane\.([a-z]+)\.enabled$/.exec(data);
++      let c = m && [...this._chains.values()].find(x => x.coin == m[1]);
++      if (c) this.setChainEnabled(c, this._chainEnabled(c.coin));
++      return;
++    }
+     if (topic == "browser-delayed-startup-finished") {
+       // subject is the new browser window: watch its tabs for error pages
+       subject.gBrowser?.addTabsProgressListener(lazy.ErrorTrap);
+@@ -119,6 +152,8 @@ export const GreatDANE = {
+     c.state = "down";
+     this._publishEndpoints();
+     c.lastExit = Date.now();
++    c.proc = null;
++    if (c.off) { c.state = "off"; return; }
+     if (this._quitting) return;
+     let delay = Math.min(30000, 500 * 2 ** c.restarts++);
+     setTimeout(() => this._spawn(c), delay);
+diff --git a/browser/components/greatdane/test/marionette/run_gd_prefs.py b/browser/components/greatdane/test/marionette/run_gd_prefs.py
+new file mode 100644
+index 0000000000..48d2c3fc70
+--- /dev/null
++++ b/browser/components/greatdane/test/marionette/run_gd_prefs.py
+@@ -0,0 +1,121 @@
++# Dane settings tests in the built Dane (chrome context via Marionette):
++# the Dane pane loads, its toggles write prefs, Mozilla promo/data-collection
++# sections are hidden, Sync is visible by default and hidden by
++# greatdane.prefs.hideSync, and the first-run update window logic.
++#   python3 run_gd_prefs.py [path/to/greatdane] [screens_dir]
++import os, shutil, subprocess, sys, tempfile, time
++from marionette_driver.marionette import Marionette
++HERE = os.path.dirname(os.path.abspath(__file__))
++TREE = os.path.abspath(os.path.join(HERE, "../../../../.."))
++APP = sys.argv[1] if len(sys.argv) > 1 else TREE + "/obj-gd/dist/Dane.app/Contents/MacOS/greatdane"
++SHOTS = sys.argv[2] if len(sys.argv) > 2 else None
++prof = tempfile.mkdtemp(prefix="gd-prefs-")
++open(prof + "/user.js", "w").write('user_pref("marionette.port", 2833);\nuser_pref("browser.aboutwelcome.enabled", false);\n')
++p = subprocess.Popen([APP, "--headless", "--marionette", "-remote-allow-system-access", "--no-remote", "--profile", prof,
++                      "--width", "1280", "--height", "900"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++fails = 0
++def check(name, ok, info=""):
++    global fails
++    print(("PASS " if ok else "FAIL ") + name + (f"  [{info}]" if info and not ok else ""))
++    fails += 0 if ok else 1
++
++OPEN = '''let [pane, done] = arguments;
++let w = Services.wm.getMostRecentWindow("navigator:browser");
++w.openPreferences(pane);
++let t0 = Date.now();
++(function poll() {
++  let d = w.gBrowser.selectedBrowser.contentDocument;
++  let ok = d && d.readyState == "complete" && d.documentElement.getAttribute("data-gd-ready") != null;
++  if (d && d.readyState == "complete" && d.getElementById("gd-hide-style") && (Date.now() - t0) > 1500) return done(true);
++  if (Date.now() - t0 > 30000) return done(false);
++  w.setTimeout(poll, 200);
++})();'''
++JS = '''let d = Services.wm.getMostRecentWindow("navigator:browser").gBrowser.selectedBrowser.contentDocument;
++let vis = el => !!el && d.defaultView.getComputedStyle(el).display != "none" && el.getClientRects().length > 0;
++let shown = sel => [...d.querySelectorAll(sel)].some(e => d.defaultView.getComputedStyle(e).display != "none");
++'''
++def js(m, body, args=None): return m.execute_script(JS + body, script_args=args or [], sandbox=None)
++def shot(m, name):
++    if SHOTS:
++        os.makedirs(SHOTS, exist_ok=True)
++        open(os.path.join(SHOTS, name), "wb").write(m.screenshot(format="binary"))
++rc = 1
++try:
++    for _ in range(60):
++        try:
++            m = Marionette(host="127.0.0.1", port=2833); m.start_session(); break
++        except Exception: time.sleep(1)
++    m.set_context("chrome"); m.timeout.script = 60
++    # Pane loads
++    check("dane pane loads", m.execute_async_script(OPEN, script_args=["greatdane"], sandbox=None))
++    time.sleep(2)
++    r = js(m, '''return { nav: vis(d.getElementById("category-greatdane")),
++      pep: vis(d.getElementById("gd-pep-enabled")), doge: vis(d.getElementById("gd-doge-enabled")),
++      st: d.getElementById("gd-pep-status")?.getAttribute("label") || "",
++      dir: d.getElementById("gd-data-dir")?.getAttribute("description") || "",
++      pat: !!d.getElementById("gd-chain-host-pattern"), chan: d.getElementById("gd-update-channel")?.getAttribute("description") || "",
++      icon: d.getElementById("category-greatdane")?.getAttribute("iconsrc") };''')
++    check("dane nav button visible", r["nav"], r)
++    check("per-chain toggles shown", r["pep"] and r["doge"], r)
++    check("status row localized", r["st"].startswith("Status:"), r)
++    check("data dir shown read-only", bool(r["dir"]) and r["dir"] != "-", r)
++    check("chain host pattern field", r["pat"], r)
++    check("update channel shown", bool(r["chan"]), r)
++    check("dane icon", r["icon"] == "chrome://branding/content/about-logo.svg", r)
++    shot(m, "dane.png")
++    # Toggles write prefs
++    r = js(m, '''let out = {};
++      for (let [id, pref] of [["gd-pep-enabled", "greatdane.pep.enabled"], ["gd-doge-enabled", "greatdane.doge.enabled"]]) {
++        let t = d.getElementById(id); let before = Services.prefs.getBoolPref(pref);
++        t.click(); out[id] = [before, Services.prefs.getBoolPref(pref)]; t.click(); out[id].push(Services.prefs.getBoolPref(pref));
++      }
++      let u = d.getElementById("gd-update-firstrun-skip");
++      let b = Services.prefs.getIntPref("greatdane.update.skipFirstRunWindowSec"); u.click();
++      out.upd = [b, Services.prefs.getIntPref("greatdane.update.skipFirstRunWindowSec")]; u.click();
++      out.upd.push(Services.prefs.getIntPref("greatdane.update.skipFirstRunWindowSec"));
++      return out;''')
++    check("pep toggle writes pref", r["gd-pep-enabled"] == [True, False, True], r)
++    check("doge toggle writes pref", r["gd-doge-enabled"] == [True, False, True], r)
++    check("first-run toggle writes window pref", r["upd"] == [3600, 0, 3600], r)
++    # Hidden sections (Privacy)
++    m.execute_async_script(OPEN, script_args=["privacy"], sandbox=None); time.sleep(2)
++    r = js(m, '''return { dc: shown('[groupid="dataCollection"]') || shown('[data-srd-groupid="dataCollection"]'),
++      vpn: shown('[groupid="ipprotection"]'), relay: shown("#relayIntegrationBox"),
++      mfm: vis(d.getElementById("category-more-from-mozilla")),
++      sync: vis(d.getElementById("category-sync")) };''')
++    check("data collection hidden", not r["dc"], r)
++    check("VPN hidden", not r["vpn"], r)
++    check("Relay hidden", not r["relay"], r)
++    check("More from Mozilla hidden", not r["mfm"], r)
++    check("Sync visible by default", r["sync"], r)
++    shot(m, "privacy-security.png")
++    m.execute_async_script(OPEN, script_args=["general"], sandbox=None); time.sleep(2); shot(m, "general.png")
++    m.execute_async_script(OPEN, script_args=["sync"], sandbox=None); time.sleep(2); shot(m, "sync.png")
++    r = js(m, '''Services.prefs.setBoolPref("greatdane.prefs.hideSync", true);
++      let a = vis(d.getElementById("category-sync"));
++      Services.prefs.setBoolPref("greatdane.prefs.hideSync", false);
++      return [a, vis(d.getElementById("category-sync"))];''')
++    check("Sync hidden when hideSync=true, back when false", r == [False, True], r)
++    # First-run update window (fail open)
++    r = js(m, '''let us = Cc["@mozilla.org/updates/update-service;1"].getService().wrappedJSObject;
++      let P = "greatdane.update.firstRunTime", W = "greatdane.update.skipFirstRunWindowSec", now = Math.floor(Date.now()/1000);
++      let o = {};
++      Services.prefs.clearUserPref(P); o.first = us._greatdaneSkipFirstSession(); o.recorded = Services.prefs.prefHasUserValue(P);
++      Services.prefs.setStringPref(P, String(now - 10)); o.inside = us._greatdaneSkipFirstSession();
++      Services.prefs.setStringPref(P, String(now - 4000)); o.after = us._greatdaneSkipFirstSession();
++      Services.prefs.setStringPref(P, "garbage"); o.garbage = us._greatdaneSkipFirstSession();
++      Services.prefs.setStringPref(P, String(now - 10)); Services.prefs.setIntPref(W, 0); o.off = us._greatdaneSkipFirstSession();
++      Services.prefs.clearUserPref(W); Services.prefs.clearUserPref(P);
++      Services.prefs.setIntPref(P, 5); o.wrongType = us._greatdaneSkipFirstSession(); Services.prefs.clearUserPref(P);
++      return o;''')
++    check("update window: first check records time and skips", r["first"] and r["recorded"], r)
++    check("update window: inside window skips", r["inside"], r)
++    check("update window: after window checks", not r["after"], r)
++    check("update window: garbage fails open", not r["garbage"], r)
++    check("update window: 0 disables", not r["off"], r)
++    check("update window: wrong pref type fails open", not r["wrongType"], r)
++    m.delete_session(); rc = 0 if fails == 0 else 1
++finally:
++    p.terminate(); p.wait(20); shutil.rmtree(prof, ignore_errors=True)
++print(f"failed={fails}")
++sys.exit(rc)
+diff --git a/browser/components/preferences/config/greatdane.mjs b/browser/components/preferences/config/greatdane.mjs
+new file mode 100644
+index 0000000000..7da83cd5de
+--- /dev/null
++++ b/browser/components/preferences/config/greatdane.mjs
+@@ -0,0 +1,153 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this file,
++ * You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++// GreatDANE: the "Dane" settings pane. Node status comes from the same
++// GreatDANE._chains source about:dane renders. Seeds and the data dir are
++// read-only by design (Keeper node settings iface).
++
++import { Preferences } from "chrome://global/content/preferences/Preferences.mjs";
++import { SettingGroupManager } from "chrome://browser/content/preferences/config/SettingGroupManager.mjs";
++
++const { GreatDANE } = ChromeUtils.importESModule("resource:///modules/GreatDANE.sys.mjs");
++const { UpdateUtils } = ChromeUtils.importESModule("resource://gre/modules/UpdateUtils.sys.mjs");
++
++const CHAINS = [
++  { coin: "pep", tld: "pepe", port: 33874 },
++  { coin: "doge", tld: "doge", port: 22556 },
++];
++
++Preferences.addAll([
++  ...CHAINS.map(c => ({ id: `greatdane.${c.coin}.enabled`, type: "bool" })),
++  { id: "greatdane.chainHostPattern", type: "string" },
++  { id: "greatdane.update.skipFirstRunWindowSec", type: "int" },
++]);
++
++function chain(coin) {
++  for (let c of GreatDANE._chains?.values() ?? []) {
++    if (c.coin == coin) return c;
++  }
++  return null;
++}
++
++// Poll the node status (the node pushes status lines; no observer topic).
++function pollSetup(emitChange) {
++  let t = setInterval(emitChange, 2000);
++  return () => clearInterval(t);
++}
++
++function statusArgs(coin, def) {
++  let c = chain(coin);
++  let st = c?.status || {};
++  let state = !c ? "off" : c.state == "ready" ? (GreatDANE._synced(c) ? "ready" : "syncing") : c.state;
++  let pct = "-";
++  if (st.height && st.peer_height) {
++    pct = Math.min(100, Math.floor((st.height / st.peer_height) * 1000) / 10) + "%";
++  } else if (c && GreatDANE._synced(c)) {
++    pct = "100%";
++  }
++  return {
++    state,
++    listen: st.listen ?? "-",
++    port: Number.isInteger(st.listen_port) && st.listen_port > 0 ? String(st.listen_port) : `- (${def})`,
++    // TODO(node iface): node reports peers_pepenet / peers_known, not in/out.
++    peers: `${st.peers_pepenet ?? "-"} / ${st.peers_known ?? "-"}`,
++    height: String(st.height ?? "-"),
++    sync: pct,
++  };
++}
++
++for (let c of CHAINS) {
++  Preferences.addSetting({ id: `gd-${c.coin}-enabled`, pref: `greatdane.${c.coin}.enabled` });
++  Preferences.addSetting({
++    id: `gd-${c.coin}-status`,
++    setup: pollSetup,
++    getControlConfig(config) {
++      return { ...config, l10nArgs: statusArgs(c.coin, c.port) };
++    },
++  });
++}
++
++Preferences.addSetting({
++  id: "gd-data-dir",
++  getControlConfig(config) {
++    let dir = "-";
++    try { dir = GreatDANE._dataDir(); } catch (e) {}
++    return { ...config, l10nArgs: { dir } };
++  },
++});
++Preferences.addSetting({ id: "gd-chain-host-pattern", pref: "greatdane.chainHostPattern" });
++Preferences.addSetting({
++  id: "gd-update-channel",
++  getControlConfig(config) {
++    return { ...config, l10nArgs: { channel: UpdateUtils.UpdateChannel } };
++  },
++});
++Preferences.addSetting({
++  id: "gd-update-firstrun-skip",
++  pref: "greatdane.update.skipFirstRunWindowSec",
++  get: v => v > 0,
++  set: on => (on ? 3600 : 0),
++});
++
++SettingGroupManager.registerGroups({
++  greatdaneNodes: {
++    l10nId: "greatdane-nodes-group",
++    iconSrc: "chrome://branding/content/about-logo.svg",
++    headingLevel: 2,
++    items: [
++      ...CHAINS.flatMap(c => [
++        {
++          id: `gd-${c.coin}-enabled`,
++          l10nId: `greatdane-${c.coin}-enabled`,
++          control: "moz-toggle",
++          controlAttrs: { id: `gd-${c.coin}-enabled` },
++        },
++        {
++          id: `gd-${c.coin}-status`,
++          l10nId: "greatdane-chain-status",
++          control: "moz-box-item",
++          controlAttrs: { id: `gd-${c.coin}-status` },
++        },
++      ]),
++      // TODO(node iface): greatdane.<chain>.listen / .port / .maxInbound /
++      // .maxOutbound toggles once greatdane-node takes those flags.
++      {
++        id: "gd-data-dir",
++        l10nId: "greatdane-data-dir",
++        control: "moz-box-item",
++        controlAttrs: { id: "gd-data-dir" },
++      },
++    ],
++  },
++  greatdaneNames: {
++    l10nId: "greatdane-names-group",
++    headingLevel: 2,
++    items: [
++      {
++        id: "gd-chain-host-pattern",
++        l10nId: "greatdane-chain-host-pattern",
++        control: "moz-input-text",
++        controlAttrs: { id: "gd-chain-host-pattern" },
++      },
++    ],
++  },
++  greatdaneUpdates: {
++    l10nId: "greatdane-updates-group",
++    headingLevel: 2,
++    items: [
++      {
++        id: "gd-update-channel",
++        l10nId: "greatdane-update-channel",
++        control: "moz-box-item",
++        controlAttrs: { id: "gd-update-channel" },
++      },
++      {
++        id: "gd-update-firstrun-skip",
++        l10nId: "greatdane-update-firstrun-skip",
++        control: "moz-toggle",
++        controlAttrs: { id: "gd-update-firstrun-skip" },
++      },
++    ],
++  },
++});
+diff --git a/browser/components/preferences/jar.mn b/browser/components/preferences/jar.mn
+index de83282c2c..d7f6fe538e 100644
+--- a/browser/components/preferences/jar.mn
++++ b/browser/components/preferences/jar.mn
+@@ -31,6 +31,7 @@ browser.jar:
+    content/browser/preferences/config/account-sync.mjs                  (config/account-sync.mjs)
+    content/browser/preferences/config/accessibility.mjs                 (config/accessibility.mjs)
+    content/browser/preferences/config/appearance.mjs                    (config/appearance.mjs)
++   content/browser/preferences/config/greatdane.mjs                     (config/greatdane.mjs)
+    content/browser/preferences/config/aiFeatures.mjs                    (config/aiFeatures.mjs)
+    content/browser/preferences/config/firefoxLabs.mjs                   (config/firefoxLabs.mjs)
+    content/browser/preferences/config/moreFromMozilla.mjs               (config/moreFromMozilla.mjs)
+diff --git a/browser/components/preferences/preferences.js b/browser/components/preferences/preferences.js
+index c76a0647e1..57fdc9c7fc 100644
+--- a/browser/components/preferences/preferences.js
++++ b/browser/components/preferences/preferences.js
+@@ -242,6 +242,12 @@ const CONFIG_PANES = Object.freeze({
+     iconSrc: "chrome://browser/skin/preferences/category-accessibility.svg",
+     visible: () => srdSectionPrefs.all,
+   },
++  greatdane: {
++    l10nId: "preferences-greatdane-header",
++    groupIds: ["greatdaneNodes", "greatdaneNames", "greatdaneUpdates"],
++    module: "chrome://browser/content/preferences/config/greatdane.mjs",
++    iconSrc: "chrome://branding/content/about-logo.svg",
++  },
+   appearance: {
+     l10nId: "preferences-appearance-header",
+     groupIds: ["appearance", "browserTheme", "relatedSettings"],
+@@ -506,8 +512,36 @@ function register_module(categoryName, categoryObject) {
+ 
+ document.addEventListener("DOMContentLoaded", init_all, { once: true });
+ 
++// GreatDANE: hide Mozilla data collection, VPN/Relay/product promos with a
++// stylesheet (display:none !important, so search can't unhide them). Sync
++// stays visible unless greatdane.prefs.hideSync is true. See PREFS-AUDIT.md.
++const GD_HIDE_CSS = `
++  [groupid="dataCollection"], [data-srd-groupid="dataCollection"],
++  [groupid="ipprotection"], [data-srd-groupid="ipprotection"],
++  #relayIntegrationBox, #category-more-from-mozilla, #topstories,
++  [data-category="paneMoreFromMozilla"] { display: none !important; }`;
++const GD_SYNC_CSS = `
++  #category-sync, [data-category="paneSync"] { display: none !important; }`;
++function gdApplyHiding() {
++  let el = document.getElementById("gd-hide-style");
++  if (!el) {
++    el = document.createElementNS("http://www.w3.org/1999/xhtml", "style");
++    el.id = "gd-hide-style";
++    document.documentElement.appendChild(el);
++  }
++  let hideSync = Services.prefs.getBoolPref("greatdane.prefs.hideSync", false);
++  el.textContent = GD_HIDE_CSS + (hideSync ? GD_SYNC_CSS : "");
++}
++function gdInitHiding() {
++  gdApplyHiding();
++  Services.prefs.addObserver("greatdane.prefs.hideSync", gdApplyHiding);
++  window.addEventListener("unload", () =>
++    Services.prefs.removeObserver("greatdane.prefs.hideSync", gdApplyHiding));
++}
++
+ function init_all() {
+   Preferences.forceEnableInstantApply();
++  gdInitHiding();
+ 
+   // Asks Preferences to queue an update of the attribute values of
+   // the entire document.
+diff --git a/browser/components/preferences/preferences.xhtml b/browser/components/preferences/preferences.xhtml
+index 1b8c381593..977e58cd35 100644
+--- a/browser/components/preferences/preferences.xhtml
++++ b/browser/components/preferences/preferences.xhtml
+@@ -41,6 +41,7 @@
+ 
+   <link rel="localization" href="branding/brand.ftl"/>
+   <link rel="localization" href="browser/browser.ftl"/>
++  <link rel="localization" href="browser/preferences/greatdane.ftl"/>
+     <!-- Used by fontbuilder.js -->
+   <link rel="localization" href="browser/preferences/fonts.ftl"/>
+   <link rel="localization" href="browser/preferences/moreFromMozilla.ftl"/>
+@@ -144,6 +145,11 @@
+         iconsrc="chrome://browser/skin/login.svg"
+         data-l10n-id="pane-passwords-autofill-title2">
+       </html:moz-page-nav-button>
++      <html:moz-page-nav-button id="category-greatdane"
++        view="paneGreatdane"
++        iconsrc="chrome://branding/content/about-logo.svg"
++        data-l10n-id="pane-greatdane-title">
++      </html:moz-page-nav-button>
+       <html:moz-page-nav-button id="category-appearance"
+         view="paneAppearance"
+         iconsrc="chrome://global/skin/icons/eye.svg"
+diff --git a/browser/locales/en-US/browser/preferences/greatdane.ftl b/browser/locales/en-US/browser/preferences/greatdane.ftl
+new file mode 100644
+index 0000000000..5827de648c
+--- /dev/null
++++ b/browser/locales/en-US/browser/preferences/greatdane.ftl
+@@ -0,0 +1,33 @@
++# This Source Code Form is subject to the terms of the Mozilla Public
++# License, v. 2.0. If a copy of the MPL was not distributed with this
++# file, You can obtain one at http://mozilla.org/MPL/2.0/.
++
++pane-greatdane-title = Dane
++preferences-greatdane-header = Dane
++greatdane-nodes-group =
++    .label = Chain nodes
++    .description = Each chain runs a local node. A chain that is off or not synced fails closed: its names do not load.
++greatdane-pep-enabled =
++    .label = Pepecoin node (.pepe)
++greatdane-doge-enabled =
++    .label = Dogecoin node (.doge)
++# Variables: $state, $listen, $port, $peers (PepeNet / known), $height, $sync
++greatdane-chain-status =
++    .label = Status: { $state }
++    .description = Listening: { $listen } · Port: { $port } · Peers: { $peers } · Tip height: { $height } · Synced: { $sync }
++# Variables: $dir (string) - node data directory, read-only
++greatdane-data-dir =
++    .label = Node data folder
++    .description = { $dir }
++greatdane-names-group =
++    .label = Chain names
++greatdane-chain-host-pattern =
++    .label = Chain host pattern
++greatdane-updates-group =
++    .label = Dane updates
++# Variables: $channel (string)
++greatdane-update-channel =
++    .label = Update channel
++    .description = { $channel }
++greatdane-update-firstrun-skip =
++    .label = Skip background update checks in the first hour after first run
