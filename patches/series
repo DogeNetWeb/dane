@@ -17,3 +17,4 @@
 0017-GreatDANE-unknown-missing-TLSA-status-shows-the-key-.patch
 0018-GreatDANE-real-cert-path-DANE-test-trusted-test-root.patch
 0019-GreatDANE-no-TLS-QUIC-session-resumption-tickets-tok.patch
+0020-GreatDANE-tests-resumption-is-now-a-hard-assertion-T.patch

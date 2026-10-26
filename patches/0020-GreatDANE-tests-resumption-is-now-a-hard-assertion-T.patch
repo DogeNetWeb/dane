@@ -1,0 +1,117 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 09:27:25 -0500
+Subject: [PATCH 020/144] GreatDANE tests: resumption is now a hard assertion;
+ TLSA change applies on the very next connection; parser tolerance and
+ fail-closed cases; non-chain hosts still resume
+
+---
+ .../test/marionette/run_gd_certpath.py        | 18 ++++++-
+ .../marionette/test_greatdane_certpath.js     | 50 ++++++++++++++++---
+ 2 files changed, 61 insertions(+), 7 deletions(-)
+
+diff --git a/browser/components/greatdane/test/marionette/run_gd_certpath.py b/browser/components/greatdane/test/marionette/run_gd_certpath.py
+index 9caee6d1d0..12e983b818 100644
+--- a/browser/components/greatdane/test/marionette/run_gd_certpath.py
++++ b/browser/components/greatdane/test/marionette/run_gd_certpath.py
+@@ -35,6 +35,20 @@ tls = ThreadingHTTPServer(("127.0.0.1", 0), Site)
+ ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(tmp + "/leaf.crt", tmp + "/leaf.pem.k")
+ tls.socket = ctx.wrap_socket(tls.socket, server_side=True)
+ STATE = {"mode": "mismatch"}
++def _raw(ver, body, extra=""):
++    b = body.encode()
++    return (f"{ver} 200 OK\r\nContent-Type: application/json\r\n{extra}"
++            f"Content-Length: {len(b)}\r\nConnection: close\r\n\r\n").encode() + b
++# Parser cases: the first two must load (tolerated), the rest must fail closed.
++RAW = {
++    "spaced10": lambda k: _raw("HTTP/1.0", json.dumps({"status": "ok", "usage": 3, "selector": 1, "mtype": 1, "data": k}, indent=2)),
++    "spaced11": lambda k: _raw("HTTP/1.1", '{ "status" : "ok" , "usage" : 3 ,\n "selector":1, "mtype" :1, "data" :\t"%s" }' % k),
++    "dupkey":   lambda k: _raw("HTTP/1.1", '{"status":"ok","usage":3,"selector":1,"mtype":1,"data":"%s","data":"%s"}' % ("00" * 32, k)),
++    "escaped":  lambda k: _raw("HTTP/1.1", '{"status":"ok","usage":3,"selector":1,"mtype":1,"data":"%s\\u0030"}' % k[:-1]),
++    "chunked":  lambda k: _raw("HTTP/1.1", '{"status":"ok","usage":3,"selector":1,"mtype":1,"data":"%s"}' % k, "Transfer-Encoding: chunked\r\n"),
++    "status2001": lambda k: _raw("HTTP/1.1 2001", '{"status":"ok","usage":3,"selector":1,"mtype":1,"data":"%s"}' % k).replace(b"HTTP/1.1 2001 200 OK", b"HTTP/1.1 2001 OK"),
++    "http09":   lambda k: ('{"status":"ok","usage":3,"selector":1,"mtype":1,"data":"%s"}' % k).encode(),
++}
+ class Mock(BaseHTTPRequestHandler):
+     protocol_version = "HTTP/1.1"
+     def do_GET(s):
+@@ -43,6 +57,9 @@ class Mock(BaseHTTPRequestHandler):
+             STATE["mode"] = q.get("mode", ["mismatch"])[0]; body = {"mode": STATE["mode"]}
+         elif STATE["mode"] == "down":
+             s.send_response(503); s.send_header("Content-Length", "0"); s.send_header("Connection", "close"); s.end_headers(); return
++        elif STATE["mode"] in RAW:
++            s.close_connection = True
++            s.wfile.write(RAW[STATE["mode"]](SPKI)); return
+         elif STATE["mode"] == "garbage":
+             body = {"status": "mystery"}
+         else:
+@@ -69,7 +86,6 @@ SHIM = r'''
+ const done = arguments[arguments.length - 1];
+ const out = []; let fails = 0, passes = 0; const tasks = []; const cleanups = [];
+ const ok = (c, m) => { if (c) passes++; else { fails++; out.push("FAIL " + m); } };
+-const todo = (c, m) => out.push((c ? "TODO-NOW-PASSES " : "KNOWN-FAIL ") + m);
+ const Assert = { ok: (c, m) => ok(!!c, m), equal: (a, b, m) => ok(a == b, `${m || ""} got ${a} expected ${b}`) };
+ const add_task = f => tasks.push(f), add_setup = f => tasks.unshift(f), registerCleanupFunction = f => cleanups.push(f);
+ globalThis.GD_CERTPATH = arguments[0];
+diff --git a/browser/components/greatdane/test/marionette/test_greatdane_certpath.js b/browser/components/greatdane/test/marionette/test_greatdane_certpath.js
+index 76caa4689b..d8a6eda2cb 100644
+--- a/browser/components/greatdane/test/marionette/test_greatdane_certpath.js
++++ b/browser/components/greatdane/test/marionette/test_greatdane_certpath.js
+@@ -131,13 +131,51 @@ add_task(async function trusted_root_match_loads() {
+ add_task(async function resumption_does_not_skip_tlsa() {
+   await mode("match");
+   freshConnections();
+-  Assert.ok((await load("real.pepe")).ok, "match primes a TLS session");
++  let first = await load("real.pepe");
++  Assert.ok(first.ok, "match primes what would be a TLS session");
++  Assert.ok(!first.resumed, "first chain-host connection is a full handshake");
+   await mode("mismatch");
+   freshConnections({ keepSessions: true }); // new TCP connection, session cache kept
+   let r = await load("real.pepe");
+-  // KNOWN GAP (see report): a resumed TLS session does not run the DANE
+-  // check again, so a TLSA change is not seen until the session expires.
+-  // Recorded with todo() until the fix lands; flip to expectPinFail then.
+-  todo(!r.ok && r.err == "MOZILLA_PKIX_ERROR_KEY_PINNING_FAILURE",
+-    `resumed session after TLSA changed is blocked (ok=${r.ok} resumed=${r.resumed} err=${r.err})`);
++  Assert.ok(!r.resumed, "chain host never resumes a TLS session");
++  expectPinFail(r, "new connection after TLSA changed (session cache kept)");
++});
++
++add_task(async function tlsa_change_applies_on_next_connection() {
++  for (let [m, want] of [["match", true], ["mismatch", false], ["match", true],
++                         ["garbage", false], ["match", true]]) {
++    await mode(m);
++    freshConnections({ keepSessions: true });
++    let r = await load("real.pepe");
++    Assert.ok(!r.resumed, `${m}: full handshake`);
++    if (want) {
++      Assert.ok(r.ok && r.http == 200, `${m}: very next connection loads (err=${r.err})`);
++    } else {
++      expectPinFail(r, `${m}: very next connection blocked`);
++    }
++  }
++});
++
++add_task(async function tlsa_parser_tolerant_but_fail_closed() {
++  for (let m of ["spaced10", "spaced11"]) {
++    await mode(m);
++    freshConnections();
++    let r = await load("real.pepe");
++    Assert.ok(r.ok && r.http == 200, `${m}: whitespace / HTTP version tolerated (err=${r.err})`);
++  }
++  for (let m of ["dupkey", "escaped", "chunked", "status2001", "http09"]) {
++    await mode(m);
++    freshConnections();
++    expectPinFail(await load("real.pepe"), `${m}: ambiguous response fails closed`);
++  }
++});
++
++add_task(async function non_chain_host_still_resumes() {
++  // Control: the change only touches chain hosts. Normal sites keep resumption.
++  freshConnections();
++  Assert.ok((await load("real.test")).ok, "real.test first load");
++  freshConnections({ keepSessions: true });
++  let r = await load("real.test");
++  Assert.ok(r.ok, "real.test second load");
++  Assert.ok(r.resumed, "non-chain host still resumes (no Firefox feature lost)");
+ });
