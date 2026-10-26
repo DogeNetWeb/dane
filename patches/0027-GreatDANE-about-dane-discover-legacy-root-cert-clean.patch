@@ -1,0 +1,623 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 15:56:07 -0500
+Subject: [PATCH 027/144] GreatDANE: about:dane-discover, legacy root-cert
+ cleanup, one-time ~/.pepenet import
+
+- about:dane-discover: read-only name browser/search over the node's /gd/names
+- Legacy cleanup: exact-subject, self-issued pepenet roots only, after a prompt;
+  macOS keychain hits are listed, never removed
+- ~/.pepenet import: copy-only, only into an empty Dane data dir, validated,
+  falls back to normal sync
+- Marionette test run_gd_legacy.py (throwaway profile, fixtures only)
+---
+ .../components/greatdane/GreatDANE.sys.mjs    |  54 +++++-
+ .../greatdane/GreatDANEDiscover.sys.mjs       | 132 +++++++++++++
+ .../greatdane/GreatDANELegacy.sys.mjs         | 171 +++++++++++++++++
+ browser/components/greatdane/moz.build        |   2 +
+ .../test/marionette/run_gd_legacy.py          | 174 ++++++++++++++++++
+ 5 files changed, 532 insertions(+), 1 deletion(-)
+ create mode 100644 browser/components/greatdane/GreatDANEDiscover.sys.mjs
+ create mode 100644 browser/components/greatdane/GreatDANELegacy.sys.mjs
+ create mode 100644 browser/components/greatdane/test/marionette/run_gd_legacy.py
+
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index 330b027e57..1896bdc9a6 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -15,6 +15,8 @@ const lazy = {};
+ ChromeUtils.defineESModuleGetters(lazy, {
+   registerAbout: "resource:///modules/GreatDANEAbout.sys.mjs",
+   ErrorTrap: "resource:///modules/GreatDANEAbout.sys.mjs",
++  registerDiscover: "resource:///modules/GreatDANEDiscover.sys.mjs",
++  Legacy: "resource:///modules/GreatDANELegacy.sys.mjs",
+ });
+ 
+ const pps = Cc["@mozilla.org/network/protocol-proxy-service;1"].getService(
+@@ -41,13 +43,14 @@ export const GreatDANE = {
+       if (c.off) {
+         c.state = "off"; // fail closed: hosts get GD_NODE_NOT_READY
+       } else {
+-        this._spawn(c);
++        this._spawnOrImport(c);
+       }
+     }
+     this._publishEndpoints();
+     Services.obs.addObserver(this, "quit-application");
+     Services.prefs.addObserver(PREF, this);
+     lazy.registerAbout();
++    lazy.registerDiscover();
+     Services.obs.addObserver(this, "browser-delayed-startup-finished");
+   },
+ 
+@@ -82,6 +85,11 @@ export const GreatDANE = {
+     if (topic == "browser-delayed-startup-finished") {
+       // subject is the new browser window: watch its tabs for error pages
+       subject.gBrowser?.addTabsProgressListener(lazy.ErrorTrap);
++      if (!this._firstWin) {
++        this._firstWin = subject;
++        this._onFirstWin?.(subject);
++        this._legacyCertCheck(subject);
++      }
+       return;
+     }
+     if (topic == "quit-application") {
+@@ -92,6 +100,50 @@ export const GreatDANE = {
+     }
+   },
+ 
++  // A window to prompt in: the first browser window, once it exists.
++  _window() {
++    if (this._firstWin) return Promise.resolve(this._firstWin);
++    return (this._winP ??= new Promise(r => (this._onFirstWin = r)));
++  },
++
++  // One-time offer to COPY legacy ~/.pepenet/<coin>.db into an empty Dane
++  // data dir, before the node first opens it. Any error, a decline or a
++  // failed check -> spawn as usual (normal sync). Offered once per coin.
++  async _spawnOrImport(c) {
++    let pref = PREF + "legacy.importOffered." + c.coin;
++    try {
++      if (Services.prefs.getBoolPref(PREF + "legacy.import", true) &&
++          !Services.prefs.getBoolPref(pref, false)) {
++        let cand = await lazy.Legacy.importCandidate(c.coin, this._dataDir());
++        if (cand) {
++          let win = await this._window();
++          Services.prefs.setBoolPref(pref, true);
++          if (!this._quitting && !c.off) {
++            log(c.coin, "legacy import:", await lazy.Legacy.offerImport(win, cand, c.coin));
++          }
++        }
++      }
++    } catch (e) {
++      console.error("GreatDANE: legacy import skipped", e);
++    }
++    if (this._quitting) return;
++    if (c.off) { c.state = "off"; return; }
++    this._spawn(c);
++  },
++
++  // One-time check for the legacy pepenet-tls root CAs in this profile.
++  async _legacyCertCheck(win) {
++    let pref = PREF + "legacy.certsChecked";
++    if (!Services.prefs.getBoolPref(PREF + "legacy.certCleanup", true) ||
++        Services.prefs.getBoolPref(pref, false)) return;
++    try {
++      Services.prefs.setBoolPref(pref, true);
++      log("legacy certs:", JSON.stringify(await lazy.Legacy.offerCertCleanup(win)));
++    } catch (e) {
++      console.error("GreatDANE: legacy cert check failed", e);
++    }
++  },
++
+   _nodePath() {
+     let p = Services.prefs.getStringPref(PREF + "node.path", "");
+     if (p) return p;
+diff --git a/browser/components/greatdane/GreatDANEDiscover.sys.mjs b/browser/components/greatdane/GreatDANEDiscover.sys.mjs
+new file mode 100644
+index 0000000000..3f8a6899b4
+--- /dev/null
++++ b/browser/components/greatdane/GreatDANEDiscover.sys.mjs
+@@ -0,0 +1,132 @@
++/* GreatDANE: about:dane-discover — a read-only directory of chain names.
++ * Source: each running node's loopback /gd/names?prefix=P&limit=N (the same
++ * endpoint the urlbar provider uses). No wallet, no network beyond loopback.
++ * The node answers nothing for an empty prefix and caps limit at 20, so the
++ * unfiltered view asks once per first character. Generated in the parent,
++ * no script (CSP default-src 'none'); search is a plain GET form. */
++
++const lazy = {};
++ChromeUtils.defineESModuleGetters(lazy, {
++  GreatDANE: "resource:///modules/GreatDANE.sys.mjs",
++  setTimeout: "resource://gre/modules/Timer.sys.mjs",
++});
++
++export const LIMIT = 20;
++const FIRST = "abcdefghijklmnopqrstuvwxyz0123456789".split("");
++const LABEL = /^[a-z0-9-]{1,63}$/;
++const esc = s => String(s ?? "").replace(/[&<>"']/g, ch => "&#" + ch.charCodeAt(0) + ";");
++
++// "foo", "foo.pe", "foo.pepe" -> { label, suffix }; null if not searchable.
++export function parseQuery(q) {
++  q = String(q ?? "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/[/.]+$/, "");
++  if (!q) return { label: "", suffix: null };
++  let [label, suffix = null, extra] = q.split(".");
++  if (extra !== undefined || !LABEL.test(label)) return null;
++  if (suffix !== null && !/^[a-z]{0,15}$/.test(suffix)) return null;
++  return { label, suffix };
++}
++
++// Prefixes to ask the node for a parsed query.
++export function prefixesFor(pq) {
++  return pq.label ? [pq.label] : FIRST;
++}
++
++// Only well-formed labels survive; sorted, de-duplicated hosts.
++export function collect(lists) {
++  let out = new Set();
++  for (let { tld, names } of lists) {
++    if (!/^[a-z]{2,15}$/.test(tld || "")) continue;
++    for (let n of names || []) if (typeof n == "string" && LABEL.test(n)) out.add(n + "." + tld);
++  }
++  return [...out].sort((a, b) => a.localeCompare(b));
++}
++
++async function fetchNames(port, prefix) {
++  try {
++    let r = await Promise.race([
++      fetch(`http://127.0.0.1:${port}/gd/names?prefix=${encodeURIComponent(prefix)}&limit=${LIMIT}`,
++            { cache: "no-store" }),
++      new Promise((_, rej) => lazy.setTimeout(() => rej(new Error("timeout")), 1500)),
++    ]);
++    let j = await r.json();
++    return Array.isArray(j?.names) ? j.names : [];
++  } catch (e) {
++    return [];
++  }
++}
++
++export async function lookup(pq, chains = [...(lazy.GreatDANE._chains?.values() ?? [])]) {
++  let live = chains.filter(c => c.ports && (pq.suffix === null || c.tld.startsWith(pq.suffix)));
++  let lists = [];
++  for (let c of live) {
++    let names = (await Promise.all(prefixesFor(pq).map(p => fetchNames(c.ports.pac, p)))).flat();
++    lists.push({ tld: c.tld, names });
++  }
++  return { hosts: collect(lists), live: live.map(c => c.tld), down: chains.filter(c => !c.ports).map(c => c.tld) };
++}
++
++export function renderDiscover(rawQ, pq, res) {
++  let rows = res.hosts.map(h =>
++    `<li><a href="https://${esc(h)}/">${esc(h)}</a></li>`).join("");
++  let note = !pq ? "Not a valid name search." :
++    res.hosts.length ? `${res.hosts.length} name${res.hosts.length == 1 ? "" : "s"}` +
++      (pq.label ? "" : ` (up to ${LIMIT} per first letter; search to narrow)`) :
++    res.live.length ? "No names found." : "No node is ready yet; names appear once it is running.";
++  let down = res.down.length ? `<p class="code">Not running: ${res.down.map(t => "." + esc(t)).join(", ")}</p>` : "";
++  return `<!DOCTYPE html><html><head><meta charset="utf-8">
++<link rel="icon" href="chrome://branding/content/icon32.png">
++<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src chrome:; form-action about:">
++<title>Discover chain names</title><style>
++:root{color-scheme:light dark;--bg:light-dark(#f4f6fb,#0b1b35);--fg:light-dark(#13254a,#e6ecf5);--line:light-dark(#d5dbe8,#22345c)}
++body{font:15px system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:40px auto;max-width:900px}
++.logo{display:block;width:72px;margin:0 auto 6px}input{font:inherit;padding:6px 10px;width:60%}
++ul{columns:3;list-style:none;padding:0}li{padding:3px 0}a{color:light-dark(#2a5bb8,#9cc4ff)}.code{color:#888;font-size:12px}</style></head><body>
++<img class="logo" alt="" src="chrome://branding/content/about-logo.svg"><h1 style="text-align:center">Discover</h1>
++<p>Registered .pepe and .doge names known to Dane's built-in nodes. Read only.</p>
++<form method="get" action="about:dane-discover"><input id="q" name="q" type="search" value="${esc(rawQ)}" placeholder="name or name.pepe" autofocus> <button>Search</button></form>
++<p id="note">${note}</p>${down}<ul id="names">${rows}</ul></body></html>`;
++}
++
++function utf8Bin(s) {
++  let b = new TextEncoder().encode(s), out = "";
++  for (let i = 0; i < b.length; i += 8192) out += String.fromCharCode(...b.subarray(i, i + 8192));
++  return out;
++}
++
++const AboutDiscover = {
++  newChannel(uri, loadInfo) {
++    let pipe = Cc["@mozilla.org/pipe;1"].createInstance(Ci.nsIPipe);
++    pipe.init(true, true, 0, 0xffffffff, null);
++    let isc = Cc["@mozilla.org/network/input-stream-channel;1"].createInstance(Ci.nsIInputStreamChannel);
++    isc.setURI(uri);
++    isc.contentStream = pipe.inputStream;
++    let ch = isc.QueryInterface(Ci.nsIChannel);
++    ch.contentType = "text/html";
++    ch.contentCharset = "UTF-8";
++    ch.loadInfo = loadInfo;
++    ch.originalURI = uri;
++    let rawQ = new URLSearchParams(uri.query || "").get("q") || "";
++    let pq = parseQuery(rawQ);
++    (pq ? lookup(pq) : Promise.resolve({ hosts: [], live: [], down: [] }))
++      .catch(e => { console.error("GreatDANE: discover failed", e); return { hosts: [], live: [], down: [] }; })
++      .then(res => {
++        let s = utf8Bin(renderDiscover(rawQ, pq, res));
++        try { pipe.outputStream.write(s, s.length); } catch (e) { console.error(e); }
++        pipe.outputStream.close();
++      });
++    return ch;
++  },
++  getURIFlags() { return Ci.nsIAboutModule.HIDE_FROM_ABOUTABOUT; },
++  getChromeURI(uri) { return uri; },
++  QueryInterface: ChromeUtils.generateQI(["nsIAboutModule"]),
++};
++
++export function registerDiscover() {
++  let reg = Components.manager.QueryInterface(Ci.nsIComponentRegistrar);
++  const CID = Components.ID("{3b9f6a0c-1e52-4d7a-8c61-0f2a9d4e7b15}");
++  if (reg.isCIDRegistered(CID)) return;
++  reg.registerFactory(CID, "about:dane-discover", "@mozilla.org/network/protocol/about;1?what=dane-discover", {
++    createInstance(iid) { return AboutDiscover.QueryInterface(iid); },
++    QueryInterface: ChromeUtils.generateQI(["nsIFactory"]),
++  });
++}
+diff --git a/browser/components/greatdane/GreatDANELegacy.sys.mjs b/browser/components/greatdane/GreatDANELegacy.sys.mjs
+new file mode 100644
+index 0000000000..a3ccdca1aa
+--- /dev/null
++++ b/browser/components/greatdane/GreatDANELegacy.sys.mjs
+@@ -0,0 +1,171 @@
++/* GreatDANE: one-time migration helpers for users of the legacy PepeNet
++ * tools (pepenet-desktop / pepenet-tls / get.sh).
++ *
++ * 1. Legacy root CAs. pepenet-tls (tls/src/ca.c) minted a local,
++ *    name-constrained root per TLD with subject exactly
++ *    "CN=<name> .<tld> root CA" (name "pepenet", self-issued). Dane never
++ *    needs it (DANE is checked in PSM). We match only that exact subject,
++ *    self-issued, not a built-in root; nothing else is ever touched, and
++ *    nothing is removed without the user saying yes. Private key files are
++ *    never opened. macOS keychain hits are listed only, never removed.
++ *
++ * 2. Chain data import. If ~/.pepenet/<coin>.db exists and Dane's node data
++ *    dir has no <coin>/<coin>.db, offer to COPY it (with -wal/-shm). The
++ *    legacy files are never moved, changed or deleted. The copy is checked
++ *    (sqlite quick_check + a names table); on any failure the copy is
++ *    removed and the node syncs from scratch as usual. */
++
++const lazy = {};
++ChromeUtils.defineESModuleGetters(lazy, {
++  Subprocess: "resource://gre/modules/Subprocess.sys.mjs",
++  Sqlite: "resource://gre/modules/Sqlite.sys.mjs",
++});
++
++const log = (...a) => console.log("GreatDANE legacy:", ...a);
++export const LEGACY_NAME = "pepenet";
++export const LEGACY_TLDS = ["pepe", "doge"];
++// Fingerprints of legacy roots seen on the dev machine (public certs only),
++// kept for logging/diagnostics. Matching is by exact subject + self-issued,
++// because every install generated its own key.
++export const KNOWN_FPS = new Set([
++  "DE:94:BD:E8:06:0D:C6:5D:66:DF:BA:76:CA:F3:C0:76:19:82:C9:8A:A5:B1:51:75:D8:B3:E1:6A:57:A6:92:CB",
++  "B3:05:DE:83:D0:2A:C4:BC:AB:04:1A:F3:E4:C8:3D:A4:38:47:5B:1B:47:F8:EB:5C:D1:29:E7:88:AE:00:5C:8A",
++  "14:44:01:C9:20:64:E0:5E:47:DA:36:92:2B:79:37:9C:02:CA:77:47:4E:49:C0:2F:51:A9:64:DE:BB:4E:6B:BC",
++]);
++export const LEGACY_SUBJECTS = new Set(LEGACY_TLDS.map(t => `CN=${LEGACY_NAME} .${t} root CA`));
++
++// Pure: is this nsIX509Cert-like object one of the legacy PepeNet roots?
++export function isLegacyRoot(cert) {
++  if (!cert || cert.isBuiltInRoot) return false;
++  return LEGACY_SUBJECTS.has(cert.subjectName) && cert.issuerName === cert.subjectName;
++}
++
++function certdb() {
++  return Cc["@mozilla.org/security/x509certdb;1"].getService(Ci.nsIX509CertDB);
++}
++
++export function findLegacyRoots(db = certdb()) {
++  return db.getCerts().filter(isLegacyRoot);
++}
++
++// Removes exactly the given certs, re-checking each first.
++export function removeLegacyRoots(certs, db = certdb()) {
++  let removed = 0;
++  for (let c of certs) {
++    if (!isLegacyRoot(c)) continue;
++    db.deleteCertificate(c);
++    removed++;
++    log("removed", c.subjectName, c.sha256Fingerprint, KNOWN_FPS.has(c.sha256Fingerprint) ? "(known)" : "");
++  }
++  return removed;
++}
++
++// macOS only, list-only: legacy roots in the user's keychains. Exact subject
++// CN match on the output of `security find-certificate -a -Z -c`.
++export async function listKeychainLegacy() {
++  if (Services.appinfo.OS != "Darwin") return [];
++  let hits = [];
++  for (let t of LEGACY_TLDS) {
++    let cn = `${LEGACY_NAME} .${t} root CA`;
++    try {
++      let p = await lazy.Subprocess.call({
++        command: "/usr/bin/security", arguments: ["find-certificate", "-a", "-Z", "-c", cn],
++        stderr: "pipe",
++      });
++      let out = "", s;
++      while ((s = await p.stdout.readString())) out += s;
++      await p.wait();
++      let sha = null;
++      for (let line of out.split("\n")) {
++        let m = /^SHA-256 hash:\s*([0-9A-F]+)/.exec(line);
++        if (m) sha = m[1];
++        if (line.includes(`"labl"<blob>="${cn}"`) && sha) { hits.push({ cn, sha256: sha }); sha = null; }
++      }
++    } catch (e) {
++      log("keychain listing failed", e);
++    }
++  }
++  return hits;
++}
++
++export async function offerCertCleanup(win, { db = certdb(), prompt = Services.prompt, listKeychain = listKeychainLegacy } = {}) {
++  let found = findLegacyRoots(db);
++  let kc = await listKeychain().catch(() => []);
++  if (!found.length && !kc.length) return { found: 0, removed: 0, keychain: 0 };
++  let msg = "Dane found root certificates installed by the old PepeNet tools. Dane does not need them: it checks .pepe and .doge sites against the chain directly.\n\n";
++  if (found.length) msg += "In Dane:\n" + found.map(c => "  " + c.subjectName + "\n  SHA-256 " + c.sha256Fingerprint).join("\n") + "\n\n";
++  if (kc.length) msg += "In your macOS keychain (Dane will not change these; remove them in Keychain Access, or with the old tool's uninstall-ca):\n" + kc.map(k => "  CN=" + k.cn + "  SHA-256 " + k.sha256).join("\n") + "\n\n";
++  let removed = 0;
++  if (found.length) {
++    msg += "Remove the " + found.length + " certificate(s) listed under \"In Dane\"? No other certificates are touched.";
++    if (prompt.confirm(win, "Old PepeNet certificates", msg)) removed = removeLegacyRoots(found, db);
++  } else {
++    prompt.alert(win, "Old PepeNet certificates", msg);
++  }
++  return { found: found.length, removed, keychain: kc.length };
++}
++
++// ---- chain data import ----
++
++const exists = p => IOUtils.exists(p);
++
++export function legacyDir() {
++  return PathUtils.join(Services.dirsvc.get("Home", Ci.nsIFile).path, "." + LEGACY_NAME);
++}
++
++// { src, dst } if a copy should be offered for this coin, else null.
++export async function importCandidate(coin, dataDir, legacy = legacyDir()) {
++  if (!/^[a-z]+$/.test(coin)) return null;
++  let src = PathUtils.join(legacy, coin + ".db");
++  let dstDir = PathUtils.join(dataDir, coin);
++  let dst = PathUtils.join(dstDir, coin + ".db");
++  if (!(await exists(src))) return null;
++  if (await exists(dst)) return null; // Dane already has data: never overwrite
++  return { src, dst, dstDir };
++}
++
++export async function validateChainDb(path) {
++  let conn = null;
++  try {
++    conn = await lazy.Sqlite.openConnection({ path, readOnly: true });
++    let qc = await conn.execute("PRAGMA quick_check");
++    if (!qc.length || qc[0].getResultByIndex(0) != "ok") return false;
++    let t = await conn.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='names'");
++    return t[0].getResultByIndex(0) == 1;
++  } catch (e) {
++    log("validate failed", path, e);
++    return false;
++  } finally {
++    try { await conn?.close(); } catch (e) {}
++  }
++}
++
++async function removeCopy(dst) {
++  for (let s of ["", "-wal", "-shm"]) {
++    try { await IOUtils.remove(dst + s, { ignoreAbsent: true }); } catch (e) {}
++  }
++}
++
++// Copy (never move) src(+wal/shm) to dst, validate; undo the copy on failure.
++export async function copyChainDb({ src, dst, dstDir }) {
++  try {
++    await IOUtils.makeDirectory(dstDir, { createAncestors: true, ignoreExisting: true });
++    for (let s of ["", "-wal", "-shm"]) {
++      if (await exists(src + s)) await IOUtils.copy(src + s, dst + s, { noOverwrite: true });
++    }
++    if (await validateChainDb(dst)) { log("imported", src, "->", dst); return true; }
++  } catch (e) {
++    log("copy failed", src, e);
++  }
++  await removeCopy(dst);
++  return false;
++}
++
++export async function offerImport(win, cand, coin, { prompt = Services.prompt } = {}) {
++  let ok = prompt.confirm(win, "Use existing PepeNet chain data?",
++    `Dane found ${coin} chain data from the old PepeNet app:\n  ${cand.src}\n\n` +
++    "Copy it into Dane so the node does not have to sync from scratch? " +
++    "The original files are left exactly as they are. If the copy fails its check, Dane syncs normally.");
++  if (!ok) return "declined";
++  return (await copyChainDb(cand)) ? "imported" : "failed";
++}
+diff --git a/browser/components/greatdane/moz.build b/browser/components/greatdane/moz.build
+index 75916be3e6..8e22c76cd4 100644
+--- a/browser/components/greatdane/moz.build
++++ b/browser/components/greatdane/moz.build
+@@ -5,6 +5,8 @@ with Files("**"):
+ EXTRA_JS_MODULES += [
+     "GreatDANE.sys.mjs",
+     "GreatDANEAbout.sys.mjs",
++    "GreatDANEDiscover.sys.mjs",
++    "GreatDANELegacy.sys.mjs",
+ ]
+ 
+ XPCSHELL_TESTS_MANIFESTS += ["test/unit/xpcshell.toml"]
+diff --git a/browser/components/greatdane/test/marionette/run_gd_legacy.py b/browser/components/greatdane/test/marionette/run_gd_legacy.py
+new file mode 100644
+index 0000000000..b3f89dae14
+--- /dev/null
++++ b/browser/components/greatdane/test/marionette/run_gd_legacy.py
+@@ -0,0 +1,174 @@
++# Dane legacy-migration + Discover tests (chrome context via Marionette).
++# Loads the NEW modules from the source tree by file:// URI, so it runs
++# against any built Dane (no rebuild needed for these checks). Throwaway
++# profile, greatdane.enabled=false (no node, never the real data dir),
++# throwaway cert/db fixtures; never touches the real NSS store, keychain or
++# ~/.pepenet.
++#   python3 run_gd_legacy.py [path/to/greatdane]
++import base64, hashlib, http.server, json, os, sqlite3, subprocess, sys, tempfile, threading, time
++from marionette_driver.marionette import Marionette
++HERE = os.path.dirname(os.path.abspath(__file__))
++SRC = os.path.abspath(os.path.join(HERE, "../.."))
++TREE = os.path.abspath(os.path.join(HERE, "../../../../.."))
++APP = sys.argv[1] if len(sys.argv) > 1 else TREE + "/obj-gd/dist/Dane.app/Contents/MacOS/greatdane"
++PORT = 2834
++work = tempfile.mkdtemp(prefix="gd-legacy-")
++prof = os.path.join(work, "profile"); os.makedirs(prof)
++open(prof + "/user.js", "w").write(
++    f'user_pref("marionette.port", {PORT});\nuser_pref("browser.aboutwelcome.enabled", false);\n'
++    'user_pref("greatdane.enabled", false);\nuser_pref("greatdane.legacy.certCleanup", false);\n'
++    'user_pref("greatdane.legacy.import", false);\n')
++fails = 0
++def check(name, ok, info=""):
++    global fails
++    print(("PASS " if ok else "FAIL ") + name + (f"  [{info}]" if not ok else ""))
++    fails += 0 if ok else 1
++
++# --- cert fixtures (throwaway keys in the temp dir, never printed) ---
++def mkcert(name, subj, issuer_key=None, issuer_crt=None):
++    k, c = os.path.join(work, name + ".k"), os.path.join(work, name + ".pem")
++    if issuer_key:
++        subprocess.run(["openssl", "req", "-new", "-newkey", "rsa:2048", "-nodes",
++                        "-keyout", k, "-subj", subj, "-out", c + ".csr"], check=True, capture_output=True)
++        subprocess.run(["openssl", "x509", "-req", "-in", c + ".csr", "-CA", issuer_crt, "-CAkey", issuer_key,
++                        "-CAcreateserial", "-days", "30", "-out", c], check=True, capture_output=True)
++    else:
++        subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
++                        "-keyout", k, "-subj", subj, "-days", "30", "-out", c,
++                        "-addext", "basicConstraints=critical,CA:TRUE"], check=True, capture_output=True)
++    pem = open(c).read()
++    return "".join(l for l in pem.splitlines() if "-----" not in l), k, c
++legacy_pepe, _, _ = mkcert("lp", "/CN=pepenet .pepe root CA")
++legacy_doge, _, _ = mkcert("ld", "/CN=pepenet .doge root CA")
++decoy_o, _, _ = mkcert("d1", "/O=Evil/CN=pepenet .pepe root CA")
++decoy_cn, _, _ = mkcert("d2", "/CN=pepenet .pepe root CA x")
++other_b64, ok_, oc_ = mkcert("other", "/CN=Unrelated Test Root")
++decoy_iss, _, _ = mkcert("d3", "/CN=pepenet .pepe root CA", ok_, oc_)  # same subject, not self-issued
++
++# --- chain db fixtures ---
++legacy = os.path.join(work, "dotpepenet"); os.makedirs(legacy)
++data = os.path.join(work, "danedata")
++db = sqlite3.connect(os.path.join(legacy, "pep.db"))
++db.execute("CREATE TABLE names(name TEXT, lease_expiry INT)"); db.execute("INSERT INTO names VALUES('frog', 9999999999)")
++db.commit(); db.close()
++open(os.path.join(legacy, "doge.db"), "wb").write(b"not a database" * 100)
++h = lambda p: hashlib.sha256(open(p, "rb").read()).hexdigest()
++src_hash = h(os.path.join(legacy, "pep.db")); bad_hash = h(os.path.join(legacy, "doge.db"))
++
++# --- fake node /gd/names ---
++NAMES = ["frog", "frogger", "fun", "kek", "bad name", "x" * 70]
++class H(http.server.BaseHTTPRequestHandler):
++    def do_GET(self):
++        from urllib.parse import urlparse, parse_qs
++        q = parse_qs(urlparse(self.path).query); pre = q.get("prefix", [""])[0]
++        names = [n for n in NAMES if pre and n.startswith(pre)][:20]
++        b = json.dumps({"prefix": pre, "names": names, "tld": "pepe"}).encode()
++        self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
++    def log_message(self, *a): pass
++srv = http.server.HTTPServer(("127.0.0.1", 0), H); threading.Thread(target=srv.serve_forever, daemon=True).start()
++
++p = subprocess.Popen([APP, "--headless", "--marionette", "-remote-allow-system-access", "--no-remote", "--profile", prof],
++                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++# Map the source dir to resource://gdtest/ (system modules need a trusted scheme).
++RES = f'''(() => {{ let rp = Services.io.getProtocolHandler("resource").QueryInterface(Ci.nsIResProtocolHandler);
++  if (!rp.hasSubstitution("gdtest")) rp.setSubstitution("gdtest", Services.io.newURI("file://{SRC}/")); }})();\n'''
++L = RES + 'const L = ChromeUtils.importESModule("resource://gdtest/GreatDANELegacy.sys.mjs");\n'
++D = RES + 'const D = ChromeUtils.importESModule("resource://gdtest/GreatDANEDiscover.sys.mjs");\n'
++rc = 1
++try:
++    for _ in range(60):
++        try:
++            m = Marionette(host="127.0.0.1", port=PORT); m.start_session(); break
++        except Exception: time.sleep(1)
++    m.set_context("chrome"); m.timeout.script = 60
++    def aj(body, args=None): return m.execute_async_script(body, script_args=args or [], sandbox=None)
++    # certs: add all fixtures as trusted roots in the throwaway profile
++    errs = aj('''let [certs, done] = arguments; let db = Cc["@mozilla.org/security/x509certdb;1"].getService(Ci.nsIX509CertDB);
++      let errs = []; certs.forEach((b, i) => { try { db.addCertFromBase64(b, "C,,"); } catch (e) { errs.push(i + ":" + e.result); } }); done(errs);''',
++       [[legacy_pepe, legacy_doge, decoy_o, decoy_cn, other_b64, decoy_iss]])
++    check("fixtures added", errs == [], errs)
++    COUNT = '''let db = Cc["@mozilla.org/security/x509certdb;1"].getService(Ci.nsIX509CertDB);
++      let all = db.getCerts().filter(c => !c.isBuiltInRoot).map(c => c.subjectName + "|" + c.issuerName);'''
++    r = aj(L + COUNT + '''let done = arguments[0]; done({ legacy: L.findLegacyRoots().map(c => c.subjectName).sort(), all });''')
++    check("finds exactly the two legacy roots", r["legacy"] == ["CN=pepenet .doge root CA", "CN=pepenet .pepe root CA"], r)
++    r = aj(L + COUNT + '''let done = arguments[0]; let asked = 0;
++      L.offerCertCleanup(null, { prompt: { confirm() { asked++; return false; }, alert() {} }, listKeychain: async () => [] })
++       .then(res => done({ res, asked, n: db.getCerts().filter(c => !c.isBuiltInRoot).length, before: all.length }));''')
++    check("asks before removing", r["asked"] == 1, r)
++    check("decline removes nothing", r["res"]["removed"] == 0 and r["n"] == r["before"], r)
++    r = aj(L + COUNT + '''let done = arguments[0];
++      L.offerCertCleanup(null, { prompt: { confirm: () => true, alert() {} }, listKeychain: async () => [] }).then(res => {
++        let left = db.getCerts().filter(c => !c.isBuiltInRoot).map(c => c.subjectName + "|" + c.issuerName);
++        done({ res, before: all, left }); });''')
++    check("accept removes 2", r["res"]["removed"] == 2, r)
++    gone = set(r["before"]) - set(r["left"])
++    check("only the exact legacy roots are gone", gone == {"CN=pepenet .pepe root CA|CN=pepenet .pepe root CA",
++                                                           "CN=pepenet .doge root CA|CN=pepenet .doge root CA"}, gone)
++    check("decoys + unrelated kept", len(r["left"]) == len(r["before"]) - 2 and
++          any(x.startswith("CN=Unrelated") for x in r["left"]) and
++          any(x == "CN=pepenet .pepe root CA|CN=Unrelated Test Root" for x in r["left"]), r["left"])
++    r = aj(L + '''let done = arguments[0]; let asked = 0;
++      L.offerCertCleanup(null, { prompt: { confirm() { asked++; return true; }, alert() { asked++; } }, listKeychain: async () => [] })
++       .then(res => done({ res, asked }));''')
++    check("no prompt when nothing found", r["asked"] == 0 and r["res"]["found"] == 0, r)
++    # import
++    r = aj(L + '''let [legacy, data, done] = arguments; (async () => {
++      let out = {};
++      let c = await L.importCandidate("pep", data, legacy);
++      out.cand = !!c;
++      out.declined = await L.offerImport(null, c, "pep", { prompt: { confirm: () => false } });
++      out.afterDecline = await IOUtils.exists(c.dst);
++      out.imported = await L.offerImport(null, c, "pep", { prompt: { confirm: () => true } });
++      out.dstExists = await IOUtils.exists(c.dst);
++      out.again = await L.importCandidate("pep", data, legacy);
++      let b = await L.importCandidate("doge", data, legacy);
++      out.bad = await L.copyChainDb(b);
++      out.badLeft = await IOUtils.exists(b.dst);
++      out.none = await L.importCandidate("pep", data, PathUtils.join(legacy, "nope"));
++      return out; })().then(done, e => done({ err: String(e) }));''', [legacy, data])
++    check("candidate offered when Dane dir empty", r.get("cand"), r)
++    check("decline copies nothing", r.get("declined") == "declined" and r.get("afterDecline") is False, r)
++    check("copy + validate ok", r.get("imported") == "imported" and r.get("dstExists"), r)
++    check("no second offer once Dane has data", r.get("again") is None, r)
++    check("bad db fails and copy is removed", r.get("bad") is False and r.get("badLeft") is False, r)
++    check("no legacy data -> no offer", r.get("none") is None, r)
++    check("legacy files untouched", h(os.path.join(legacy, "pep.db")) == src_hash and
++          h(os.path.join(legacy, "doge.db")) == bad_hash and os.path.exists(os.path.join(legacy, "pep.db")))
++    # discover: pure parts + lookup against the fake node
++    r = aj(D + '''let [port, done] = arguments; (async () => {
++      let out = {};
++      out.p1 = D.parseQuery("Fro"); out.p2 = D.parseQuery("frog.pe"); out.p3 = D.parseQuery("a.b.c"); out.p4 = D.parseQuery("<x>");
++      out.pre = D.prefixesFor({ label: "", suffix: null }).length;
++      let chains = [{ tld: "pepe", ports: { pac: port } }, { tld: "doge", ports: null }];
++      let res = await D.lookup(D.parseQuery("fro"), chains);
++      out.hosts = res.hosts; out.down = res.down;
++      let all = await D.lookup(D.parseQuery(""), chains); out.all = all.hosts;
++      let html = D.renderDiscover("<script>", D.parseQuery("fro"), res);
++      out.esc = !html.includes("<script>") && html.includes("&#60;script&#62;");
++      out.link = html.includes('href="https://frog.pepe/"');
++      out.csp = html.includes("default-src 'none'");
++      return out; })().then(done, e => done({ err: String(e) }));''', [srv.server_address[1]])
++    check("query parsing", r.get("p1") == {"label": "fro", "suffix": None} and r.get("p2") == {"label": "frog", "suffix": "pe"}
++          and r.get("p3") is None and r.get("p4") is None, r)
++    check("browse asks per first character", r.get("pre") == 36, r)
++    check("search returns only well-formed names", r.get("hosts") == ["frog.pepe", "frogger.pepe"], r)
++    check("browse lists all valid names", r.get("all") == ["frog.pepe", "frogger.pepe", "fun.pepe", "kek.pepe"], r)
++    check("down chains reported", r.get("down") == ["doge"], r)
++    check("render escapes + links + CSP", r.get("esc") and r.get("link") and r.get("csp"), r)
++    # about:dane-discover channel end to end (no node in this profile)
++    r = aj(D + '''let done = arguments[0]; D.registerDiscover();
++      let w = Services.wm.getMostRecentWindow("navigator:browser");
++      let tab = w.gBrowser.addTab("about:dane-discover?q=frog", { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() });
++      w.gBrowser.selectedTab = tab; let t0 = Date.now();
++      (function poll() { let d = tab.linkedBrowser.contentDocument;
++        if (d && d.getElementById("note")) return done({ note: d.getElementById("note").textContent, q: d.getElementById("q").value, title: d.title });
++        if (Date.now() - t0 > 20000) return done({ timeout: true, url: tab.linkedBrowser.currentURI.spec });
++        w.setTimeout(poll, 200); })();''')
++    check("about:dane-discover renders", r.get("title") == "Discover chain names" and r.get("q") == "frog" and "No node" in r.get("note", ""), r)
++    rc = 0 if fails == 0 else 1
++    print("ALL PASS" if rc == 0 else f"{fails} FAIL")
++finally:
++    try: m.quit(in_app=True)
++    except Exception: p.terminate()
++    p.wait(30); srv.shutdown()
++sys.exit(rc)
