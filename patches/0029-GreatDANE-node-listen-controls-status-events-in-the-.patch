@@ -1,0 +1,306 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 15:56:15 -0500
+Subject: [PATCH 029/144] GreatDANE: node listen controls + status events in
+ the Dane pane
+
+--no-listen / --listen-port per chain (greatdane.{pep,doge}.listen, listen_port),
+restart on change, {"cmd":"status"} polling; pane shows state, sync %, peers in/out,
+data dir and bind_failed errors. Max-peer controls removed (node has no such flag).
+---
+ browser/app/profile/firefox.js                |  4 +
+ .../components/greatdane/GreatDANE.sys.mjs    | 46 +++++++++--
+ .../greatdane/GreatDANEAbout.sys.mjs          |  4 +-
+ .../preferences/config/greatdane.mjs          | 77 +++++++++++++++----
+ .../en-US/browser/preferences/greatdane.ftl   | 14 +++-
+ 5 files changed, 119 insertions(+), 26 deletions(-)
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index 6c8b9a58f1..a11558d6d1 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -3642,6 +3642,10 @@ pref("greatdane.node.dataDir", "");
+ // Per-chain node on/off (Dane settings pane). Off = that TLD fails closed.
+ pref("greatdane.pep.enabled", true);
+ pref("greatdane.doge.enabled", true);
++pref("greatdane.pep.listen", true);
++pref("greatdane.doge.listen", true);
++pref("greatdane.pep.listen_port", 33874);
++pref("greatdane.doge.listen_port", 22556);
+ // Hide Firefox Account/Sync in Settings (off: Dane is Firefox minus nothing).
+ pref("greatdane.prefs.hideSync", false);
+ // Fallback chain-host test (RegExp source, case-insensitive) used only when
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index 1896bdc9a6..32778be6a7 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -55,13 +55,39 @@ export const GreatDANE = {
+   },
+ 
+   // greatdane.<coin>.enabled (default true): run that chain's node.
+-  // TODO(node settings iface): greatdane.<coin>.listen / .port / .maxInbound /
+-  // .maxOutbound once greatdane-node accepts them (it only takes --only/--data
+-  // /--ephemeral-ports/--dane-api/--stdio today).
++  // greatdane.<coin>.listen (default true) and .listen_port (1..65535) map to
++  // --no-listen / --listen-port N at spawn (NODE-SETTINGS-IFACE §2). Peer caps
++  // are compile-time in the node and deliberately not exposed.
+   _chainEnabled(coin) {
+     return Services.prefs.getBoolPref(PREF + coin + ".enabled", true);
+   },
+ 
++  _listenArgs(coin) {
++    if (!Services.prefs.getBoolPref(PREF + coin + ".listen", true)) {
++      return ["--no-listen"];
++    }
++    let p = Services.prefs.getIntPref(PREF + coin + ".listen_port", 0);
++    // 0/out of range: no flag, the node uses the chain default port.
++    return Number.isInteger(p) && p >= 1 && p <= 65535 ? ["--listen-port", String(p)] : [];
++  },
++
++  // Settings apply at spawn: stop the child; _spawn's exit path respawns it
++  // at once (no backoff) with the new flags.
++  restartChain(c) {
++    if (c.off || this._quitting) return;
++    log(c.coin, "settings changed; restarting node");
++    c.restarts = 0;
++    if (c.proc) {
++      c.respawnNow = true;
++      try { c.proc.stdin.close(); } catch (e) {}
++    }
++  },
++
++  // Ask the node for an immediate status line (stdin query, iface §3).
++  requestStatus(c) {
++    try { c?.proc?.stdin.write('{"cmd":"status"}\n'); } catch (e) {}
++  },
++
+   setChainEnabled(c, on) {
+     if (on == !c.off) return;
+     c.off = !on;
+@@ -77,9 +103,11 @@ export const GreatDANE = {
+ 
+   observe(subject, topic, data) {
+     if (topic == "nsPref:changed") {
+-      let m = /^greatdane\.([a-z]+)\.enabled$/.exec(data);
++      let m = /^greatdane\.([a-z]+)\.(enabled|listen|listen_port)$/.exec(data);
+       let c = m && [...this._chains.values()].find(x => x.coin == m[1]);
+-      if (c) this.setChainEnabled(c, this._chainEnabled(c.coin));
++      if (!c) return;
++      if (m[2] == "enabled") this.setChainEnabled(c, this._chainEnabled(c.coin));
++      else this.restartChain(c);
+       return;
+     }
+     if (topic == "browser-delayed-startup-finished") {
+@@ -174,7 +202,8 @@ export const GreatDANE = {
+     try {
+       c.proc = await Subprocess.call({
+         command: this._nodePath(),
+-        arguments: ["--data", this._dataDir(), "--only", c.coin, "--ephemeral-ports", "--dane-api", "--stdio"],
++        arguments: ["--data", this._dataDir(), "--only", c.coin, "--ephemeral-ports", "--dane-api", "--stdio",
++                    ...this._listenArgs(c.coin)],
+         stdin: "pipe",
+         stdout: "pipe",
+         stderr: "pipe",
+@@ -207,6 +236,11 @@ export const GreatDANE = {
+     c.proc = null;
+     if (c.off) { c.state = "off"; return; }
+     if (this._quitting) return;
++    if (c.respawnNow) {
++      c.respawnNow = false;
++      this._spawn(c);
++      return;
++    }
+     let delay = Math.min(30000, 500 * 2 ** c.restarts++);
+     setTimeout(() => this._spawn(c), delay);
+   },
+diff --git a/browser/components/greatdane/GreatDANEAbout.sys.mjs b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+index d552ca330f..51331efa49 100644
+--- a/browser/components/greatdane/GreatDANEAbout.sys.mjs
++++ b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+@@ -130,7 +130,7 @@ export function _render(uri) {
+   let err = code && ERRORS[code];
+   let box = err ? `<img class="dane" alt="" src="chrome://branding/content/sad-dane.svg"><div class="err"><h1>${esc(err[0])}</h1><p>${esc(err[1])}</p>
+       <p class="u">${esc(target || "")}</p><p class="code">${esc(code)}</p></div>` :
+-    `<img class="logo" alt="" src="chrome://branding/content/about-logo.svg"><h1 style="text-align:center">Dane</h1>`;
++    `<img class="logo" alt="" src="chrome://branding/content/about-logo.svg"><h1 style="text-align:center">Dane</h1><p style="text-align:center"><a id="discover" href="about:dane-discover">Discover names</a></p>`;
+   return `<!DOCTYPE html><html><head><meta charset="utf-8">${head}
+ <link rel="icon" href="chrome://branding/content/icon32.png">
+ <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src chrome:">
+@@ -140,7 +140,7 @@ body{font:15px system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:
+ .dane{display:block;width:180px;margin:0 auto 10px;-moz-context-properties:fill;fill:var(--dane)}
+ .logo{display:block;width:96px;margin:0 auto 6px}
+ .err{border-left:4px solid #e0a030;padding:4px 20px;margin-bottom:30px}
+-.u{font-family:monospace;color:light-dark(#2a5bb8,#9cc4ff)}.code{color:#888;font-size:12px}
++a{color:light-dark(#2a5bb8,#9cc4ff)}.u{font-family:monospace;color:light-dark(#2a5bb8,#9cc4ff)}.code{color:#888;font-size:12px}
+ table{border-collapse:collapse;width:100%}td,th{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left}
+ .ready{color:#6f6}.syncing{color:#fc4}.starting,.down{color:#f66}</style></head><body>
+ ${box}<h2>Chains</h2><table><tr><th>Chain</th><th>Node</th><th>Height</th><th>Peer height</th>
+diff --git a/browser/components/preferences/config/greatdane.mjs b/browser/components/preferences/config/greatdane.mjs
+index 7da83cd5de..90cc1db55c 100644
+--- a/browser/components/preferences/config/greatdane.mjs
++++ b/browser/components/preferences/config/greatdane.mjs
+@@ -19,6 +19,8 @@ const CHAINS = [
+ 
+ Preferences.addAll([
+   ...CHAINS.map(c => ({ id: `greatdane.${c.coin}.enabled`, type: "bool" })),
++  ...CHAINS.map(c => ({ id: `greatdane.${c.coin}.listen`, type: "bool" })),
++  ...CHAINS.map(c => ({ id: `greatdane.${c.coin}.listen_port`, type: "int" })),
+   { id: "greatdane.chainHostPattern", type: "string" },
+   { id: "greatdane.update.skipFirstRunWindowSec", type: "int" },
+ ]);
+@@ -30,38 +32,64 @@ function chain(coin) {
+   return null;
+ }
+ 
+-// Poll the node status (the node pushes status lines; no observer topic).
+-function pollSetup(emitChange) {
+-  let t = setInterval(emitChange, 2000);
+-  return () => clearInterval(t);
++// The node pushes status lines (change-driven, 3 s heartbeat); re-render on
++// a 1 s timer. On open, ask each node for an immediate line.
++function pollSetup(coin) {
++  return emitChange => {
++    GreatDANE.requestStatus?.(chain(coin));
++    let t = setInterval(emitChange, 1000);
++    return () => clearInterval(t);
++  };
+ }
+ 
+ function statusArgs(coin, def) {
+   let c = chain(coin);
+   let st = c?.status || {};
+-  let state = !c ? "off" : c.state == "ready" ? (GreatDANE._synced(c) ? "ready" : "syncing") : c.state;
+-  let pct = "-";
+-  if (st.height && st.peer_height) {
+-    pct = Math.min(100, Math.floor((st.height / st.peer_height) * 1000) / 10) + "%";
+-  } else if (c && GreatDANE._synced(c)) {
+-    pct = "100%";
++  // Node state (starting/connecting/syncing/ready/stopped) once it reports;
++  // the browser-side state (off/starting/down) before that.
++  let state = !c ? "off" : c.state != "ready" ? c.state : typeof st.state == "string" ? st.state : "starting";
++  let pct = typeof st.sync_pct == "number" ? `${st.sync_pct.toFixed(1)}%` : "-";
++  let listen = st.listen ?? "-";
++  if (st.listen == "bind_failed") {
++    listen = `bind_failed${st.listen_error ? ` (${st.listen_error})` : ""}`;
+   }
+   return {
+     state,
+-    listen: st.listen ?? "-",
++    listen,
+     port: Number.isInteger(st.listen_port) && st.listen_port > 0 ? String(st.listen_port) : `- (${def})`,
+-    // TODO(node iface): node reports peers_pepenet / peers_known, not in/out.
+-    peers: `${st.peers_pepenet ?? "-"} / ${st.peers_known ?? "-"}`,
++    peersIn: String(st.peers_in ?? "-"),
++    peersOut: String(st.peers_out ?? "-"),
+     height: String(st.height ?? "-"),
+     sync: pct,
++    dir: typeof st.data_dir == "string" ? st.data_dir : "-",
+   };
+ }
+ 
+ for (let c of CHAINS) {
+   Preferences.addSetting({ id: `gd-${c.coin}-enabled`, pref: `greatdane.${c.coin}.enabled` });
++  Preferences.addSetting({ id: `gd-${c.coin}-listen`, pref: `greatdane.${c.coin}.listen` });
++  Preferences.addSetting({
++    id: `gd-${c.coin}-listen-port`,
++    pref: `greatdane.${c.coin}.listen_port`,
++    deps: [`gd-${c.coin}-listen`],
++    disabled: deps => !deps[`gd-${c.coin}-listen`].value,
++    get: v => String(v ?? c.port),
++    // Reject 0, junk and out-of-range: keep the current pref.
++    set: (v, deps, setting) => {
++      let n = /^\d{1,5}$/.test(String(v).trim()) ? Number(v) : 0;
++      return n >= 1 && n <= 65535 ? n : setting.pref.value;
++    },
++    setup: pollSetup(c.coin),
++    getControlConfig(config) {
++      let st = chain(c.coin)?.status || {};
++      let err = st.listen == "bind_failed"
++        ? `bind_failed: ${st.listen_error || "errno " + (st.listen_errno ?? "?")}` : "";
++      return { ...config, l10nArgs: { err } };
++    },
++  });
+   Preferences.addSetting({
+     id: `gd-${c.coin}-status`,
+-    setup: pollSetup,
++    setup: pollSetup(c.coin),
+     getControlConfig(config) {
+       return { ...config, l10nArgs: statusArgs(c.coin, c.port) };
+     },
+@@ -77,6 +105,7 @@ Preferences.addSetting({
+   },
+ });
+ Preferences.addSetting({ id: "gd-chain-host-pattern", pref: "greatdane.chainHostPattern" });
++Preferences.addSetting({ id: "gd-discover-link" });
+ Preferences.addSetting({
+   id: "gd-update-channel",
+   getControlConfig(config) {
+@@ -109,9 +138,19 @@ SettingGroupManager.registerGroups({
+           control: "moz-box-item",
+           controlAttrs: { id: `gd-${c.coin}-status` },
+         },
++        {
++          id: `gd-${c.coin}-listen`,
++          l10nId: "greatdane-chain-listen",
++          control: "moz-toggle",
++          controlAttrs: { id: `gd-${c.coin}-listen` },
++        },
++        {
++          id: `gd-${c.coin}-listen-port`,
++          l10nId: "greatdane-chain-listen-port",
++          control: "moz-input-text",
++          controlAttrs: { id: `gd-${c.coin}-listen-port`, inputmode: "numeric" },
++        },
+       ]),
+-      // TODO(node iface): greatdane.<chain>.listen / .port / .maxInbound /
+-      // .maxOutbound toggles once greatdane-node takes those flags.
+       {
+         id: "gd-data-dir",
+         l10nId: "greatdane-data-dir",
+@@ -130,6 +169,12 @@ SettingGroupManager.registerGroups({
+         control: "moz-input-text",
+         controlAttrs: { id: "gd-chain-host-pattern" },
+       },
++      {
++        id: "gd-discover-link",
++        l10nId: "greatdane-discover-link",
++        control: "moz-box-link",
++        controlAttrs: { id: "gd-discover-link", href: "about:dane-discover" },
++      },
+     ],
+   },
+   greatdaneUpdates: {
+diff --git a/browser/locales/en-US/browser/preferences/greatdane.ftl b/browser/locales/en-US/browser/preferences/greatdane.ftl
+index 42e7ff006f..0623561652 100644
+--- a/browser/locales/en-US/browser/preferences/greatdane.ftl
++++ b/browser/locales/en-US/browser/preferences/greatdane.ftl
+@@ -12,10 +12,17 @@ greatdane-pep-enabled =
+     .label = Pepecoin node (.pepe)
+ greatdane-doge-enabled =
+     .label = Dogecoin node (.doge)
+-# Variables: $state, $listen, $port, $peers (PepeNet / known), $height, $sync
++# Variables: $state, $listen, $port, $peersIn, $peersOut, $height, $sync, $dir
+ greatdane-chain-status =
+     .label = Status: { $state }
+-    .description = Listening: { $listen } · Port: { $port } · Peers: { $peers } · Tip height: { $height } · Synced: { $sync }
++    .description = Listening: { $listen } · Port: { $port } · Peers in/out: { $peersIn } / { $peersOut } · Tip height: { $height } · Synced: { $sync } · Data: { $dir }
++greatdane-chain-listen =
++    .label = Accept inbound peer connections
++    .description = Changing this restarts the node for this chain.
++# Variables: $err (string) - empty, or the node's bind error for this port
++greatdane-chain-listen-port =
++    .label = Inbound listen port (1–65535)
++    .description = { $err }
+ # Variables: $dir (string) - node data directory, read-only
+ greatdane-data-dir =
+     .label = Node data folder
+@@ -24,6 +31,9 @@ greatdane-names-group =
+     .label = Chain names
+ greatdane-chain-host-pattern =
+     .label = Chain host pattern
++greatdane-discover-link =
++    .label = Discover names
++    .description = Browse registered .pepe and .doge names (about:dane-discover)
+ greatdane-updates-group =
+     .label = Dane updates
+ # Variables: $channel (string)
