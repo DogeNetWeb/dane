@@ -1,0 +1,302 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Sun, 25 Oct 2026 19:36:47 -0500
+Subject: [PATCH 013/144] Dane rename: user-facing name GreatDANE -> Dane
+ (display name, brand strings, wordmark, about:dane alias, error pages, NSIS
+ branding); bundle ID, basename/profile, prefs, node unchanged
+
+---
+ browser/branding/greatdane/branding.nsi       |  8 +++----
+ browser/branding/greatdane/configure.sh       |  2 +-
+ .../greatdane/content/about-wordmark.svg      |  4 ++--
+ .../greatdane/content/firefox-wordmark.svg    |  4 ++--
+ .../greatdane/locales/en-US/brand.ftl         | 14 +++++------
+ .../greatdane/locales/en-US/brand.properties  |  6 ++---
+ .../greatdane/GreatDANEAbout.sys.mjs          | 20 +++++++++++-----
+ .../browser/profile/default-bookmarks.ftl     |  4 ++--
+ .../chrome/overrides/appstrings.properties    | 24 +++++++++----------
+ .../en-US/chrome/appstrings.properties        |  2 +-
+ .../en-US/toolkit/branding/brandings.ftl      | 12 +++++-----
+ 11 files changed, 54 insertions(+), 46 deletions(-)
+
+diff --git a/browser/branding/greatdane/branding.nsi b/browser/branding/greatdane/branding.nsi
+index 4c52c1d0c0..9168fa4f96 100644
+--- a/browser/branding/greatdane/branding.nsi
++++ b/browser/branding/greatdane/branding.nsi
+@@ -8,10 +8,10 @@
+ 
+ # BrandFullNameInternal is used for some registry and file system values
+ # instead of BrandFullName and typically should not be modified.
+-!define BrandFullNameInternal "Mozilla Developer Preview"
+-!define BrandFullName         "Mozilla Developer Preview"
+-!define CompanyName           "mozilla.org"
+-!define URLInfoAbout          "https://www.mozilla.org"
++!define BrandFullNameInternal "Dane"
++!define BrandFullName         "Dane"
++!define CompanyName           "Pepecoin"
++!define URLInfoAbout          "https://dogecoin.surf"
+ !define HelpLink              "https://support.mozilla.org"
+ 
+ !define URLStubDownloadX86 "https://download.mozilla.org/?os=win&lang=${AB_CD}&product=firefox-latest"
+diff --git a/browser/branding/greatdane/configure.sh b/browser/branding/greatdane/configure.sh
+index 4944f59198..19ed09e0e5 100644
+--- a/browser/branding/greatdane/configure.sh
++++ b/browser/branding/greatdane/configure.sh
+@@ -2,5 +2,5 @@
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
+-MOZ_APP_DISPLAYNAME=GreatDANE
++MOZ_APP_DISPLAYNAME=Dane
+ MOZ_MACBUNDLE_ID=surf.pepecoin.greatdane
+diff --git a/browser/branding/greatdane/content/about-wordmark.svg b/browser/branding/greatdane/content/about-wordmark.svg
+index fdb9446328..df1b2e21a5 100644
+--- a/browser/branding/greatdane/content/about-wordmark.svg
++++ b/browser/branding/greatdane/content/about-wordmark.svg
+@@ -1,6 +1,6 @@
+ <!-- This Source Code Form is subject to the terms of the Mozilla Public
+    - License, v. 2.0. If a copy of the MPL was not distributed with this
+    - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 372 99">
+-  <text x="0" y="78" fill="context-fill" font-family="-apple-system, Helvetica Neue, Helvetica, Arial, sans-serif" font-weight="700" font-size="80" textLength="372" lengthAdjust="spacingAndGlyphs">GreatDANE</text>
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 190 99">
++  <text x="0" y="78" fill="context-fill" font-family="-apple-system, Helvetica Neue, Helvetica, Arial, sans-serif" font-weight="700" font-size="80" textLength="190" lengthAdjust="spacingAndGlyphs">Dane</text>
+ </svg>
+diff --git a/browser/branding/greatdane/content/firefox-wordmark.svg b/browser/branding/greatdane/content/firefox-wordmark.svg
+index fdb9446328..df1b2e21a5 100644
+--- a/browser/branding/greatdane/content/firefox-wordmark.svg
++++ b/browser/branding/greatdane/content/firefox-wordmark.svg
+@@ -1,6 +1,6 @@
+ <!-- This Source Code Form is subject to the terms of the Mozilla Public
+    - License, v. 2.0. If a copy of the MPL was not distributed with this
+    - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
+-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 372 99">
+-  <text x="0" y="78" fill="context-fill" font-family="-apple-system, Helvetica Neue, Helvetica, Arial, sans-serif" font-weight="700" font-size="80" textLength="372" lengthAdjust="spacingAndGlyphs">GreatDANE</text>
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 190 99">
++  <text x="0" y="78" fill="context-fill" font-family="-apple-system, Helvetica Neue, Helvetica, Arial, sans-serif" font-weight="700" font-size="80" textLength="190" lengthAdjust="spacingAndGlyphs">Dane</text>
+ </svg>
+diff --git a/browser/branding/greatdane/locales/en-US/brand.ftl b/browser/branding/greatdane/locales/en-US/brand.ftl
+index 3c40fcf6ab..fc423fb37d 100644
+--- a/browser/branding/greatdane/locales/en-US/brand.ftl
++++ b/browser/branding/greatdane/locales/en-US/brand.ftl
+@@ -16,12 +16,12 @@
+ ## For further details, consult:
+ ## https://mozilla-l10n.github.io/styleguides/mozilla_general/#brands-copyright-and-trademark
+ 
+--brand-shorter-name = GreatDANE
+--brand-short-name = GreatDANE
+--brand-shortcut-name = GreatDANE
+--brand-full-name = GreatDANE
++-brand-shorter-name = Dane
++-brand-short-name = Dane
++-brand-shortcut-name = Dane
++-brand-full-name = Dane
+ # This brand name can be used in messages where the product name needs to
+-# remain unchanged across different versions (GreatDANE, Beta, etc.).
+--brand-product-name = GreatDANE
+--vendor-short-name = GreatDANE
++# remain unchanged across different versions (Dane, Beta, etc.).
++-brand-product-name = Dane
++-vendor-short-name = Dane
+ trademarkInfo = { " " }
+diff --git a/browser/branding/greatdane/locales/en-US/brand.properties b/browser/branding/greatdane/locales/en-US/brand.properties
+index 373cf188a6..eeb66251c4 100644
+--- a/browser/branding/greatdane/locales/en-US/brand.properties
++++ b/browser/branding/greatdane/locales/en-US/brand.properties
+@@ -2,6 +2,6 @@
+ # License, v. 2.0. If a copy of the MPL was not distributed with this
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
+-brandShorterName=GreatDANE
+-brandShortName=GreatDANE
+-brandFullName=GreatDANE
++brandShorterName=Dane
++brandShortName=Dane
++brandFullName=Dane
+diff --git a/browser/components/greatdane/GreatDANEAbout.sys.mjs b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+index b3cac70203..2361568b99 100644
+--- a/browser/components/greatdane/GreatDANEAbout.sys.mjs
++++ b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+@@ -10,15 +10,15 @@ const CONTRACT = "@mozilla.org/network/protocol/about;1?what=greatdane";
+ 
+ const ERRORS = {
+   GD_NODE_NOT_READY: ["The PepeNet node is not running yet",
+-    "GreatDANE resolves chain names with its own built-in node. It is starting (or restarting after a crash). This page will continue on its own when the node is up."],
++    "Dane resolves chain names with its own built-in node. It is starting (or restarting after a crash). This page will continue on its own when the node is up."],
+   GD_NODE_SYNCING: ["Still syncing the chain",
+     "Names are only trusted once the node has caught up with the network, so nothing for this site is loaded until then. This page will continue on its own when sync finishes."],
+   GD_TLS_UNTRUSTED: ["This site's key does not match the chain",
+-    "The server presented a key that does not match the TLSA record its owner published on chain. This can mean an impostor is answering for this name. GreatDANE will not let you continue."],
++    "The server presented a key that does not match the TLSA record its owner published on chain. This can mean an impostor is answering for this name. Dane will not let you continue."],
+   GD_NAME_UNOWNED: ["Nobody owns this name",
+     "This name is not registered on the chain (or its registration lapsed), so there is no site here."],
+   GD_NO_TLSA: ["This site has not published a key",
+-    "The name is registered, but its owner has not published a TLSA record, so there is no way to verify the site. GreatDANE only loads chain sites it can verify."],
++    "The name is registered, but its owner has not published a TLSA record, so there is no way to verify the site. Dane only loads chain sites it can verify."],
+   GD_BAD_TLSA: ["This site's chain record is unusable",
+     "The name is registered, but its address or TLSA record is missing or not a supported kind (DANE-EE 3 1 1 on _443._tcp)."],
+   GD_SITE_UNREACHABLE: ["Site unreachable",
+@@ -73,11 +73,11 @@ function render(uri) {
+   let err = code && ERRORS[code];
+   let box = err ? `<img class="dane" alt="" src="chrome://branding/content/sad-dane.svg"><div class="err"><h1>${esc(err[0])}</h1><p>${esc(err[1])}</p>
+       <p class="u">${esc(target || "")}</p><p class="code">${esc(code)}</p></div>` :
+-    `<img class="logo" alt="" src="chrome://branding/content/about-logo.svg"><h1 style="text-align:center">GreatDANE</h1>`;
++    `<img class="logo" alt="" src="chrome://branding/content/about-logo.svg"><h1 style="text-align:center">Dane</h1>`;
+   return `<!DOCTYPE html><html><head><meta charset="utf-8">${head}
+ <link rel="icon" href="chrome://branding/content/icon32.png">
+ <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src chrome:">
+-<title>${err ? esc(err[0]) : "GreatDANE status"}</title><style>
++<title>${err ? esc(err[0]) : "Dane status"}</title><style>
+ :root{color-scheme:light dark;--bg:light-dark(#f4f6fb,#0b1b35);--fg:light-dark(#13254a,#e6ecf5);--line:light-dark(#d5dbe8,#22345c);--dane:light-dark(#13254A,#DCE4F2)}
+ body{font:15px system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:40px auto;max-width:900px}
+ .dane{display:block;width:180px;margin:0 auto 10px;-moz-context-properties:fill;fill:var(--dane)}
+@@ -117,6 +117,14 @@ export function registerAbout() {
+     createInstance(iid) { return AboutGreatDANE.QueryInterface(iid); },
+     QueryInterface: ChromeUtils.generateQI(["nsIFactory"]),
+   });
++  // about:dane alias (about:greatdane stays registered for existing links)
++  const CID2 = Components.ID("{8e3c2a51-7d4b-4c1e-9a0f-5b2d6e7f1c93}");
++  if (!reg.isCIDRegistered(CID2)) {
++    reg.registerFactory(CID2, "about:dane", "@mozilla.org/network/protocol/about;1?what=dane", {
++      createInstance(iid) { return AboutGreatDANE.QueryInterface(iid); },
++      QueryInterface: ChromeUtils.generateQI(["nsIFactory"]),
++    });
++  }
+ }
+ 
+ // Any Firefox error page for a chain host (proxy refused, cert error, net
+@@ -138,7 +146,7 @@ export const ErrorTrap = {
+     try { doc = browser.documentURI?.spec || ""; } catch (e) {}
+     let tlsFail = mod == 21 || /^about:certerror|[?&]e=nss/.test(doc);
+     let go = code => {
+-      let u = "about:greatdane?e=" + code + "&u=" + encodeURIComponent(location.spec);
++      let u = "about:dane?e=" + code + "&u=" + encodeURIComponent(location.spec);
+       browser.loadURI(Services.io.newURI(u), {
+         triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+         loadFlags: Ci.nsIWebNavigation.LOAD_FLAGS_REPLACE_HISTORY,
+diff --git a/browser/locales/en-US/browser/profile/default-bookmarks.ftl b/browser/locales/en-US/browser/profile/default-bookmarks.ftl
+index c6524732b9..77a9ff4705 100644
+--- a/browser/locales/en-US/browser/profile/default-bookmarks.ftl
++++ b/browser/locales/en-US/browser/profile/default-bookmarks.ftl
+@@ -10,13 +10,13 @@ default-bookmarks-title = Bookmarks
+ default-bookmarks-heading = Bookmarks
+ 
+ # Firefox links folder name
+-default-bookmarks-firefox-heading = GreatDANE
++default-bookmarks-firefox-heading = Dane
+ 
+ # link title for https://www.mozilla.org/firefox/help/
+ default-bookmarks-firefox-get-help = Get Help
+ 
+ # link title for https://www.mozilla.org/firefox/customize/
+-default-bookmarks-firefox-customize = Customize GreatDANE
++default-bookmarks-firefox-customize = Customize Dane
+ 
+ # link title for https://www.mozilla.org/contribute/
+ default-bookmarks-firefox-community = Get Involved
+diff --git a/browser/locales/en-US/chrome/overrides/appstrings.properties b/browser/locales/en-US/chrome/overrides/appstrings.properties
+index fdaf3557ac..815eb728bd 100644
+--- a/browser/locales/en-US/chrome/overrides/appstrings.properties
++++ b/browser/locales/en-US/chrome/overrides/appstrings.properties
+@@ -3,29 +3,29 @@
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
+ malformedURI2=Please check that the URL is correct and try again.
+-fileNotFound=GreatDANE can’t find the file at %S.
++fileNotFound=Dane can’t find the file at %S.
+ fileAccessDenied=The file at %S is not readable.
+ # %S is replaced by the uri host
+ httpErrorPage=%S sent back an error.
+ serverError=%S might have a temporary problem or it could have moved.
+ dnsNotFound2=We can’t connect to the server at %S.
+ basicHttpAuthDisabled=Someone pretending to be the site could try to steal things like your username, password, or email.
+-unknownProtocolFound=GreatDANE doesn’t know how to open this address, because one of the following protocols (%S) isn’t associated with any program or is not allowed in this context.
+-connectionFailure=GreatDANE can’t establish a connection to the server at %S.
++unknownProtocolFound=Dane doesn’t know how to open this address, because one of the following protocols (%S) isn’t associated with any program or is not allowed in this context.
++connectionFailure=Dane can’t establish a connection to the server at %S.
+ netInterrupt=The connection to %S was interrupted while the page was loading.
+ netTimeout=The server at %S is taking too long to respond.
+-redirectLoop=GreatDANE has detected that the server is redirecting the request for this address in a way that will never complete.
++redirectLoop=Dane has detected that the server is redirecting the request for this address in a way that will never complete.
+ ## LOCALIZATION NOTE (confirmRepostPrompt): In this item, don’t translate "%S"
+ confirmRepostPrompt=To display this page, %S must send information that will repeat any action (such as a search or order confirmation) that was performed earlier.
+ resendButton.label=Resend
+-clientSocketMisconfiguration=GreatDANE doesn’t know how to communicate with the server.
++clientSocketMisconfiguration=Dane doesn’t know how to communicate with the server.
+ netReset=The connection to the server was reset while the page was loading.
+ notCached=This document is no longer available.
+-netOffline=GreatDANE is currently in offline mode and can’t browse the Web.
++netOffline=Dane is currently in offline mode and can’t browse the Web.
+ isprinting=The document cannot change while Printing or in Print Preview.
+-deniedPortAccess=This address uses a network port which is normally used for purposes other than Web browsing. GreatDANE has canceled the request for your protection.
+-proxyResolveFailure=GreatDANE is configured to use a proxy server that can’t be found.
+-proxyConnectFailure=GreatDANE is configured to use a proxy server that is refusing connections.
++deniedPortAccess=This address uses a network port which is normally used for purposes other than Web browsing. Dane has canceled the request for your protection.
++proxyResolveFailure=Dane is configured to use a proxy server that can’t be found.
++proxyConnectFailure=Dane is configured to use a proxy server that is refusing connections.
+ contentEncodingError=The page you are trying to view cannot be shown because it uses an invalid or unsupported form of compression.
+ unsafeContentType=The page you are trying to view cannot be shown because it is contained in a file type that may not be safe to open. Please contact the website owners to inform them of this problem.
+ externalProtocolTitle=External Protocol Request
+@@ -43,9 +43,9 @@ cspBlocked=This page has a content security policy that prevents it from being l
+ xfoBlocked=This page has an X-Frame-Options policy that prevents it from being loaded in this context.
+ corruptedContentErrorv2=The site at %S has experienced a network protocol violation that cannot be repaired.
+ ## LOCALIZATION NOTE (sslv3Used) - Do not translate "%S".
+-sslv3Used=GreatDANE cannot guarantee the safety of your data on %S because it uses SSLv3, a broken security protocol.
++sslv3Used=Dane cannot guarantee the safety of your data on %S because it uses SSLv3, a broken security protocol.
+ inadequateSecurityError=The website tried to negotiate an inadequate level of security.
+ blockedByPolicy=Your organization has blocked access to this page or website.
+-blockedByCORP=GreatDANE didn’t load this page because it looks like the security configuration doesn’t match the previous page.
++blockedByCORP=Dane didn’t load this page because it looks like the security configuration doesn’t match the previous page.
+ invalidHeaderValue=%S sent back a header with empty characters not allowed by web security standards.
+-networkProtocolError=GreatDANE has experienced a network protocol violation that cannot be repaired.
++networkProtocolError=Dane has experienced a network protocol violation that cannot be repaired.
+diff --git a/dom/locales/en-US/chrome/appstrings.properties b/dom/locales/en-US/chrome/appstrings.properties
+index 80d9e7a013..1dd9275541 100644
+--- a/dom/locales/en-US/chrome/appstrings.properties
++++ b/dom/locales/en-US/chrome/appstrings.properties
+@@ -41,4 +41,4 @@ inadequateSecurityError=The website tried to negotiate an inadequate level of se
+ blockedByPolicy=Your organization has blocked access to this page or website.
+ blockedByCORP=This page has not been loaded because it looks like the security configuration doesn’t match the previous page.
+ invalidHeaderValue=%S sent back a header with empty characters not allowed by web security standards.
+-networkProtocolError=GreatDANE has experienced a network protocol violation that cannot be repaired.
++networkProtocolError=Dane has experienced a network protocol violation that cannot be repaired.
+diff --git a/toolkit/locales/en-US/toolkit/branding/brandings.ftl b/toolkit/locales/en-US/toolkit/branding/brandings.ftl
+index 6f225efa7b..b80b1a7e5d 100644
+--- a/toolkit/locales/en-US/toolkit/branding/brandings.ftl
++++ b/toolkit/locales/en-US/toolkit/branding/brandings.ftl
+@@ -20,10 +20,10 @@
+ -mozmonitor-brand-name = Mozilla Monitor
+ -pocket-brand-name = Pocket
+ -send-brand-name = Firefox Send
+--screenshots-brand-name = GreatDANE Screenshots
++-screenshots-brand-name = Dane Screenshots
+ -mozilla-vpn-brand-name = Mozilla VPN
+ -profiler-brand-name = Firefox Profiler
+--translations-brand-name = GreatDANE Translations
++-translations-brand-name = Dane Translations
+ -focus-brand-name = Firefox Focus
+ -relay-brand-name = Firefox Relay
+ -relay-brand-short-name = Relay
+@@ -42,18 +42,18 @@
+ 
+ # “Suggest” can be localized, “Firefox” must be treated as a brand
+ # and kept in English.
+--firefox-suggest-brand-name = GreatDANE Suggest
++-firefox-suggest-brand-name = Dane Suggest
+ 
+ # ”Home" can be localized, “Firefox” must be treated as a brand
+ # and kept in English.
+--firefox-home-brand-name = GreatDANE Home
++-firefox-home-brand-name = Dane Home
+ 
+ # View" can be localized, “Firefox” must be treated as a brand
+ # and kept in English.
+--firefoxview-brand-name = GreatDANE View
++-firefoxview-brand-name = Dane View
+ 
+ # Firefox Labs is the name for a page in Settings to allow users to learn about
+ # experimental and in-development features, and turn those features on and off.
+ # The "Labs" portion can be localized, “Firefox” must be treated as a brand
+ # and kept in English.
+--firefoxlabs-brand-name = GreatDANE Labs
++-firefoxlabs-brand-name = Dane Labs
