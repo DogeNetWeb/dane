@@ -1,0 +1,306 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Sun, 25 Oct 2026 23:41:25 -0500
+Subject: [PATCH 015/144] GreatDANE: fail closed and log in about:dane error
+ trap; add fail-closed tests
+
+- GreatDANEAbout: replace the silent catches (safeTarget, chain lookup,
+  channel status, error-page URI) with console.error. A chain lookup error
+  on a .pepe/.doge host now blocks (GD_NODE_NOT_READY) instead of letting
+  the stock error page stand; an unreadable failure kind is treated as a
+  TLSA/cert mismatch (GD_TLS_UNTRUSTED), never "site unreachable"; a
+  rejected TLSA status query blocks as node-not-ready.
+- Factor the decision into exported classifyChainFailure(); export
+  _render() for tests; ErrorTrap.onLocationChange returns its promise.
+- xpcshell test test_greatdane_failclosed.js (mock /gd/tlsa node): no TLSA
+  record, TLSA/cert mismatch, node down / unanswerable, proxy filter never
+  DIRECT, and no auto-continue/override on the interstitial.
+---
+ .../greatdane/GreatDANEAbout.sys.mjs          |  77 ++++++++---
+ browser/components/greatdane/moz.build        |   2 +
+ .../test/unit/test_greatdane_failclosed.js    | 125 ++++++++++++++++++
+ .../greatdane/test/unit/xpcshell.toml         |   5 +
+ 4 files changed, 191 insertions(+), 18 deletions(-)
+ create mode 100644 browser/components/greatdane/test/unit/test_greatdane_failclosed.js
+ create mode 100644 browser/components/greatdane/test/unit/xpcshell.toml
+
+diff --git a/browser/components/greatdane/GreatDANEAbout.sys.mjs b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+index 2361568b99..285f151460 100644
+--- a/browser/components/greatdane/GreatDANEAbout.sys.mjs
++++ b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+@@ -25,6 +25,23 @@ const ERRORS = {
+     "The name is on the chain but its server could not be reached through the node."],
+ };
+ 
++const CHAIN_HOST = /\.(pepe|doge)\.?$/i;
++
++// Pure decision for a failed top-level load of a chain host. Anything we
++// cannot determine maps to a blocking interstitial, never to "open".
++//   block: GreatDANE.blockReason(c) or null; tlsa: node /gd/tlsa status, or
++//   null if the node could not be asked; tlsFail: true/false, or null if the
++//   failure kind is unknown (treated as a TLS failure: fail closed).
++export function classifyChainFailure({ block = null, tlsa = null, tlsFail = null } = {}) {
++  if (block) return block;
++  if (tlsa === null || tlsa === undefined) return "GD_NODE_NOT_READY";
++  if (tlsa == "unowned" || tlsa == "bad_name") return "GD_NAME_UNOWNED";
++  if (tlsa == "no_tlsa") return "GD_NO_TLSA";
++  if (tlsa == "bad_record") return "GD_BAD_TLSA";
++  if (tlsa == "ok") return tlsFail === false ? "GD_SITE_UNREACHABLE" : "GD_TLS_UNTRUSTED";
++  return "GD_SITE_UNREACHABLE";
++}
++
+ const esc = s => String(s ?? "").replace(/[&<>"']/g, ch => "&#" + ch.charCodeAt(0) + ";");
+ 
+ function safeTarget(u) {
+@@ -33,7 +50,10 @@ function safeTarget(u) {
+     if ((uri.scheme == "https" || uri.scheme == "http") && GreatDANE._chainFor(uri.host)) {
+       return uri.spec;
+     }
+-  } catch (e) {}
++  } catch (e) {
++    // Unparseable/odd target: never echo it into a refresh/continue link.
++    console.error("GreatDANE: about:dane ignored bad target", u, e);
++  }
+   return null;
+ }
+ 
+@@ -52,7 +72,7 @@ function chainRows() {
+   return rows;
+ }
+ 
+-function render(uri) {
++export function _render(uri) {
+   let q = new URLSearchParams(uri.query || "");
+   let code = q.get("e");
+   let target = safeTarget(q.get("u") || "");
+@@ -94,7 +114,7 @@ ${chainRows()}</table><p class="code">Updates every ${refresh} s.</p></body></ht
+ const AboutGreatDANE = {
+   newChannel(uri, loadInfo) {
+     let stream = Cc["@mozilla.org/io/string-input-stream;1"].createInstance(Ci.nsIStringInputStream);
+-    stream.setUTF8Data(render(uri));
++    stream.setUTF8Data(_render(uri));
+     let isc = Cc["@mozilla.org/network/input-stream-channel;1"].createInstance(Ci.nsIInputStreamChannel);
+     isc.setURI(uri);
+     isc.contentStream = stream;
+@@ -132,19 +152,41 @@ export function registerAbout() {
+ export const ErrorTrap = {
+   onLocationChange(browser, webProgress, request, location, flags) {
+     if (!webProgress.isTopLevel || !(flags & Ci.nsIWebProgressListener.LOCATION_CHANGE_ERROR_PAGE)) return;
++    if (!location.schemeIs("http") && !location.schemeIs("https")) return;
++    let host = location.asciiHost;
+     let c = null;
+-    try { c = GreatDANE._chainFor(location.host); } catch (e) { return; }
+-    if (!c) return;
+-    let code = GreatDANE.blockReason(c);
++    let lookupFailed = false;
++    try {
++      c = GreatDANE._chainFor(host);
++    } catch (e) {
++      console.error("GreatDANE: chain lookup failed for", host, e);
++      lookupFailed = true;
++    }
++    if (!c && !(lookupFailed && CHAIN_HOST.test(host))) return;
++    let code = c ? GreatDANE.blockReason(c) : "GD_NODE_NOT_READY";
+     let status = 0;
+-    try { status = request?.QueryInterface(Ci.nsIChannel).status; } catch (e) {}
++    let statusKnown = !request;
++    if (request) {
++      try {
++        status = request.QueryInterface(Ci.nsIChannel).status;
++        statusKnown = true;
++      } catch (e) {
++        console.error("GreatDANE: no channel status for", host, e);
++      }
++    }
+     let mod = ((status >>> 16) & 0x7fff) - 0x45;
+     // The error-page load usually carries no failed channel (status 0), so
+     // also read which Firefox error page was shown: cert/NSS failures mean
+     // the server's key did not verify against the chain.
+-    let doc = "";
+-    try { doc = browser.documentURI?.spec || ""; } catch (e) {}
+-    let tlsFail = mod == 21 || /^about:certerror|[?&]e=nss/.test(doc);
++    let doc = null;
++    try {
++      doc = browser.documentURI?.spec ?? null;
++    } catch (e) {
++      console.error("GreatDANE: cannot read error page URI for", host, e);
++    }
++    // Unknown failure kind -> null -> treated as a key mismatch (fail closed).
++    let tlsFail = mod == 21 || (doc !== null && /^about:certerror|[?&]e=nss/.test(doc))
++      ? true : (doc === null || !statusKnown ? null : false);
+     let go = code => {
+       let u = "about:dane?e=" + code + "&u=" + encodeURIComponent(location.spec);
+       browser.loadURI(Services.io.newURI(u), {
+@@ -153,13 +195,12 @@ export const ErrorTrap = {
+       });
+     };
+     if (code) { go(code); return; }
+-    GreatDANE.tlsaStatus(location.host).then(st => {
+-      if (st === null) go("GD_NODE_NOT_READY");
+-      else if (st == "unowned" || st == "bad_name") go("GD_NAME_UNOWNED");
+-      else if (st == "no_tlsa") go("GD_NO_TLSA");
+-      else if (st == "bad_record") go("GD_BAD_TLSA");
+-      else go(tlsFail ? "GD_TLS_UNTRUSTED" : "GD_SITE_UNREACHABLE");
+-    });
+-    return;
++    return GreatDANE.tlsaStatus(host).then(
++      tlsa => go(classifyChainFailure({ tlsa, tlsFail })),
++      e => {
++        console.error("GreatDANE: TLSA status query failed for", host, e);
++        go("GD_NODE_NOT_READY");
++      }
++    );
+   },
+ };
+diff --git a/browser/components/greatdane/moz.build b/browser/components/greatdane/moz.build
+index 83c8fb0488..75916be3e6 100644
+--- a/browser/components/greatdane/moz.build
++++ b/browser/components/greatdane/moz.build
+@@ -6,3 +6,5 @@ EXTRA_JS_MODULES += [
+     "GreatDANE.sys.mjs",
+     "GreatDANEAbout.sys.mjs",
+ ]
++
++XPCSHELL_TESTS_MANIFESTS += ["test/unit/xpcshell.toml"]
+diff --git a/browser/components/greatdane/test/unit/test_greatdane_failclosed.js b/browser/components/greatdane/test/unit/test_greatdane_failclosed.js
+new file mode 100644
+index 0000000000..05d6383847
+--- /dev/null
++++ b/browser/components/greatdane/test/unit/test_greatdane_failclosed.js
+@@ -0,0 +1,125 @@
++/* Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/ */
++
++// .doge/.pepe loads must fail closed and land on the right Dane interstitial
++// for: no TLSA record, TLSA/cert mismatch, node unreachable. The node's
++// /gd/tlsa API is mocked; no real node is started.
++
++"use strict";
++
++const { GreatDANE } = ChromeUtils.importESModule("resource:///modules/GreatDANE.sys.mjs");
++const { ErrorTrap, _render, classifyChainFailure } = ChromeUtils.importESModule(
++  "resource:///modules/GreatDANEAbout.sys.mjs"
++);
++
++const MOCK = { "notlsa.doge": "no_tlsa", "mismatch.doge": "ok", "notlsa.pepe": "no_tlsa" };
++let mockPort = globalThis.GD_MOCK_PORT; // set by an external runner with its own mock
++let server = null;
++
++function startMock() {
++  if (mockPort) return;
++  const { HttpServer } = ChromeUtils.importESModule("resource://testing-common/httpd.sys.mjs");
++  server = new HttpServer();
++  server.registerPathHandler("/gd/tlsa", (req, resp) => {
++    let host = new URLSearchParams(req.queryString).get("host");
++    resp.setHeader("Content-Type", "application/json", false);
++    resp.write(JSON.stringify({ status: MOCK[host] || "unowned" }));
++  });
++  server.start(-1);
++  mockPort = server.identity.primaryPort;
++}
++
++const saved = new Map(GreatDANE._chains);
++function chain(tld, over = {}) {
++  return Object.assign({
++    tld, coin: tld, state: "ready", restarts: 0, since: Date.now(),
++    status: { height: 100, activation: 1, peer_height: 100, passes: 1 },
++    ports: { pac: mockPort },
++  }, over);
++}
++function setChains(...cs) {
++  GreatDANE._chains.clear();
++  for (let c of cs) GreatDANE._chains.set(c.tld, c);
++}
++
++// Drive the tab trap for a failed top-level load; return the interstitial code.
++async function trap(url, { doc = "about:neterror?e=proxyConnectFailure", docThrows = false } = {}) {
++  let loaded = null;
++  let browser = {
++    get documentURI() {
++      if (docThrows) throw new Error("dead browser");
++      return Services.io.newURI(doc);
++    },
++    loadURI(u) { loaded = u.spec; },
++  };
++  await ErrorTrap.onLocationChange(
++    browser, { isTopLevel: true }, null, Services.io.newURI(url),
++    Ci.nsIWebProgressListener.LOCATION_CHANGE_ERROR_PAGE
++  );
++  Assert.ok(loaded, "error page for " + url + " was replaced");
++  let u = new URL(loaded);
++  Assert.equal(u.protocol + u.pathname, "about:dane", "goes to about:dane");
++  Assert.equal(u.searchParams.get("u"), url, "keeps the target only as text");
++  return { code: u.searchParams.get("e"), html: _render(Services.io.newURI(loaded)) };
++}
++
++function assertBlocked(html, code, heading) {
++  Assert.ok(html.includes(heading), "interstitial says: " + heading);
++  Assert.ok(html.includes(code), "shows code " + code);
++  Assert.ok(!/content="0;url=/.test(html), "no auto-continue to the site");
++  Assert.ok(!/<a\b|<button|<script/i.test(html), "no override link/button/script");
++}
++
++add_setup(() => {
++  startMock();
++  registerCleanupFunction(() => {
++    GreatDANE._chains.clear();
++    for (let [k, v] of saved) GreatDANE._chains.set(k, v);
++    return server && new Promise(r => server.stop(r));
++  });
++});
++
++add_task(async function no_tlsa_record() {
++  setChains(chain("doge"), chain("pepe"));
++  for (let url of ["https://notlsa.doge/", "https://notlsa.pepe/"]) {
++    let { code, html } = await trap(url);
++    Assert.equal(code, "GD_NO_TLSA", url);
++    assertBlocked(html, "GD_NO_TLSA", "This site has not published a key");
++  }
++});
++
++add_task(async function tlsa_cert_mismatch() {
++  setChains(chain("doge"));
++  let { code, html } = await trap("https://mismatch.doge/", { doc: "about:certerror?e=nssFailure2&u=x" });
++  Assert.equal(code, "GD_TLS_UNTRUSTED");
++  assertBlocked(html, "GD_TLS_UNTRUSTED", "does not match the chain");
++  // Failure kind unknown (error page unreadable): still the mismatch page.
++  ({ code } = await trap("https://mismatch.doge/", { docThrows: true }));
++  Assert.equal(code, "GD_TLS_UNTRUSTED", "unknown failure kind fails closed");
++});
++
++add_task(async function node_unreachable() {
++  // Node process down.
++  setChains(chain("doge", { state: "down", ports: null }));
++  let { code, html } = await trap("https://notlsa.doge/");
++  Assert.equal(code, "GD_NODE_NOT_READY");
++  assertBlocked(html, "GD_NODE_NOT_READY", "PepeNet node is not running");
++  // Node "ready" but its API does not answer (closed port).
++  setChains(chain("doge", { ports: { pac: 9 } }));
++  ({ code } = await trap("https://mismatch.doge/"));
++  Assert.equal(code, "GD_NODE_NOT_READY", "unanswerable node fails closed");
++  // The proxy filter never goes DIRECT for a down chain.
++  setChains(chain("doge", { state: "down", ports: null }));
++  let pi = await new Promise(r => GreatDANE.applyFilter(
++    Services.io.newURI("https://x.doge/"), null, { onProxyFilterResult: r }));
++  Assert.equal(pi.host, "127.0.0.1");
++  Assert.equal(pi.port, 9, "dead proxy port, never DIRECT");
++});
++
++add_task(function classify_unknowns_fail_closed() {
++  Assert.equal(classifyChainFailure({}), "GD_NODE_NOT_READY");
++  Assert.equal(classifyChainFailure({ tlsa: "ok" }), "GD_TLS_UNTRUSTED");
++  Assert.equal(classifyChainFailure({ tlsa: "ok", tlsFail: false }), "GD_SITE_UNREACHABLE");
++  Assert.equal(classifyChainFailure({ tlsa: "weird" }), "GD_SITE_UNREACHABLE");
++  Assert.equal(classifyChainFailure({ block: "GD_NODE_SYNCING", tlsa: "ok" }), "GD_NODE_SYNCING");
++});
+diff --git a/browser/components/greatdane/test/unit/xpcshell.toml b/browser/components/greatdane/test/unit/xpcshell.toml
+new file mode 100644
+index 0000000000..d3523e53fa
+--- /dev/null
++++ b/browser/components/greatdane/test/unit/xpcshell.toml
+@@ -0,0 +1,5 @@
++[DEFAULT]
++head = ""
++firefox-appdir = "browser"
++
++["test_greatdane_failclosed.js"]
