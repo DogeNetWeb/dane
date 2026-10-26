@@ -1,0 +1,58 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 15:56:03 -0500
+Subject: [PATCH 026/144] GreatDANE: Dane pane heading l10n; prefs test clicks
+ the toggle button and waits for the pref write
+
+---
+ .../greatdane/test/marionette/run_gd_prefs.py | 22 ++++++++++---------
+ .../en-US/browser/preferences/greatdane.ftl   |  3 ++-
+ 2 files changed, 14 insertions(+), 11 deletions(-)
+
+diff --git a/browser/components/greatdane/test/marionette/run_gd_prefs.py b/browser/components/greatdane/test/marionette/run_gd_prefs.py
+index 48d2c3fc70..24d8f15b9a 100644
+--- a/browser/components/greatdane/test/marionette/run_gd_prefs.py
++++ b/browser/components/greatdane/test/marionette/run_gd_prefs.py
+@@ -64,16 +64,18 @@ try:
+     check("dane icon", r["icon"] == "chrome://branding/content/about-logo.svg", r)
+     shot(m, "dane.png")
+     # Toggles write prefs
+-    r = js(m, '''let out = {};
+-      for (let [id, pref] of [["gd-pep-enabled", "greatdane.pep.enabled"], ["gd-doge-enabled", "greatdane.doge.enabled"]]) {
+-        let t = d.getElementById(id); let before = Services.prefs.getBoolPref(pref);
+-        t.click(); out[id] = [before, Services.prefs.getBoolPref(pref)]; t.click(); out[id].push(Services.prefs.getBoolPref(pref));
+-      }
+-      let u = d.getElementById("gd-update-firstrun-skip");
+-      let b = Services.prefs.getIntPref("greatdane.update.skipFirstRunWindowSec"); u.click();
+-      out.upd = [b, Services.prefs.getIntPref("greatdane.update.skipFirstRunWindowSec")]; u.click();
+-      out.upd.push(Services.prefs.getIntPref("greatdane.update.skipFirstRunWindowSec"));
+-      return out;''')
++    r = m.execute_async_script(JS + '''let done = arguments[arguments.length - 1];
++      let tick = () => new Promise(r => d.defaultView.setTimeout(r, 400));
++      let press = id => { let t = d.getElementById(id); (t.buttonEl || t.shadowRoot.querySelector("button")).click(); };
++      (async () => { let out = {};
++        for (let [id, pref] of [["gd-pep-enabled", "greatdane.pep.enabled"], ["gd-doge-enabled", "greatdane.doge.enabled"]]) {
++          out[id] = [Services.prefs.getBoolPref(pref)]; press(id); await tick();
++          out[id].push(Services.prefs.getBoolPref(pref)); press(id); await tick(); out[id].push(Services.prefs.getBoolPref(pref));
++        }
++        let W = "greatdane.update.skipFirstRunWindowSec";
++        out.upd = [Services.prefs.getIntPref(W)]; press("gd-update-firstrun-skip"); await tick();
++        out.upd.push(Services.prefs.getIntPref(W)); press("gd-update-firstrun-skip"); await tick(); out.upd.push(Services.prefs.getIntPref(W));
++        done(out); })();''', sandbox=None)
+     check("pep toggle writes pref", r["gd-pep-enabled"] == [True, False, True], r)
+     check("doge toggle writes pref", r["gd-doge-enabled"] == [True, False, True], r)
+     check("first-run toggle writes window pref", r["upd"] == [3600, 0, 3600], r)
+diff --git a/browser/locales/en-US/browser/preferences/greatdane.ftl b/browser/locales/en-US/browser/preferences/greatdane.ftl
+index 5827de648c..42e7ff006f 100644
+--- a/browser/locales/en-US/browser/preferences/greatdane.ftl
++++ b/browser/locales/en-US/browser/preferences/greatdane.ftl
+@@ -3,7 +3,8 @@
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
+ pane-greatdane-title = Dane
+-preferences-greatdane-header = Dane
++preferences-greatdane-header =
++    .heading = Dane
+ greatdane-nodes-group =
+     .label = Chain nodes
+     .description = Each chain runs a local node. A chain that is off or not synced fails closed: its names do not load.
