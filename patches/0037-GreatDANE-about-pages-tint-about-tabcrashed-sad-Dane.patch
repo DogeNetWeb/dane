@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 18:12:28 -0500
+Subject: [PATCH 037/144] GreatDANE about-pages: tint about:tabcrashed sad-Dane
+ art with accent color (context-fill)
+
+---
+ browser/branding/greatdane/content/aboutTabCrashed-gd.css | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/browser/branding/greatdane/content/aboutTabCrashed-gd.css b/browser/branding/greatdane/content/aboutTabCrashed-gd.css
+index 9c95b52591..d5c8a7a398 100644
+--- a/browser/branding/greatdane/content/aboutTabCrashed-gd.css
++++ b/browser/branding/greatdane/content/aboutTabCrashed-gd.css
+@@ -39,13 +39,16 @@ input[type="text"] {
+   margin-top: 11px;
+ }
+ 
+-/* GreatDANE: sad-Dane art (same illustration as neterror/certerror; the
+-   no-connection.svg override handles light/dark). Branding override of
++/* GreatDANE: sad-Dane art (same illustration as neterror/certerror),
++   tinted with the primary-button/accent color via context-fill, same as
++   the prefs promo (sad-dane.svg uses fill="context-fill"). Branding override of
+    chrome://browser/skin/aboutTabCrashed.css - see REBRAND-NOTES.md. */
+ @media (min-width: 900px) {
+   .container {
+     min-height: 300px;
+     padding-inline-start: 300px;
+     background: url("chrome://global/skin/illustrations/no-connection.svg") no-repeat left top / 260px auto;
++    -moz-context-properties: fill;
++    fill: var(--button-background-color-primary, var(--color-accent-primary));
+   }
+ }
