@@ -1,0 +1,87 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 17:10:13 -0500
+Subject: [PATCH 035/144] GreatDANE about-pages: sad-Dane art on
+ about:tabcrashed via branding override
+
+---
+ .../greatdane/content/aboutTabCrashed-gd.css  | 51 +++++++++++++++++++
+ browser/branding/greatdane/content/jar.mn     |  2 +
+ 2 files changed, 53 insertions(+)
+ create mode 100644 browser/branding/greatdane/content/aboutTabCrashed-gd.css
+
+diff --git a/browser/branding/greatdane/content/aboutTabCrashed-gd.css b/browser/branding/greatdane/content/aboutTabCrashed-gd.css
+new file mode 100644
+index 0000000000..9c95b52591
+--- /dev/null
++++ b/browser/branding/greatdane/content/aboutTabCrashed-gd.css
+@@ -0,0 +1,51 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
++
++#reportSent {
++  font-weight: var(--font-weight-bold);
++}
++
++#reportBox {
++  background-color: var(--background-color-box-info);
++  margin: 24px 0;
++  padding: 14px;
++  border: 1px solid var(--border-color);
++  border-radius: var(--border-radius-xsmall);
++}
++
++#reportBox > h2:first-child {
++  margin-top: 0;
++}
++
++input[type="text"],
++textarea {
++  width: 100%;
++  box-sizing: border-box;
++  resize: none;
++}
++
++input[type="text"] {
++  margin-inline-start: 0;
++}
++
++#options {
++  list-style: none;
++  margin-inline-start: 0;
++}
++
++#options > li,
++#email {
++  margin-top: 11px;
++}
++
++/* GreatDANE: sad-Dane art (same illustration as neterror/certerror; the
++   no-connection.svg override handles light/dark). Branding override of
++   chrome://browser/skin/aboutTabCrashed.css - see REBRAND-NOTES.md. */
++@media (min-width: 900px) {
++  .container {
++    min-height: 300px;
++    padding-inline-start: 300px;
++    background: url("chrome://global/skin/illustrations/no-connection.svg") no-repeat left top / 260px auto;
++  }
++}
+diff --git a/browser/branding/greatdane/content/jar.mn b/browser/branding/greatdane/content/jar.mn
+index 3f4f40a03f..1086a72460 100644
+--- a/browser/branding/greatdane/content/jar.mn
++++ b/browser/branding/greatdane/content/jar.mn
+@@ -8,6 +8,7 @@ browser.jar:
+ % override chrome://browser/skin/sidebar/firefox.svg chrome://branding/content/greatdane-icon.svg
+ % override chrome://browser/skin/preferences/mozilla-logo.svg chrome://browser/skin/fxa/avatar-empty.svg
+ % override chrome://global/skin/illustrations/kit-concerned.svg chrome://branding/content/sad-dane.svg
++% override chrome://browser/skin/aboutTabCrashed.css chrome://branding/content/aboutTabCrashed-gd.css
+   content/branding/about.png
+   content/branding/about-logo.png
+   content/branding/about-logo.svg
+@@ -25,4 +26,5 @@ browser.jar:
+   content/branding/icon128.png                   (../default128.png)
+   content/branding/aboutDialog.css
+   content/branding/sad-dane.svg
++  content/branding/aboutTabCrashed-gd.css
+   content/branding/greatdane-icon.svg          (about-logo.svg)
