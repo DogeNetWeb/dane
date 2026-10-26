@@ -1,0 +1,176 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 09:17:36 -0500
+Subject: [PATCH 017/144] GreatDANE: unknown/missing TLSA status shows the
+ key-mismatch page (never 'unreachable'); greatdane.chainHostPattern pref for
+ the fallback chain-host test
+
+---
+ browser/app/profile/firefox.js                |  3 ++
+ .../components/greatdane/GreatDANE.sys.mjs    |  7 ++-
+ .../greatdane/GreatDANEAbout.sys.mjs          | 25 ++++++++--
+ .../test/unit/test_greatdane_failclosed.js    | 46 +++++++++++++++++--
+ 4 files changed, 71 insertions(+), 10 deletions(-)
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index e7b7510146..6626b577bc 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -3636,6 +3636,9 @@ pref("greatdane.enabled", true);
+ pref("greatdane.chains", "pep:pepe,doge:doge");
+ pref("greatdane.node.path", "");
+ pref("greatdane.node.dataDir", "");
++// Fallback chain-host test (RegExp source, case-insensitive) used only when
++// the chain lookup fails; error pages for matching hosts stay ours.
++pref("greatdane.chainHostPattern", "\\.(pepe|doge)\\.?$");
+ 
+ // ── GreatDANE: no launch-time requests to Mozilla/third parties ──────────────
+ // First run / onboarding / what's new / default-browser nag
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index aacdde9ac6..5aace78ed6 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -197,7 +197,8 @@ export const GreatDANE = {
+   },
+ 
+   // Ask the node why a chain host failed: ok | unowned | no_tlsa |
+-  // bad_record | bad_name, or null if the node can't be asked.
++  // bad_record | bad_name, "" if it answered without a status, or null if
++  // the node can't be asked.
+   async tlsaStatus(host) {
+     let c = this._chainFor(host);
+     if (!c?.ports) return null;
+@@ -206,7 +207,9 @@ export const GreatDANE = {
+         "http://127.0.0.1:" + c.ports.pac + "/gd/tlsa?host=" + encodeURIComponent(host),
+         { cache: "no-store" }
+       );
+-      return (await r.json()).status || null;
++      let j = await r.json();
++      // Answered, but no usable status: "" (classified as a key mismatch).
++      return typeof j?.status == "string" ? j.status : "";
+     } catch (e) {
+       return null;
+     }
+diff --git a/browser/components/greatdane/GreatDANEAbout.sys.mjs b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+index 285f151460..bfed04a680 100644
+--- a/browser/components/greatdane/GreatDANEAbout.sys.mjs
++++ b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+@@ -25,12 +25,25 @@ const ERRORS = {
+     "The name is on the chain but its server could not be reached through the node."],
+ };
+ 
+-const CHAIN_HOST = /\.(pepe|doge)\.?$/i;
++// Fallback "is this a chain host?" test, used only when the chain lookup
++// itself throws. Configurable via greatdane.chainHostPattern (a RegExp
++// source, case-insensitive); a bad pattern falls back to the default.
++const CHAIN_HOST_DEFAULT = "\\.(pepe|doge)\\.?$";
++function chainHostRe() {
++  let src = CHAIN_HOST_DEFAULT;
++  try {
++    src = Services.prefs.getStringPref("greatdane.chainHostPattern", CHAIN_HOST_DEFAULT);
++    return new RegExp(src, "i");
++  } catch (e) {
++    console.error("GreatDANE: bad greatdane.chainHostPattern", src, e);
++    return new RegExp(CHAIN_HOST_DEFAULT, "i");
++  }
++}
+ 
+ // Pure decision for a failed top-level load of a chain host. Anything we
+ // cannot determine maps to a blocking interstitial, never to "open".
+-//   block: GreatDANE.blockReason(c) or null; tlsa: node /gd/tlsa status, or
+-//   null if the node could not be asked; tlsFail: true/false, or null if the
++//   block: GreatDANE.blockReason(c) or null; tlsa: node /gd/tlsa status
++//   ("" if the node answered without one), or null if it could not be asked; tlsFail: true/false, or null if the
+ //   failure kind is unknown (treated as a TLS failure: fail closed).
+ export function classifyChainFailure({ block = null, tlsa = null, tlsFail = null } = {}) {
+   if (block) return block;
+@@ -39,7 +52,9 @@ export function classifyChainFailure({ block = null, tlsa = null, tlsFail = null
+   if (tlsa == "no_tlsa") return "GD_NO_TLSA";
+   if (tlsa == "bad_record") return "GD_BAD_TLSA";
+   if (tlsa == "ok") return tlsFail === false ? "GD_SITE_UNREACHABLE" : "GD_TLS_UNTRUSTED";
+-  return "GD_SITE_UNREACHABLE";
++  // The node answered but with an unknown or missing status: we cannot say
++  // the key is fine, so show the safe mismatch page, never "unreachable".
++  return "GD_TLS_UNTRUSTED";
+ }
+ 
+ const esc = s => String(s ?? "").replace(/[&<>"']/g, ch => "&#" + ch.charCodeAt(0) + ";");
+@@ -162,7 +177,7 @@ export const ErrorTrap = {
+       console.error("GreatDANE: chain lookup failed for", host, e);
+       lookupFailed = true;
+     }
+-    if (!c && !(lookupFailed && CHAIN_HOST.test(host))) return;
++    if (!c && !(lookupFailed && chainHostRe().test(host))) return;
+     let code = c ? GreatDANE.blockReason(c) : "GD_NODE_NOT_READY";
+     let status = 0;
+     let statusKnown = !request;
+diff --git a/browser/components/greatdane/test/unit/test_greatdane_failclosed.js b/browser/components/greatdane/test/unit/test_greatdane_failclosed.js
+index 05d6383847..ad554a5e2c 100644
+--- a/browser/components/greatdane/test/unit/test_greatdane_failclosed.js
++++ b/browser/components/greatdane/test/unit/test_greatdane_failclosed.js
+@@ -12,7 +12,8 @@ const { ErrorTrap, _render, classifyChainFailure } = ChromeUtils.importESModule(
+   "resource:///modules/GreatDANEAbout.sys.mjs"
+ );
+ 
+-const MOCK = { "notlsa.doge": "no_tlsa", "mismatch.doge": "ok", "notlsa.pepe": "no_tlsa" };
++const MOCK = { "notlsa.doge": "no_tlsa", "mismatch.doge": "ok", "notlsa.pepe": "no_tlsa",
++  "nostatus.doge": null, "weird.doge": "mystery" };
+ let mockPort = globalThis.GD_MOCK_PORT; // set by an external runner with its own mock
+ let server = null;
+ 
+@@ -23,7 +24,8 @@ function startMock() {
+   server.registerPathHandler("/gd/tlsa", (req, resp) => {
+     let host = new URLSearchParams(req.queryString).get("host");
+     resp.setHeader("Content-Type", "application/json", false);
+-    resp.write(JSON.stringify({ status: MOCK[host] || "unowned" }));
++    let st = host in MOCK ? MOCK[host] : "unowned";
++    resp.write(JSON.stringify(st === null ? {} : { status: st }));
+   });
+   server.start(-1);
+   mockPort = server.identity.primaryPort;
+@@ -120,6 +122,44 @@ add_task(function classify_unknowns_fail_closed() {
+   Assert.equal(classifyChainFailure({}), "GD_NODE_NOT_READY");
+   Assert.equal(classifyChainFailure({ tlsa: "ok" }), "GD_TLS_UNTRUSTED");
+   Assert.equal(classifyChainFailure({ tlsa: "ok", tlsFail: false }), "GD_SITE_UNREACHABLE");
+-  Assert.equal(classifyChainFailure({ tlsa: "weird" }), "GD_SITE_UNREACHABLE");
++  Assert.equal(classifyChainFailure({ tlsa: "weird" }), "GD_TLS_UNTRUSTED", "unknown status");
++  Assert.equal(classifyChainFailure({ tlsa: "" }), "GD_TLS_UNTRUSTED", "missing status");
++  Assert.equal(classifyChainFailure({ tlsa: "weird", tlsFail: false }), "GD_TLS_UNTRUSTED",
++    "unknown status never reads as unreachable");
+   Assert.equal(classifyChainFailure({ block: "GD_NODE_SYNCING", tlsa: "ok" }), "GD_NODE_SYNCING");
+ });
++
++add_task(async function unknown_or_missing_status_is_mismatch() {
++  setChains(chain("doge"));
++  for (let h of ["nostatus.doge", "weird.doge"]) {
++    let { code, html } = await trap("https://" + h + "/");
++    Assert.equal(code, "GD_TLS_UNTRUSTED", h);
++    assertBlocked(html, "GD_TLS_UNTRUSTED", "does not match the chain");
++  }
++});
++
++add_task(async function chain_host_pattern_pref() {
++  Assert.equal(Services.prefs.getDefaultBranch("").getStringPref("greatdane.chainHostPattern"),
++    "\\.(pepe|doge)\\.?$", "default keeps the old CHAIN_HOST");
++  let orig = GreatDANE._chainFor;
++  GreatDANE._chainFor = () => { throw new Error("lookup broken"); };
++  let run = async url => {
++    let loaded = null;
++    await ErrorTrap.onLocationChange(
++      { documentURI: Services.io.newURI("about:neterror?e=x"), loadURI(u) { loaded = u.spec; } },
++      { isTopLevel: true }, null, Services.io.newURI(url),
++      Ci.nsIWebProgressListener.LOCATION_CHANGE_ERROR_PAGE);
++    return loaded && new URL(loaded).searchParams.get("e");
++  };
++  try {
++    Assert.equal(await run("https://a.pepe/"), "GD_NODE_NOT_READY", "default matches .pepe");
++    Assert.equal(await run("https://a.shib/"), null, "default ignores .shib");
++    Services.prefs.setStringPref("greatdane.chainHostPattern", "\\.shib\\.?$");
++    Assert.equal(await run("https://a.shib/"), "GD_NODE_NOT_READY", "pref adds .shib");
++    Services.prefs.setStringPref("greatdane.chainHostPattern", "([");
++    Assert.equal(await run("https://a.doge/"), "GD_NODE_NOT_READY", "bad pattern -> default");
++  } finally {
++    GreatDANE._chainFor = orig;
++    Services.prefs.clearUserPref("greatdane.chainHostPattern");
++  }
++});
