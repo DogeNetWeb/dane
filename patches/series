@@ -33,3 +33,4 @@
 0033-GreatDANE-mozconfigs-update-channel-esr-MAR-channel-.patch
 0034-GreatDANE-prefs-tint-sad-dane-illustration-with-prim.patch
 0035-GreatDANE-about-pages-sad-Dane-art-on-about-tabcrash.patch
+0036-GreatDANE-gd-buildinfo.sh-writes-BUILDINFO.txt-tree-.patch

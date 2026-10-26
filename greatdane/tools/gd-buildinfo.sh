@@ -1,0 +1,23 @@
+#!/bin/bash
+# Write BUILDINFO.txt beside a Dane dmg. Read-only inputs; no secrets.
+# Usage: gd-buildinfo.sh DMG [NODE_REPO] [OBJDIR]
+set -euo pipefail
+DMG=$1; TREE=$(cd "$(dirname "$0")/../.." && pwd)
+NODE=${2:-$TREE/../pepenet-desktop}; OBJ=${3:-$TREE/obj-gd}
+cfg() { grep -o "'$1': '[^']*'" "$OBJ/config.status" 2>/dev/null | head -1 | sed "s/.*: '//; s/'\$//"; }
+AMAL=$(sed -n 's/^SQLITE_AMALGAMATION:PATH=//p' "$NODE/build-pin-arm64/CMakeCache.txt" 2>/dev/null)
+SQL=$(sed -n 's/^#define SQLITE_VERSION *"\(.*\)"/\1/p' "$AMAL/sqlite3.h" 2>/dev/null)
+{
+echo "product:        Dane $(cat "$TREE/browser/config/version_display.txt")"
+echo "dmg:            $(basename "$DMG")"
+echo "dmg_sha256:     $(shasum -a 256 "$DMG" | cut -d' ' -f1)"
+echo "build_id:       $(sed -n 's/^BuildID=//p' "$OBJ/dist/bin/application.ini" 2>/dev/null)"
+echo "tree:           $(git -C "$TREE" rev-parse HEAD) ($(git -C "$TREE" rev-parse --abbrev-ref HEAD))$(git -C "$TREE" diff --quiet HEAD || echo ' +dirty')"
+echo "node:           $(git -C "$NODE" rev-parse HEAD) ($(git -C "$NODE" rev-parse --abbrev-ref HEAD))"
+echo "sqlite:         ${SQL:-unknown}"
+echo "update_channel: $(cfg MOZ_UPDATE_CHANNEL)"
+echo "mar_channel:    $(cfg MAR_CHANNEL_ID)"
+echo "accepted_mar:   $(cfg ACCEPTED_MAR_CHANNEL_IDS)"
+echo "generated:      $(date '+%F %T %Z')"
+} > "$(dirname "$DMG")/BUILDINFO.txt"
+cat "$(dirname "$DMG")/BUILDINFO.txt"
