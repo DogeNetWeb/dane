@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 15:56:26 -0500
+Subject: [PATCH 032/144] =?UTF-8?q?GreatDANE:=20about:preferences=20rebran?=
+ =?UTF-8?q?d=20via=20overrides=20=E2=80=94=20Dane=20sidebar=20mark,=20gene?=
+ =?UTF-8?q?ric=20account=20avatar,=20sad-dane=20illustration;=20hide=20Rel?=
+ =?UTF-8?q?ay=20email-mask=20checkbox=20(test=20widened)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ browser/branding/greatdane/content/jar.mn                    | 4 ++++
+ browser/components/greatdane/test/marionette/run_gd_prefs.py | 5 +++--
+ browser/components/preferences/preferences.js                | 3 ++-
+ 3 files changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/browser/branding/greatdane/content/jar.mn b/browser/branding/greatdane/content/jar.mn
+index 545f9fe9fc..3f4f40a03f 100644
+--- a/browser/branding/greatdane/content/jar.mn
++++ b/browser/branding/greatdane/content/jar.mn
+@@ -4,6 +4,10 @@
+ 
+ browser.jar:
+ % content branding %content/branding/ contentaccessible=yes
++# GreatDANE rebrand overrides (see REBRAND-NOTES.md beside the tree):
++% override chrome://browser/skin/sidebar/firefox.svg chrome://branding/content/greatdane-icon.svg
++% override chrome://browser/skin/preferences/mozilla-logo.svg chrome://browser/skin/fxa/avatar-empty.svg
++% override chrome://global/skin/illustrations/kit-concerned.svg chrome://branding/content/sad-dane.svg
+   content/branding/about.png
+   content/branding/about-logo.png
+   content/branding/about-logo.svg
+diff --git a/browser/components/greatdane/test/marionette/run_gd_prefs.py b/browser/components/greatdane/test/marionette/run_gd_prefs.py
+index e19dbf7533..0bf969125b 100644
+--- a/browser/components/greatdane/test/marionette/run_gd_prefs.py
++++ b/browser/components/greatdane/test/marionette/run_gd_prefs.py
+@@ -87,12 +87,13 @@ try:
+       return !!g && g.checkVisibility() && g.getBoundingClientRect().height > 0;''')
+     m.execute_async_script(OPEN, script_args=["privacy"], sandbox=None); time.sleep(2)
+     r = js(m, '''return { dc: arguments[0],
+-      vpn: shown('[groupid="ipprotection"]'), relay: shown("#relayIntegrationBox"),
++      vpn: shown('[groupid="ipprotection"]'), relay: [...d.querySelectorAll("#relayIntegrationBox, #setting-control-relayIntegration, #relayIntegration")].some(vis),
++      relayPresent: d.querySelectorAll("#setting-control-relayIntegration, #relayIntegration").length > 0,
+       mfm: vis(d.getElementById("category-more-from-mozilla")),
+       sync: vis(d.getElementById("category-sync")) };''', [dc])
+     check("data collection opt-outs visible", r["dc"], r)
+     check("VPN hidden", not r["vpn"], r)
+-    check("Relay hidden", not r["relay"], r)
++    check("Relay hidden (incl. 'Suggest Firefox Relay email masks')", r["relayPresent"] and not r["relay"], r)
+     check("More from Mozilla hidden", not r["mfm"], r)
+     check("Sync visible by default", r["sync"], r)
+     shot(m, "privacy-security.png")
+diff --git a/browser/components/preferences/preferences.js b/browser/components/preferences/preferences.js
+index 304b935b56..b47c0d70d8 100644
+--- a/browser/components/preferences/preferences.js
++++ b/browser/components/preferences/preferences.js
+@@ -517,7 +517,8 @@ document.addEventListener("DOMContentLoaded", init_all, { once: true });
+ // stays visible unless greatdane.prefs.hideSync is true. See PREFS-AUDIT.md.
+ const GD_HIDE_CSS = `
+   [groupid="ipprotection"], [data-srd-groupid="ipprotection"],
+-  #relayIntegrationBox, #category-more-from-mozilla, #topstories,
++  #relayIntegrationBox, #setting-control-relayIntegration, #relayIntegration,
++  #category-more-from-mozilla, #topstories,
+   [data-category="paneMoreFromMozilla"] { display: none !important; }`;
+ const GD_SYNC_CSS = `
+   #category-sync, [data-category="paneSync"] { display: none !important; }`;
