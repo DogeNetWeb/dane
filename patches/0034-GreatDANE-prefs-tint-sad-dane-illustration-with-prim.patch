@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 16:03:20 -0500
+Subject: [PATCH 034/144] GreatDANE prefs: tint sad-dane illustration with
+ primary button color (context-fill)
+
+---
+ browser/components/preferences/preferences.js | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/browser/components/preferences/preferences.js b/browser/components/preferences/preferences.js
+index b47c0d70d8..b83699286a 100644
+--- a/browser/components/preferences/preferences.js
++++ b/browser/components/preferences/preferences.js
+@@ -519,7 +519,12 @@ const GD_HIDE_CSS = `
+   [groupid="ipprotection"], [data-srd-groupid="ipprotection"],
+   #relayIntegrationBox, #setting-control-relayIntegration, #relayIntegration,
+   #category-more-from-mozilla, #topstories,
+-  [data-category="paneMoreFromMozilla"] { display: none !important; }`;
++  [data-category="paneMoreFromMozilla"] { display: none !important; }
++  /* sad-dane.svg (fill="context-fill", overrides kit-concerned.svg): tint it
++     with the primary-button color. Both properties inherit into moz-promo's
++     shadow <img>, so it follows light/dark/HCM themes. */
++  moz-promo[imagesrc$="kit-concerned.svg"] { -moz-context-properties: fill;
++    fill: var(--button-background-color-primary); }`;
+ const GD_SYNC_CSS = `
+   #category-sync, [data-category="paneSync"] { display: none !important; }`;
+ function gdApplyHiding() {
