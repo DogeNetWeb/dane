@@ -1,0 +1,267 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 09:21:52 -0500
+Subject: [PATCH 018/144] GreatDANE: real-cert-path DANE test (trusted test
+ root, override routes, resumption gap recorded)
+
+---
+ .../test/marionette/run_gd_certpath.py        |  99 ++++++++++++
+ .../marionette/test_greatdane_certpath.js     | 143 ++++++++++++++++++
+ 2 files changed, 242 insertions(+)
+ create mode 100644 browser/components/greatdane/test/marionette/run_gd_certpath.py
+ create mode 100644 browser/components/greatdane/test/marionette/test_greatdane_certpath.js
+
+diff --git a/browser/components/greatdane/test/marionette/run_gd_certpath.py b/browser/components/greatdane/test/marionette/run_gd_certpath.py
+new file mode 100644
+index 0000000000..9caee6d1d0
+--- /dev/null
++++ b/browser/components/greatdane/test/marionette/run_gd_certpath.py
+@@ -0,0 +1,99 @@
++# Runs test_greatdane_certpath.js in the built Dane (chrome context via
++# Marionette). Starts: a throwaway test CA + leaf (real.pepe, real.test) in a
++# temp dir, a local HTTPS server with that leaf, and a mock /gd/tlsa endpoint
++# that answers in the node's flat-JSON format. Nothing is kept afterwards.
++#   python3 run_gd_certpath.py [path/to/greatdane]
++import base64, hashlib, json, os, shutil, ssl, subprocess, sys, tempfile, threading, time
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++from urllib.parse import urlparse, parse_qs
++from marionette_driver.marionette import Marionette
++HERE = os.path.dirname(os.path.abspath(__file__))
++TREE = os.path.abspath(os.path.join(HERE, "../../../../.."))
++APP = sys.argv[1] if len(sys.argv) > 1 else TREE + "/obj-gd/dist/Dane.app/Contents/MacOS/greatdane"
++OSSL = shutil.which("openssl")
++tmp = tempfile.mkdtemp(prefix="gd-certpath-")
++def sh(*a): subprocess.run(a, check=True, cwd=tmp, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++open(tmp + "/leaf.ext", "w").write("subjectAltName=DNS:real.pepe,DNS:real.test\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n")
++open(tmp + "/ca.ext", "w").write("basicConstraints=critical,CA:TRUE\nkeyUsage=critical,keyCertSign,cRLSign\n")
++sh(OSSL, "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", "ca.pem.k")
++sh(OSSL, "req", "-new", "-key", "ca.pem.k", "-subj", "/CN=Dane certpath TEST root", "-out", "ca.csr")
++sh(OSSL, "x509", "-req", "-in", "ca.csr", "-signkey", "ca.pem.k", "-sha256", "-days", "2", "-extfile", "ca.ext", "-out", "ca.crt")
++sh(OSSL, "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", "leaf.pem.k")
++sh(OSSL, "req", "-new", "-key", "leaf.pem.k", "-subj", "/CN=real.pepe", "-out", "leaf.csr")
++sh(OSSL, "x509", "-req", "-in", "leaf.csr", "-CA", "ca.crt", "-CAkey", "ca.pem.k", "-CAcreateserial", "-sha256", "-days", "2", "-extfile", "leaf.ext", "-out", "leaf.crt")
++spki_der = subprocess.run([OSSL, "x509", "-in", tmp + "/leaf.crt", "-pubkey", "-noout"], check=True, capture_output=True).stdout
++spki_der = subprocess.run([OSSL, "pkey", "-pubin", "-outform", "DER"], input=spki_der, check=True, capture_output=True).stdout
++SPKI = hashlib.sha256(spki_der).hexdigest()
++ROOT = "".join(l for l in open(tmp + "/ca.crt").read().splitlines() if "-----" not in l)
++
++class Site(BaseHTTPRequestHandler):
++    protocol_version = "HTTP/1.1"
++    def do_GET(s):
++        b = b"chain site ok"; s.send_response(200); s.send_header("Content-Length", str(len(b))); s.end_headers(); s.wfile.write(b)
++    def log_message(s, *a): pass
++tls = ThreadingHTTPServer(("127.0.0.1", 0), Site)
++ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); ctx.load_cert_chain(tmp + "/leaf.crt", tmp + "/leaf.pem.k")
++tls.socket = ctx.wrap_socket(tls.socket, server_side=True)
++STATE = {"mode": "mismatch"}
++class Mock(BaseHTTPRequestHandler):
++    protocol_version = "HTTP/1.1"
++    def do_GET(s):
++        u = urlparse(s.path); q = parse_qs(u.query)
++        if u.path == "/ctl":
++            STATE["mode"] = q.get("mode", ["mismatch"])[0]; body = {"mode": STATE["mode"]}
++        elif STATE["mode"] == "down":
++            s.send_response(503); s.send_header("Content-Length", "0"); s.send_header("Connection", "close"); s.end_headers(); return
++        elif STATE["mode"] == "garbage":
++            body = {"status": "mystery"}
++        else:
++            body = {"status": "ok", "usage": 3, "selector": 1, "mtype": 1,
++                    "data": SPKI if STATE["mode"] == "match" else "00" * 32}
++        b = json.dumps(body, separators=(",", ":")).encode()
++        s.send_response(200); s.send_header("Content-Type", "application/json"); s.send_header("Content-Length", str(len(b)))
++        s.send_header("Access-Control-Allow-Origin", "*"); s.send_header("Connection", "close"); s.end_headers(); s.wfile.write(b)
++    def log_message(s, *a): pass
++mock = ThreadingHTTPServer(("127.0.0.1", 0), Mock)
++for srv in (tls, mock): threading.Thread(target=srv.serve_forever, daemon=True).start()
++
++prof = tmp + "/prof"; os.makedirs(prof)
++open(prof + "/user.js", "w").write('''user_pref("greatdane.enabled", false);
++user_pref("network.dns.localDomains", "real.pepe,real.test");
++user_pref("network.proxy.type", 0);
++user_pref("network.http.http3.enable", false);
++user_pref("browser.shell.checkDefaultBrowser", false);
++user_pref("marionette.port", 2832);
++''')
++p = subprocess.Popen([APP, "--headless", "--marionette", "-remote-allow-system-access", "--no-remote", "--profile", prof],
++                     stdout=open(tmp + "/browser.log", "w"), stderr=subprocess.STDOUT)
++SHIM = r'''
++const done = arguments[arguments.length - 1];
++const out = []; let fails = 0, passes = 0; const tasks = []; const cleanups = [];
++const ok = (c, m) => { if (c) passes++; else { fails++; out.push("FAIL " + m); } };
++const todo = (c, m) => out.push((c ? "TODO-NOW-PASSES " : "KNOWN-FAIL ") + m);
++const Assert = { ok: (c, m) => ok(!!c, m), equal: (a, b, m) => ok(a == b, `${m || ""} got ${a} expected ${b}`) };
++const add_task = f => tasks.push(f), add_setup = f => tasks.unshift(f), registerCleanupFunction = f => cleanups.push(f);
++globalThis.GD_CERTPATH = arguments[0];
++(async () => {
++  try {
++    @@SRC@@
++    for (const t of tasks) { const f0 = fails; try { await t(); } catch (e) { fails++; out.push("EXC " + t.name + ": " + e + "\n" + e.stack); }
++      out.push((fails == f0 ? "PASS " : "FAIL ") + (t.name || "setup")); }
++    for (const c of cleanups) await c();
++  } catch (e) { fails++; out.push("LOAD " + e + "\n" + e.stack); }
++  delete globalThis.GD_CERTPATH;
++  done({ passes, fails, out });
++})();
++'''
++rc = 1
++try:
++    m = Marionette(host="127.0.0.1", port=2832); m.start_session(); time.sleep(3)
++    m.set_context("chrome"); m.timeout.script = 120
++    src = open(HERE + "/test_greatdane_certpath.js").read().replace('"use strict";', "")
++    args = {"tls": tls.server_address[1], "mock": mock.server_address[1], "root": ROOT, "spki": SPKI}
++    r = m.execute_async_script(SHIM.replace("@@SRC@@", "{\n" + src + "\n}"), script_args=[args], sandbox=None)
++    print("\n".join(r["out"])); print(f"assertions passed={r['passes']} failed={r['fails']}")
++    rc = 0 if r["fails"] == 0 else 1
++    m.delete_session()
++finally:
++    p.terminate(); p.wait(20); tls.shutdown(); mock.shutdown(); shutil.rmtree(tmp, ignore_errors=True)
++sys.exit(rc)
+diff --git a/browser/components/greatdane/test/marionette/test_greatdane_certpath.js b/browser/components/greatdane/test/marionette/test_greatdane_certpath.js
+new file mode 100644
+index 0000000000..76caa4689b
+--- /dev/null
++++ b/browser/components/greatdane/test/marionette/test_greatdane_certpath.js
+@@ -0,0 +1,143 @@
++/* Any copyright is dedicated to the Public Domain.
++ * http://creativecommons.org/publicdomain/zero/1.0/ */
++
++// Real certificate path: a .pepe host whose cert chains to a TRUSTED root
++// (a throwaway test root, added only for this test) must still fail with
++// MOZILLA_PKIX_ERROR_KEY_PINNING_FAILURE when its on-chain TLSA does not
++// match, and load when it does. Cert overrides ("Accept the risk"), the
++// pinning enforcement pref and TLS session resumption must not bypass it.
++// Run by run_gd_certpath.py (chrome context via Marionette, local TLS
++// server + mock /gd/tlsa); globalThis.GD_CERTPATH carries its parameters.
++
++"use strict";
++
++const { NetUtil } = ChromeUtils.importESModule("resource://gre/modules/NetUtil.sys.mjs");
++const P = globalThis.GD_CERTPATH; // { tls, mock, root, spki }
++const EP = "security.greatdane.tlsa_endpoints";
++const certdb = Cc["@mozilla.org/security/x509certdb;1"].getService(Ci.nsIX509CertDB);
++const overrides = Cc["@mozilla.org/security/certoverride;1"].getService(Ci.nsICertOverrideService);
++let root = null;
++
++async function mode(m) {
++  let r = await fetch(`http://127.0.0.1:${P.mock}/ctl?mode=${m}`, { cache: "no-store" });
++  Assert.equal(r.status, 200, "mock mode " + m);
++}
++
++function freshConnections({ keepSessions = false } = {}) {
++  Services.obs.notifyObservers(null, "net:cancel-all-connections");
++  Services.obs.notifyObservers(null, "net:prune-all-connections");
++  if (!keepSessions) {
++    Cc["@mozilla.org/psm;1"].getService(Ci.nsINSSComponent)
++      .clearSSLExternalAndInternalSessionCache();
++  }
++}
++
++function load(host) {
++  let url = `https://${host}:${P.tls}/`;
++  return new Promise(resolve => {
++    let ch = NetUtil.newChannel({ uri: url, loadUsingSystemPrincipal: true });
++    ch.loadFlags |= Ci.nsIRequest.LOAD_BYPASS_CACHE | Ci.nsIRequest.INHIBIT_CACHING |
++      Ci.nsIRequest.LOAD_ANONYMOUS;
++    ch.asyncOpen({
++      onStartRequest() {},
++      onDataAvailable(r, s, o, c) { NetUtil.readInputStreamToString(s, c); },
++      onStopRequest(r, status) {
++        let si = null;
++        try { si = ch.securityInfo; } catch (e) {}
++        resolve({
++          ok: Components.isSuccessCode(status),
++          err: si?.errorCodeString || "",
++          cat: si?.overridableErrorCategory,
++          cert: si?.serverCert || null,
++          resumed: !!si?.resumed,
++          http: Components.isSuccessCode(status) ? ch.QueryInterface(Ci.nsIHttpChannel).responseStatus : 0,
++        });
++      },
++    });
++  });
++}
++
++function expectPinFail(r, what) {
++  Assert.ok(!r.ok, what + ": load blocked");
++  Assert.equal(r.err, "MOZILLA_PKIX_ERROR_KEY_PINNING_FAILURE", what + ": error code");
++  Assert.equal(r.cat, Ci.nsITransportSecurityInfo.ERROR_UNSET, what + ": not an overridable category");
++}
++
++add_setup(() => {
++  root = certdb.addCertFromBase64(P.root, "C,,");
++  Assert.ok(root, "test root added (test profile only)");
++  Services.prefs.setStringPref(EP, `pepe=127.0.0.1:${P.mock},doge=`);
++  registerCleanupFunction(() => {
++    try { certdb.deleteCertificate(root); } catch (e) { console.error(e); }
++    overrides.clearAllOverrides();
++    Services.prefs.clearUserPref(EP);
++    Services.prefs.clearUserPref("security.cert_pinning.enforcement_level");
++    freshConnections();
++  });
++});
++
++add_task(async function control_root_is_trusted_for_web_pki() {
++  freshConnections();
++  let r = await load("real.test");
++  Assert.ok(r.ok && r.http == 200, `non-chain host on the test root loads (err=${r.err})`);
++});
++
++add_task(async function default_pref_fails_closed_without_node() {
++  Assert.equal(Services.prefs.getDefaultBranch("").getStringPref(EP), "pepe=,doge=", "pref default");
++  Services.prefs.clearUserPref(EP);
++  freshConnections();
++  expectPinFail(await load("real.pepe"), "default pref, no node");
++  Services.prefs.setStringPref(EP, `pepe=127.0.0.1:${P.mock},doge=`);
++});
++
++add_task(async function trusted_root_mismatch_fails() {
++  await mode("mismatch");
++  freshConnections();
++  expectPinFail(await load("real.pepe"), "trusted root + TLSA mismatch");
++  await mode("garbage");
++  freshConnections();
++  expectPinFail(await load("real.pepe"), "trusted root + unknown TLSA status");
++  await mode("down");
++  freshConnections();
++  expectPinFail(await load("real.pepe"), "trusted root + TLSA endpoint error");
++});
++
++add_task(async function override_routes_cannot_bypass() {
++  await mode("mismatch");
++  freshConnections();
++  let r = await load("real.pepe");
++  expectPinFail(r, "before override");
++  Assert.ok(r.cert, "server cert visible for the override attempt");
++  // What about:certerror's "Accept the risk and continue" and the exception
++  // dialog both do: remember a validity override for host:port.
++  overrides.rememberValidityOverride("real.pepe", P.tls, {}, r.cert, false);
++  overrides.rememberValidityOverride("real.pepe", P.tls, {}, r.cert, true);
++  freshConnections();
++  expectPinFail(await load("real.pepe"), "after cert override");
++  Services.prefs.setIntPref("security.cert_pinning.enforcement_level", 0);
++  freshConnections();
++  expectPinFail(await load("real.pepe"), "pinning enforcement off");
++  Services.prefs.clearUserPref("security.cert_pinning.enforcement_level");
++  overrides.clearAllOverrides();
++});
++
++add_task(async function trusted_root_match_loads() {
++  await mode("match");
++  freshConnections();
++  let r = await load("real.pepe");
++  Assert.ok(r.ok && r.http == 200, `TLSA match loads (err=${r.err})`);
++});
++
++add_task(async function resumption_does_not_skip_tlsa() {
++  await mode("match");
++  freshConnections();
++  Assert.ok((await load("real.pepe")).ok, "match primes a TLS session");
++  await mode("mismatch");
++  freshConnections({ keepSessions: true }); // new TCP connection, session cache kept
++  let r = await load("real.pepe");
++  // KNOWN GAP (see report): a resumed TLS session does not run the DANE
++  // check again, so a TLSA change is not seen until the session expires.
++  // Recorded with todo() until the fix lands; flip to expectPinFail then.
++  todo(!r.ok && r.err == "MOZILLA_PKIX_ERROR_KEY_PINNING_FAILURE",
++    `resumed session after TLSA changed is blocked (ok=${r.ok} resumed=${r.resumed} err=${r.err})`);
++});

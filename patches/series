@@ -15,3 +15,4 @@
 0015-GreatDANE-fail-closed-and-log-in-about-dane-error-tr.patch
 0016-GreatDANE-default-tlsa_endpoints-to-pepe-doge-so-cha.patch
 0017-GreatDANE-unknown-missing-TLSA-status-shows-the-key-.patch
+0018-GreatDANE-real-cert-path-DANE-test-trusted-test-root.patch
