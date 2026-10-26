@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 11:53:55 -0500
+Subject: [PATCH 022/144] GreatDANE: self-hosted ESR update URL
+ (pepecoin.surf/dane), manual/details links to Dane pages instead of
+ nightly.mozilla.org; app.update.auto on (plan A)
+
+---
+ browser/app/profile/firefox.js                      | 13 ++++++++-----
+ browser/branding/greatdane/pref/firefox-branding.js |  4 ++--
+ 2 files changed, 10 insertions(+), 7 deletions(-)
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index 6626b577bc..abacfa31ec 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -3687,11 +3687,14 @@ pref("browser.newtabpage.activity-stream.showSponsoredTopSites", false);
+ pref("browser.newtabpage.activity-stream.discoverystream.enabled", false);
+ pref("browser.topsites.contile.enabled", false);
+ pref("browser.urlbar.suggest.quicksuggest.sponsored", false);
+-// Updates: Mozilla's AUS would offer stock Firefox; GreatDANE's own channel comes later
+-pref("app.update.auto", false);
+-pref("app.update.background.scheduling.enabled", false);
+-pref("app.update.url", "");
+-pref("app.update.checkInstallTime", false);
++// Updates: Dane's own self-hosted, MAR-signed ESR channel (UPDATE-PLAN.md,
++// Option A). Static update.xml; nginx/R2 rewrites unknown paths to a
++// "no update" answer. Mozilla's AUS is never contacted. MAR signatures are
++// verified against Dane's own certs embedded at build time
++// (../updates/embed-mar-cert.sh); the distribution policy keeps
++// DisableAppUpdate until that step and --enable-update-channel=esr land.
++pref("app.update.auto", true);
++pref("app.update.url", "https://pepecoin.surf/dane/update/3/%PRODUCT%/%VERSION%/%BUILD_ID%/%BUILD_TARGET%/%LOCALE%/%CHANNEL%/update.xml");
+ pref("browser.fixup.domainsuffixwhitelist.pepe", true);
+ pref("browser.startup.homepage", "https://pepecoin.surf/");
+ // Search suggestions are stock (on); a typed chain name with its suffix is
+diff --git a/browser/branding/greatdane/pref/firefox-branding.js b/browser/branding/greatdane/pref/firefox-branding.js
+index f22dd0a51c..44e9e5cb80 100644
+--- a/browser/branding/greatdane/pref/firefox-branding.js
++++ b/browser/branding/greatdane/pref/firefox-branding.js
+@@ -13,10 +13,10 @@ pref("app.update.interval", 86400); // 24 hours
+ pref("app.update.promptWaitTime", 86400);
+ // URL user can browse to manually if for some reason all update installation
+ // attempts fail.
+-pref("app.update.url.manual", "https://nightly.mozilla.org");
++pref("app.update.url.manual", "https://pepecoin.surf/dane/download/");
+ // A default value for the "More information about this update" link
+ // supplied in the "An update is available" page of the update wizard.
+-pref("app.update.url.details", "https://nightly.mozilla.org");
++pref("app.update.url.details", "https://pepecoin.surf/dane/releases/");
+ 
+ // The number of days a binary is permitted to be old
+ // without checking for an update.  This assumes that
