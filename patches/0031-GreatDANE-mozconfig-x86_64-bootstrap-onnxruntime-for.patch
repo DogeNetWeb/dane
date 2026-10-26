@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 15:56:22 -0500
+Subject: [PATCH 031/144] =?UTF-8?q?GreatDANE:=20mozconfig-x86=5F64=20?=
+ =?UTF-8?q?=E2=80=94=20bootstrap=20onnxruntime=20for=20the=20x86=5F64=20ha?=
+ =?UTF-8?q?lf=20of=20the=20universal=20build?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ mozconfig-x86_64 | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+ create mode 100644 mozconfig-x86_64
+
+diff --git a/mozconfig-x86_64 b/mozconfig-x86_64
+new file mode 100644
+index 0000000000..4e4ec14870
+--- /dev/null
++++ b/mozconfig-x86_64
+@@ -0,0 +1,11 @@
++# GreatDANE Intel slice (cross-compiled on arm64). Universal = obj-gd + this, via unify.
++ac_add_options --enable-application=browser
++ac_add_options --target=x86_64-apple-darwin
++ac_add_options --with-branding=browser/branding/greatdane
++ac_add_options --with-app-basename=GreatDANE
++ac_add_options --disable-tests
++ac_add_options --disable-debug
++ac_add_options --disable-crashreporter
++mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-gd-x86_64
++ac_add_options --with-onnx-runtime
++ac_add_options --enable-bootstrap=onnxruntime-x86_64-apple-darwin
