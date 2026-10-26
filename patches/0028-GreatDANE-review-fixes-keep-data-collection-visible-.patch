@@ -1,0 +1,350 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 15:56:11 -0500
+Subject: [PATCH 028/144] =?UTF-8?q?GreatDANE:=20review=20fixes=20=E2=80=94?=
+ =?UTF-8?q?=20keep=20data=20collection=20visible;=20legacy=20cert=20remova?=
+ =?UTF-8?q?l=20needs=20KNOWN=5FFPS=20+=20subject=20+=20self-issued?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- preferences.js: drop dataCollection from GD_HIDE_CSS (telemetry opt-outs stay reachable).
+- run_gd_prefs.py: check the data collection group in the redesigned Permissions and data pane.
+- GreatDANELegacy: only remove a legacy root when fingerprint is in KNOWN_FPS AND subject matches AND it is self-issued.
+- run_gd_legacy.py: lookalike test (same subject/issuer, different key) is kept.
+---
+ .../greatdane/GreatDANELegacy.sys.mjs         |  27 ++--
+ .../test/marionette/run_gd_legacy.py          | 146 +++++++++++++-----
+ .../greatdane/test/marionette/run_gd_prefs.py |  11 +-
+ browser/components/preferences/preferences.js |   3 +-
+ 4 files changed, 130 insertions(+), 57 deletions(-)
+
+diff --git a/browser/components/greatdane/GreatDANELegacy.sys.mjs b/browser/components/greatdane/GreatDANELegacy.sys.mjs
+index a3ccdca1aa..332f1f8dac 100644
+--- a/browser/components/greatdane/GreatDANELegacy.sys.mjs
++++ b/browser/components/greatdane/GreatDANELegacy.sys.mjs
+@@ -24,9 +24,9 @@ ChromeUtils.defineESModuleGetters(lazy, {
+ const log = (...a) => console.log("GreatDANE legacy:", ...a);
+ export const LEGACY_NAME = "pepenet";
+ export const LEGACY_TLDS = ["pepe", "doge"];
+-// Fingerprints of legacy roots seen on the dev machine (public certs only),
+-// kept for logging/diagnostics. Matching is by exact subject + self-issued,
+-// because every install generated its own key.
++// SHA-256 fingerprints of the known legacy roots (public certs only). A cert
++// is removable only if its fingerprint is listed here AND it has the exact
++// legacy subject AND is self-issued. A subject match alone never removes.
+ export const KNOWN_FPS = new Set([
+   "DE:94:BD:E8:06:0D:C6:5D:66:DF:BA:76:CA:F3:C0:76:19:82:C9:8A:A5:B1:51:75:D8:B3:E1:6A:57:A6:92:CB",
+   "B3:05:DE:83:D0:2A:C4:BC:AB:04:1A:F3:E4:C8:3D:A4:38:47:5B:1B:47:F8:EB:5C:D1:29:E7:88:AE:00:5C:8A",
+@@ -35,27 +35,28 @@ export const KNOWN_FPS = new Set([
+ export const LEGACY_SUBJECTS = new Set(LEGACY_TLDS.map(t => `CN=${LEGACY_NAME} .${t} root CA`));
+ 
+ // Pure: is this nsIX509Cert-like object one of the legacy PepeNet roots?
+-export function isLegacyRoot(cert) {
++export function isLegacyRoot(cert, known = KNOWN_FPS) {
+   if (!cert || cert.isBuiltInRoot) return false;
+-  return LEGACY_SUBJECTS.has(cert.subjectName) && cert.issuerName === cert.subjectName;
++  return known.has(String(cert.sha256Fingerprint || "").toUpperCase()) &&
++    LEGACY_SUBJECTS.has(cert.subjectName) && cert.issuerName === cert.subjectName;
+ }
+ 
+ function certdb() {
+   return Cc["@mozilla.org/security/x509certdb;1"].getService(Ci.nsIX509CertDB);
+ }
+ 
+-export function findLegacyRoots(db = certdb()) {
+-  return db.getCerts().filter(isLegacyRoot);
++export function findLegacyRoots(db = certdb(), known = KNOWN_FPS) {
++  return db.getCerts().filter(c => isLegacyRoot(c, known));
+ }
+ 
+ // Removes exactly the given certs, re-checking each first.
+-export function removeLegacyRoots(certs, db = certdb()) {
++export function removeLegacyRoots(certs, db = certdb(), known = KNOWN_FPS) {
+   let removed = 0;
+   for (let c of certs) {
+-    if (!isLegacyRoot(c)) continue;
++    if (!isLegacyRoot(c, known)) continue;
+     db.deleteCertificate(c);
+     removed++;
+-    log("removed", c.subjectName, c.sha256Fingerprint, KNOWN_FPS.has(c.sha256Fingerprint) ? "(known)" : "");
++    log("removed", c.subjectName, c.sha256Fingerprint);
+   }
+   return removed;
+ }
+@@ -88,8 +89,8 @@ export async function listKeychainLegacy() {
+   return hits;
+ }
+ 
+-export async function offerCertCleanup(win, { db = certdb(), prompt = Services.prompt, listKeychain = listKeychainLegacy } = {}) {
+-  let found = findLegacyRoots(db);
++export async function offerCertCleanup(win, { db = certdb(), prompt = Services.prompt, listKeychain = listKeychainLegacy, known = KNOWN_FPS } = {}) {
++  let found = findLegacyRoots(db, known);
+   let kc = await listKeychain().catch(() => []);
+   if (!found.length && !kc.length) return { found: 0, removed: 0, keychain: 0 };
+   let msg = "Dane found root certificates installed by the old PepeNet tools. Dane does not need them: it checks .pepe and .doge sites against the chain directly.\n\n";
+@@ -98,7 +99,7 @@ export async function offerCertCleanup(win, { db = certdb(), prompt = Services.p
+   let removed = 0;
+   if (found.length) {
+     msg += "Remove the " + found.length + " certificate(s) listed under \"In Dane\"? No other certificates are touched.";
+-    if (prompt.confirm(win, "Old PepeNet certificates", msg)) removed = removeLegacyRoots(found, db);
++    if (prompt.confirm(win, "Old PepeNet certificates", msg)) removed = removeLegacyRoots(found, db, known);
+   } else {
+     prompt.alert(win, "Old PepeNet certificates", msg);
+   }
+diff --git a/browser/components/greatdane/test/marionette/run_gd_legacy.py b/browser/components/greatdane/test/marionette/run_gd_legacy.py
+index b3f89dae14..6ff34ab858 100644
+--- a/browser/components/greatdane/test/marionette/run_gd_legacy.py
++++ b/browser/components/greatdane/test/marionette/run_gd_legacy.py
+@@ -11,13 +11,17 @@ HERE = os.path.dirname(os.path.abspath(__file__))
+ SRC = os.path.abspath(os.path.join(HERE, "../.."))
+ TREE = os.path.abspath(os.path.join(HERE, "../../../../.."))
+ APP = sys.argv[1] if len(sys.argv) > 1 else TREE + "/obj-gd/dist/Dane.app/Contents/MacOS/greatdane"
++SHOTS = sys.argv[2] if len(sys.argv) > 2 else None
++# GD_PROMPTS=1: leave the startup cert-cleanup/import prompts ON in the throwaway profile
++# (greatdane.enabled stays false, so no node and no real data dir).
++PROMPTS = os.environ.get("GD_PROMPTS") == "1"
+ PORT = 2834
+ work = tempfile.mkdtemp(prefix="gd-legacy-")
+ prof = os.path.join(work, "profile"); os.makedirs(prof)
+ open(prof + "/user.js", "w").write(
+     f'user_pref("marionette.port", {PORT});\nuser_pref("browser.aboutwelcome.enabled", false);\n'
+-    'user_pref("greatdane.enabled", false);\nuser_pref("greatdane.legacy.certCleanup", false);\n'
+-    'user_pref("greatdane.legacy.import", false);\n')
++    'user_pref("greatdane.enabled", false);\nuser_pref("greatdane.legacy.certCleanup", %s);\n'
++    'user_pref("greatdane.legacy.import", %s);\n' % (("true",) * 2 if PROMPTS else ("false",) * 2))
+ fails = 0
+ def check(name, ok, info=""):
+     global fails
+@@ -44,6 +48,11 @@ decoy_o, _, _ = mkcert("d1", "/O=Evil/CN=pepenet .pepe root CA")
+ decoy_cn, _, _ = mkcert("d2", "/CN=pepenet .pepe root CA x")
+ other_b64, ok_, oc_ = mkcert("other", "/CN=Unrelated Test Root")
+ decoy_iss, _, _ = mkcert("d3", "/CN=pepenet .pepe root CA", ok_, oc_)  # same subject, not self-issued
++lookalike, _, _ = mkcert("lk", "/CN=pepenet .pepe root CA")  # exact subject, self-issued, UNKNOWN fingerprint
++def fp(b64):
++    d = hashlib.sha256(base64.b64decode(b64)).hexdigest().upper()
++    return ":".join(d[i:i + 2] for i in range(0, 64, 2))
++KNOWN = [fp(legacy_pepe), fp(legacy_doge)]  # test-only known list; lookalike is not in it
+ 
+ # --- chain db fixtures ---
+ legacy = os.path.join(work, "dotpepenet"); os.makedirs(legacy)
+@@ -55,15 +64,27 @@ open(os.path.join(legacy, "doge.db"), "wb").write(b"not a database" * 100)
+ h = lambda p: hashlib.sha256(open(p, "rb").read()).hexdigest()
+ src_hash = h(os.path.join(legacy, "pep.db")); bad_hash = h(os.path.join(legacy, "doge.db"))
+ 
+-# --- fake node /gd/names ---
+-NAMES = ["frog", "frogger", "fun", "kek", "bad name", "x" * 70]
++# --- fake node /gd/names (dane-09 contract) ---
++NAMES = sorted(["frog", "frogger", "fun", "kek", "bad name", "x" * 70] + ["m%03d" % i for i in range(45)])
++MODE = {"v": "ok"}
+ class H(http.server.BaseHTTPRequestHandler):
+     def do_GET(self):
+         from urllib.parse import urlparse, parse_qs
+-        q = parse_qs(urlparse(self.path).query); pre = q.get("prefix", [""])[0]
+-        names = [n for n in NAMES if pre and n.startswith(pre)][:20]
+-        b = json.dumps({"prefix": pre, "names": names, "tld": "pepe"}).encode()
+-        self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
++        q = parse_qs(urlparse(self.path).query)
++        def send(code, obj):
++            b = json.dumps(obj).encode()
++            self.send_response(code); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
++        if MODE["v"] == "no_db": return send(503, {"tld": "pepe", "status": "no_db"})
++        if any(len(v) > 1 for v in q.values()): return send(400, {"tld": "pepe", "status": "bad_prefix"})
++        pre = q.get("prefix", [""])[0]; off = int(q.get("offset", ["0"])[0]); lim = int(q.get("limit", ["20"])[0])
++        m = [n for n in NAMES if n.startswith(pre)]
++        page = m[off:off + lim]
++        rows = [{"name": n, "owner_h160": ("ab" * 20 if i % 2 == 0 else None), "lease_expiry": 1792213564,
++                 "state": 1, "price": 0} for i, n in enumerate(page)]
++        trunc = MODE["v"] == "truncated"
++        if trunc: rows = rows[:3]
++        send(200, {"tld": "pepe", "status": "ok", "prefix": pre, "names": rows, "total": len(m), "offset": off,
++                   "limit": lim, "count": len(rows), "truncated": trunc})
+     def log_message(self, *a): pass
+ srv = http.server.HTTPServer(("127.0.0.1", 0), H); threading.Thread(target=srv.serve_forever, daemon=True).start()
+ 
+@@ -85,31 +106,38 @@ try:
+     # certs: add all fixtures as trusted roots in the throwaway profile
+     errs = aj('''let [certs, done] = arguments; let db = Cc["@mozilla.org/security/x509certdb;1"].getService(Ci.nsIX509CertDB);
+       let errs = []; certs.forEach((b, i) => { try { db.addCertFromBase64(b, "C,,"); } catch (e) { errs.push(i + ":" + e.result); } }); done(errs);''',
+-       [[legacy_pepe, legacy_doge, decoy_o, decoy_cn, other_b64, decoy_iss]])
++       [[legacy_pepe, legacy_doge, decoy_o, decoy_cn, other_b64, decoy_iss, lookalike]])
+     check("fixtures added", errs == [], errs)
+     COUNT = '''let db = Cc["@mozilla.org/security/x509certdb;1"].getService(Ci.nsIX509CertDB);
+       let all = db.getCerts().filter(c => !c.isBuiltInRoot).map(c => c.subjectName + "|" + c.issuerName);'''
+-    r = aj(L + COUNT + '''let done = arguments[0]; done({ legacy: L.findLegacyRoots().map(c => c.subjectName).sort(), all });''')
+-    check("finds exactly the two legacy roots", r["legacy"] == ["CN=pepenet .doge root CA", "CN=pepenet .pepe root CA"], r)
+-    r = aj(L + COUNT + '''let done = arguments[0]; let asked = 0;
+-      L.offerCertCleanup(null, { prompt: { confirm() { asked++; return false; }, alert() {} }, listKeychain: async () => [] })
+-       .then(res => done({ res, asked, n: db.getCerts().filter(c => !c.isBuiltInRoot).length, before: all.length }));''')
++    r = aj(L + COUNT + '''let [known, done] = arguments; let K = new Set(known);
++      done({ legacy: L.findLegacyRoots(undefined, K).map(c => c.sha256Fingerprint).sort(),
++             builtinList: L.findLegacyRoots().length, all });''', [KNOWN])
++    check("finds exactly the two known legacy roots", r["legacy"] == sorted(KNOWN), r["legacy"])
++    check("subject match alone is never enough (default list ignores fixtures)", r["builtinList"] == 0, r["builtinList"])
++    r = aj(L + COUNT + '''let done = arguments[arguments.length - 1]; let asked = 0;
++      L.offerCertCleanup(null, { prompt: { confirm() { asked++; return false; }, alert() {} }, listKeychain: async () => [], known: new Set(arguments[arguments.length - 2]) })
++       .then(res => done({ res, asked, n: db.getCerts().filter(c => !c.isBuiltInRoot).length, before: all.length }));''', [KNOWN])
+     check("asks before removing", r["asked"] == 1, r)
+     check("decline removes nothing", r["res"]["removed"] == 0 and r["n"] == r["before"], r)
+-    r = aj(L + COUNT + '''let done = arguments[0];
+-      L.offerCertCleanup(null, { prompt: { confirm: () => true, alert() {} }, listKeychain: async () => [] }).then(res => {
++    r = aj(L + COUNT + '''let done = arguments[arguments.length - 1];
++      L.offerCertCleanup(null, { prompt: { confirm: () => true, alert() {} }, listKeychain: async () => [], known: new Set(arguments[arguments.length - 2]) }).then(res => {
+         let left = db.getCerts().filter(c => !c.isBuiltInRoot).map(c => c.subjectName + "|" + c.issuerName);
+-        done({ res, before: all, left }); });''')
++        done({ res, before: all, left }); });''', [KNOWN])
+     check("accept removes 2", r["res"]["removed"] == 2, r)
+-    gone = set(r["before"]) - set(r["left"])
++    from collections import Counter  # multiset: the lookalike shares the doge subject|issuer
++    gone = set((Counter(r["before"]) - Counter(r["left"])).elements())
++    check("removed exactly 2 entries", sum((Counter(r["before"]) - Counter(r["left"])).values()) == 2, r)
+     check("only the exact legacy roots are gone", gone == {"CN=pepenet .pepe root CA|CN=pepenet .pepe root CA",
+                                                            "CN=pepenet .doge root CA|CN=pepenet .doge root CA"}, gone)
+     check("decoys + unrelated kept", len(r["left"]) == len(r["before"]) - 2 and
+           any(x.startswith("CN=Unrelated") for x in r["left"]) and
+           any(x == "CN=pepenet .pepe root CA|CN=Unrelated Test Root" for x in r["left"]), r["left"])
+-    r = aj(L + '''let done = arguments[0]; let asked = 0;
+-      L.offerCertCleanup(null, { prompt: { confirm() { asked++; return true; }, alert() { asked++; } }, listKeychain: async () => [] })
+-       .then(res => done({ res, asked }));''')
++    check("lookalike (same subject, self-issued, unknown fingerprint) kept",
++          r["left"].count("CN=pepenet .pepe root CA|CN=pepenet .pepe root CA") == 1, r["left"])
++    r = aj(L + '''let done = arguments[arguments.length - 1]; let asked = 0;
++      L.offerCertCleanup(null, { prompt: { confirm() { asked++; return true; }, alert() { asked++; } }, listKeychain: async () => [], known: new Set(arguments[arguments.length - 2]) })
++       .then(res => done({ res, asked }));''', [KNOWN])
+     check("no prompt when nothing found", r["asked"] == 0 and r["res"]["found"] == 0, r)
+     # import
+     r = aj(L + '''let [legacy, data, done] = arguments; (async () => {
+@@ -134,27 +162,43 @@ try:
+     check("no legacy data -> no offer", r.get("none") is None, r)
+     check("legacy files untouched", h(os.path.join(legacy, "pep.db")) == src_hash and
+           h(os.path.join(legacy, "doge.db")) == bad_hash and os.path.exists(os.path.join(legacy, "pep.db")))
+-    # discover: pure parts + lookup against the fake node
+-    r = aj(D + '''let [port, done] = arguments; (async () => {
+-      let out = {};
+-      out.p1 = D.parseQuery("Fro"); out.p2 = D.parseQuery("frog.pe"); out.p3 = D.parseQuery("a.b.c"); out.p4 = D.parseQuery("<x>");
+-      out.pre = D.prefixesFor({ label: "", suffix: null }).length;
+-      let chains = [{ tld: "pepe", ports: { pac: port } }, { tld: "doge", ports: null }];
+-      let res = await D.lookup(D.parseQuery("fro"), chains);
+-      out.hosts = res.hosts; out.down = res.down;
+-      let all = await D.lookup(D.parseQuery(""), chains); out.all = all.hosts;
+-      let html = D.renderDiscover("<script>", D.parseQuery("fro"), res);
+-      out.esc = !html.includes("<script>") && html.includes("&#60;script&#62;");
+-      out.link = html.includes('href="https://frog.pepe/"');
+-      out.csp = html.includes("default-src 'none'");
+-      return out; })().then(done, e => done({ err: String(e) }));''', [srv.server_address[1]])
++    # discover: pure parts + lookup against the fake node (dane-09 fields)
++    def look(q, off=0, mode="ok"):
++        MODE["v"] = mode
++        return aj(D + '''let [port, q, off, done] = arguments; (async () => {
++          let chains = [{ tld: "pepe", ports: { pac: port } }, { tld: "doge", ports: null }];
++          let res = await D.lookup(D.parseQuery(q), chains, off);
++          let html = D.renderDiscover(q, D.parseQuery(q), res);
++          return { hosts: res.hosts, owners: res.rows.map(r => r.owner), total: res.total, more: res.more,
++                   truncated: res.truncated, noDb: res.noDb, down: res.down, html };
++        })().then(done, e => done({ err: String(e) }));''', [srv.server_address[1], q, off])
++    r = aj(D + '''let done = arguments[0];
++      done({ p1: D.parseQuery("Fro"), p2: D.parseQuery("frog.pe"), p3: D.parseQuery("a.b.c"), p4: D.parseQuery("<x>"),
++             p5: D.parseQuery("a".repeat(33)), o1: D.parseOffset("40"), o2: D.parseOffset("-1"), o3: D.parseOffset("1e9"),
++             esc: D.renderDiscover("<script>", D.parseQuery("fro"), {}).includes("&#60;script&#62;"),
++             csp: D.renderDiscover("", D.parseQuery(""), {}).includes("default-src 'none'") });''')
+     check("query parsing", r.get("p1") == {"label": "fro", "suffix": None} and r.get("p2") == {"label": "frog", "suffix": "pe"}
+-          and r.get("p3") is None and r.get("p4") is None, r)
+-    check("browse asks per first character", r.get("pre") == 36, r)
++          and r.get("p3") is None and r.get("p4") is None and r.get("p5") is None, r)
++    check("offset parsing", r.get("o1") == 40 and r.get("o2") == 0 and r.get("o3") == 0, r)
++    check("render escapes + CSP", r.get("esc") and r.get("csp"), r)
++    r = look("fro")
+     check("search returns only well-formed names", r.get("hosts") == ["frog.pepe", "frogger.pepe"], r)
+-    check("browse lists all valid names", r.get("all") == ["frog.pepe", "frogger.pepe", "fun.pepe", "kek.pepe"], r)
++    check("owner_h160 null handled", r.get("owners") == ["ab" * 20, None] and "unowned" in r.get("html", ""), r)
++    check("links rendered", 'href="https://frog.pepe/"' in r.get("html", ""), r)
+     check("down chains reported", r.get("down") == ["doge"], r)
+-    check("render escapes + links + CSP", r.get("esc") and r.get("link") and r.get("csp"), r)
++    valid = [n for n in NAMES if n not in ("bad name", "x" * 70)]
++    r0 = look(""); r1 = look("", 20); r2 = look("", 40)
++    check("browse page 1 uses total", r0.get("total") == len(NAMES) and r0.get("more") and len(r0.get("hosts", [])) <= 20
++          and 'id="next"' in r0.get("html", "") and 'id="prev"' not in r0.get("html", ""), r0)
++    check("browse page 2 has prev+next", r1.get("more") and 'id="prev"' in r1.get("html", "") and "o=40" in r1.get("html", ""), r1)
++    check("last page has no next", not r2.get("more") and 'id="next"' not in r2.get("html", ""), r2)
++    allh = r0.get("hosts", []) + r1.get("hosts", []) + r2.get("hosts", [])
++    check("paging covers every valid name once", sorted(allh) == sorted(n + ".pepe" for n in valid), len(allh))
++    r = look("m", 0, "truncated")
++    check("truncated flagged", r.get("truncated") and 'id="truncated"' in r.get("html", ""), r.get("truncated"))
++    r = look("fro", 0, "no_db")
++    check("503 no_db -> syncing note", r.get("noDb") == ["pepe"] and r.get("hosts") == [] and "still syncing" in r.get("html", ""), r)
++    MODE["v"] = "ok"
+     # about:dane-discover channel end to end (no node in this profile)
+     r = aj(D + '''let done = arguments[0]; D.registerDiscover();
+       let w = Services.wm.getMostRecentWindow("navigator:browser");
+@@ -165,6 +209,30 @@ try:
+         if (Date.now() - t0 > 20000) return done({ timeout: true, url: tab.linkedBrowser.currentURI.spec });
+         w.setTimeout(poll, 200); })();''')
+     check("about:dane-discover renders", r.get("title") == "Discover chain names" and r.get("q") == "frog" and "No node" in r.get("note", ""), r)
++    r = aj(D + '''let [port, done] = arguments; D.registerDiscover();
++      ChromeUtils.importESModule("resource:///modules/GreatDANEAbout.sys.mjs").registerAbout();
++      let G = ChromeUtils.importESModule("resource:///modules/GreatDANE.sys.mjs").GreatDANE;
++      G._chains ??= new Map(); G._chains.set("pepe", Object.assign(G._chains.get("pepe") || {}, { coin: "pep", tld: "pepe", ports: { pac: port } }));
++      let w = Services.wm.getMostRecentWindow("navigator:browser");
++      let tab = w.gBrowser.addTab("about:dane", { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() });
++      w.gBrowser.selectedTab = tab; let t0 = Date.now();
++      (function poll() { let d = tab.linkedBrowser.contentDocument; let a = d && d.getElementById("discover");
++        if (a) return done({ href: a.getAttribute("href"), text: a.textContent });
++        if (Date.now() - t0 > 20000) return done({ timeout: true });
++        w.setTimeout(poll, 200); })();''', [srv.server_address[1]])
++    check("about:dane has Discover names link", r.get("href") == "about:dane-discover" and r.get("text") == "Discover names", r)
++    r = aj('''let done = arguments[0]; let w = Services.wm.getMostRecentWindow("navigator:browser");
++      let tab = w.gBrowser.addTab("about:dane-discover", { triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal() });
++      w.gBrowser.selectedTab = tab; let t0 = Date.now();
++      (function poll() { let d = tab.linkedBrowser.contentDocument;
++        if (d && d.getElementById("names") && d.querySelectorAll("#names li").length) return done({ n: d.querySelectorAll("#names li").length, next: !!d.getElementById("next") });
++        if (Date.now() - t0 > 20000) return done({ timeout: true });
++        w.setTimeout(poll, 200); })();''')
++    check("about:dane-discover lists fake-node names with paging", r.get("n", 0) >= 1 and r.get("next"), r)
++    if SHOTS:
++        m.set_context("content"); os.makedirs(SHOTS, exist_ok=True)
++        open(os.path.join(SHOTS, "dane-discover.png"), "wb").write(base64.b64decode(m.screenshot()))
++        m.set_context("chrome")
+     rc = 0 if fails == 0 else 1
+     print("ALL PASS" if rc == 0 else f"{fails} FAIL")
+ finally:
+diff --git a/browser/components/greatdane/test/marionette/run_gd_prefs.py b/browser/components/greatdane/test/marionette/run_gd_prefs.py
+index 24d8f15b9a..e19dbf7533 100644
+--- a/browser/components/greatdane/test/marionette/run_gd_prefs.py
++++ b/browser/components/greatdane/test/marionette/run_gd_prefs.py
+@@ -81,11 +81,16 @@ try:
+     check("first-run toggle writes window pref", r["upd"] == [3600, 0, 3600], r)
+     # Hidden sections (Privacy)
+     m.execute_async_script(OPEN, script_args=["privacy"], sandbox=None); time.sleep(2)
+-    r = js(m, '''return { dc: shown('[groupid="dataCollection"]') || shown('[data-srd-groupid="dataCollection"]'),
++    # Settings redesign: data collection lives in the "Permissions and data" pane.
++    m.execute_async_script(OPEN, script_args=["permissionsData"], sandbox=None); time.sleep(2)
++    dc = js(m, '''let g = d.querySelector('setting-group[groupid="dataCollection"]');
++      return !!g && g.checkVisibility() && g.getBoundingClientRect().height > 0;''')
++    m.execute_async_script(OPEN, script_args=["privacy"], sandbox=None); time.sleep(2)
++    r = js(m, '''return { dc: arguments[0],
+       vpn: shown('[groupid="ipprotection"]'), relay: shown("#relayIntegrationBox"),
+       mfm: vis(d.getElementById("category-more-from-mozilla")),
+-      sync: vis(d.getElementById("category-sync")) };''')
+-    check("data collection hidden", not r["dc"], r)
++      sync: vis(d.getElementById("category-sync")) };''', [dc])
++    check("data collection opt-outs visible", r["dc"], r)
+     check("VPN hidden", not r["vpn"], r)
+     check("Relay hidden", not r["relay"], r)
+     check("More from Mozilla hidden", not r["mfm"], r)
+diff --git a/browser/components/preferences/preferences.js b/browser/components/preferences/preferences.js
+index 57fdc9c7fc..304b935b56 100644
+--- a/browser/components/preferences/preferences.js
++++ b/browser/components/preferences/preferences.js
+@@ -512,11 +512,10 @@ function register_module(categoryName, categoryObject) {
+ 
+ document.addEventListener("DOMContentLoaded", init_all, { once: true });
+ 
+-// GreatDANE: hide Mozilla data collection, VPN/Relay/product promos with a
++// GreatDANE: hide VPN/Relay/product promos with a
+ // stylesheet (display:none !important, so search can't unhide them). Sync
+ // stays visible unless greatdane.prefs.hideSync is true. See PREFS-AUDIT.md.
+ const GD_HIDE_CSS = `
+-  [groupid="dataCollection"], [data-srd-groupid="dataCollection"],
+   [groupid="ipprotection"], [data-srd-groupid="ipprotection"],
+   #relayIntegrationBox, #category-more-from-mozilla, #topstories,
+   [data-category="paneMoreFromMozilla"] { display: none !important; }`;
