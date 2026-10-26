@@ -1,0 +1,293 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 15:56:18 -0500
+Subject: [PATCH 030/144] GreatDANE: about:dane-discover follows the node's
+ dane-09 /gd/names contract
+
+Object rows with owner_h160 (null = unowned), offset/total paging with Prev/Next,
+503 no_db shown as syncing, truncated surfaced, malformed rows dropped.
+run_gd_discover.py: mock-node tests for paging, no_db, truncated, null owner.
+---
+ .../greatdane/GreatDANEDiscover.sys.mjs       | 102 ++++++++++++------
+ .../test/marionette/run_gd_discover.py        |  98 +++++++++++++++++
+ .../UrlbarProviderGreatDANENames.sys.mjs      |   3 +-
+ 3 files changed, 169 insertions(+), 34 deletions(-)
+ create mode 100644 browser/components/greatdane/test/marionette/run_gd_discover.py
+
+diff --git a/browser/components/greatdane/GreatDANEDiscover.sys.mjs b/browser/components/greatdane/GreatDANEDiscover.sys.mjs
+index 3f8a6899b4..9fb806a0d7 100644
+--- a/browser/components/greatdane/GreatDANEDiscover.sys.mjs
++++ b/browser/components/greatdane/GreatDANEDiscover.sys.mjs
+@@ -1,8 +1,10 @@
+ /* GreatDANE: about:dane-discover — a read-only directory of chain names.
+  * Source: each running node's loopback /gd/names?prefix=P&limit=N (the same
+  * endpoint the urlbar provider uses). No wallet, no network beyond loopback.
+- * The node answers nothing for an empty prefix and caps limit at 20, so the
+- * unfiltered view asks once per first character. Generated in the parent,
++ * dane-09 contract: GET /gd/names?prefix=&offset=&limit= ->
++ * {tld,status,prefix,names:[{name,owner_h160|null,lease_expiry,state,price}],
++ *  total,offset,limit,count,truncated}; 400 bad_*, 503 no_db. An empty prefix
++ * lists everything; pages are walked with offset/total. Generated in the parent,
+  * no script (CSP default-src 'none'); search is a plain GET form. */
+ 
+ const lazy = {};
+@@ -12,67 +14,100 @@ ChromeUtils.defineESModuleGetters(lazy, {
+ });
+ 
+ export const LIMIT = 20;
+-const FIRST = "abcdefghijklmnopqrstuvwxyz0123456789".split("");
++export const MAX_OFFSET = 10000000;
+ const LABEL = /^[a-z0-9-]{1,63}$/;
++const PREFIX = /^[a-z0-9-]{0,32}$/;
++const H160 = /^[0-9a-f]{40}$/;
+ const esc = s => String(s ?? "").replace(/[&<>"']/g, ch => "&#" + ch.charCodeAt(0) + ";");
+ 
+ // "foo", "foo.pe", "foo.pepe" -> { label, suffix }; null if not searchable.
++// The node's prefix is capped at 32 chars, so longer labels aren't searchable.
+ export function parseQuery(q) {
+   q = String(q ?? "").trim().toLowerCase().replace(/^https?:\/\//, "").replace(/[/.]+$/, "");
+   if (!q) return { label: "", suffix: null };
+   let [label, suffix = null, extra] = q.split(".");
+-  if (extra !== undefined || !LABEL.test(label)) return null;
++  if (extra !== undefined || !LABEL.test(label) || !PREFIX.test(label)) return null;
+   if (suffix !== null && !/^[a-z]{0,15}$/.test(suffix)) return null;
+   return { label, suffix };
+ }
+ 
+-// Prefixes to ask the node for a parsed query.
+-export function prefixesFor(pq) {
+-  return pq.label ? [pq.label] : FIRST;
++export function parseOffset(o) {
++  let n = Number(o);
++  return Number.isInteger(n) && n >= 0 && n <= MAX_OFFSET ? n : 0;
+ }
+ 
+-// Only well-formed labels survive; sorted, de-duplicated hosts.
+-export function collect(lists) {
+-  let out = new Set();
+-  for (let { tld, names } of lists) {
+-    if (!/^[a-z]{2,15}$/.test(tld || "")) continue;
+-    for (let n of names || []) if (typeof n == "string" && LABEL.test(n)) out.add(n + "." + tld);
++// One chain's /gd/names reply -> normalized page. Only well-formed rows survive.
++export function normalize(tld, j, httpStatus = 200) {
++  let st = (j && (j.status || j.error)) || (httpStatus == 200 ? "ok" : "error");
++  if (httpStatus != 200 || st != "ok") return { tld, status: st, rows: [], total: 0, count: 0, truncated: false };
++  let rows = [];
++  for (let n of Array.isArray(j.names) ? j.names : []) {
++    if (!n || typeof n != "object" || typeof n.name != "string" || !LABEL.test(n.name)) continue;
++    rows.push({
++      host: n.name + "." + tld,
++      owner: typeof n.owner_h160 == "string" && H160.test(n.owner_h160) ? n.owner_h160 : null,
++      expiry: Number.isFinite(n.lease_expiry) ? n.lease_expiry : 0,
++      state: Number.isFinite(n.state) ? n.state : 0,
++      price: Number.isFinite(n.price) ? n.price : 0,
++    });
+   }
+-  return [...out].sort((a, b) => a.localeCompare(b));
++  let total = Number.isInteger(j.total) && j.total >= 0 ? j.total : rows.length;
++  return { tld, status: "ok", rows, total, count: Number.isInteger(j.count) ? j.count : rows.length,
++           truncated: j.truncated === true };
+ }
+ 
+-async function fetchNames(port, prefix) {
++async function fetchPage(port, tld, prefix, offset) {
+   try {
+     let r = await Promise.race([
+-      fetch(`http://127.0.0.1:${port}/gd/names?prefix=${encodeURIComponent(prefix)}&limit=${LIMIT}`,
++      fetch(`http://127.0.0.1:${port}/gd/names?prefix=${encodeURIComponent(prefix)}&offset=${offset}&limit=${LIMIT}`,
+             { cache: "no-store" }),
+       new Promise((_, rej) => lazy.setTimeout(() => rej(new Error("timeout")), 1500)),
+     ]);
+-    let j = await r.json();
+-    return Array.isArray(j?.names) ? j.names : [];
++    let j = null;
++    try { j = await r.json(); } catch (e) {}
++    return normalize(tld, j, r.status);
+   } catch (e) {
+-    return [];
++    return { tld, status: "unreachable", rows: [], total: 0, count: 0, truncated: false };
+   }
+ }
+ 
+-export async function lookup(pq, chains = [...(lazy.GreatDANE._chains?.values() ?? [])]) {
++// Every live chain is asked for the same page (offset) of the prefix.
++export async function lookup(pq, chains = [...(lazy.GreatDANE._chains?.values() ?? [])], offset = 0) {
+   let live = chains.filter(c => c.ports && (pq.suffix === null || c.tld.startsWith(pq.suffix)));
+-  let lists = [];
+-  for (let c of live) {
+-    let names = (await Promise.all(prefixesFor(pq).map(p => fetchNames(c.ports.pac, p)))).flat();
+-    lists.push({ tld: c.tld, names });
+-  }
+-  return { hosts: collect(lists), live: live.map(c => c.tld), down: chains.filter(c => !c.ports).map(c => c.tld) };
++  let pages = await Promise.all(live.map(c => fetchPage(c.ports.pac, c.tld, pq.label, offset)));
++  let rows = pages.flatMap(p => p.rows).sort((a, b) => a.host.localeCompare(b.host));
++  return {
++    rows, hosts: rows.map(r => r.host), offset,
++    total: pages.reduce((n, p) => n + p.total, 0),
++    more: pages.some(p => offset + LIMIT < p.total),
++    truncated: pages.some(p => p.truncated),
++    noDb: pages.filter(p => p.status == "no_db").map(p => p.tld),
++    failed: pages.filter(p => p.status != "ok" && p.status != "no_db").map(p => p.tld),
++    live: live.map(c => c.tld), down: chains.filter(c => !c.ports).map(c => c.tld),
++  };
+ }
+ 
+ export function renderDiscover(rawQ, pq, res) {
+-  let rows = res.hosts.map(h =>
+-    `<li><a href="https://${esc(h)}/">${esc(h)}</a></li>`).join("");
++  res = { rows: [], offset: 0, total: 0, more: false, truncated: false, noDb: [], failed: [], live: [], down: [], ...res };
++  let rows = res.rows.map(r =>
++    `<li><a href="https://${esc(r.host)}/">${esc(r.host)}</a> <span class="code">${r.owner ? "owned" : "unowned"}</span></li>`).join("");
++  let first = res.offset + 1, last = res.offset + LIMIT;
+   let note = !pq ? "Not a valid name search." :
+-    res.hosts.length ? `${res.hosts.length} name${res.hosts.length == 1 ? "" : "s"}` +
+-      (pq.label ? "" : ` (up to ${LIMIT} per first letter; search to narrow)`) :
++    res.rows.length ? `${res.total} name${res.total == 1 ? "" : "s"}` + (res.total > LIMIT || res.offset ? ` (page ${first}–${Math.min(last, Math.max(res.total, first))} per chain)` : "") :
++    res.noDb.length && !res.failed.length && res.noDb.length == res.live.length ? "The node is still syncing; names appear once its database is ready." :
+     res.live.length ? "No names found." : "No node is ready yet; names appear once it is running.";
+-  let down = res.down.length ? `<p class="code">Not running: ${res.down.map(t => "." + esc(t)).join(", ")}</p>` : "";
++  let q = encodeURIComponent(rawQ);
++  let nav = pq ? [
++    res.offset > 0 ? `<a id="prev" href="about:dane-discover?q=${q}&amp;o=${Math.max(0, res.offset - LIMIT)}">Previous</a>` : "",
++    res.more ? `<a id="next" href="about:dane-discover?q=${q}&amp;o=${res.offset + LIMIT}">Next</a>` : "",
++  ].filter(Boolean).join(" · ") : "";
++  let extra = [
++    res.truncated ? `<p class="code" id="truncated">Some results were cut short by the node; narrow the search.</p>` : "",
++    res.noDb.length && res.rows.length ? `<p class="code">Still syncing: ${res.noDb.map(t => "." + esc(t)).join(", ")}</p>` : "",
++    res.failed.length ? `<p class="code">No answer from: ${res.failed.map(t => "." + esc(t)).join(", ")}</p>` : "",
++    res.down.length ? `<p class="code">Not running: ${res.down.map(t => "." + esc(t)).join(", ")}</p>` : "",
++  ].join("");
++  let down = extra + (nav ? `<p id="nav">${nav}</p>` : "");
+   return `<!DOCTYPE html><html><head><meta charset="utf-8">
+ <link rel="icon" href="chrome://branding/content/icon32.png">
+ <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src chrome:; form-action about:">
+@@ -107,8 +142,9 @@ const AboutDiscover = {
+     ch.originalURI = uri;
+     let rawQ = new URLSearchParams(uri.query || "").get("q") || "";
+     let pq = parseQuery(rawQ);
+-    (pq ? lookup(pq) : Promise.resolve({ hosts: [], live: [], down: [] }))
+-      .catch(e => { console.error("GreatDANE: discover failed", e); return { hosts: [], live: [], down: [] }; })
++    let offset = parseOffset(new URLSearchParams(uri.query || "").get("o"));
++    (pq ? lookup(pq, undefined, offset) : Promise.resolve({}))
++      .catch(e => { console.error("GreatDANE: discover failed", e); return {}; })
+       .then(res => {
+         let s = utf8Bin(renderDiscover(rawQ, pq, res));
+         try { pipe.outputStream.write(s, s.length); } catch (e) { console.error(e); }
+diff --git a/browser/components/greatdane/test/marionette/run_gd_discover.py b/browser/components/greatdane/test/marionette/run_gd_discover.py
+new file mode 100644
+index 0000000000..23551afab5
+--- /dev/null
++++ b/browser/components/greatdane/test/marionette/run_gd_discover.py
+@@ -0,0 +1,98 @@
++# about:dane-discover client vs. the node's dane-09 /gd/names contract, in the
++# built Dane (chrome context via Marionette). Mock nodes are local Python HTTP
++# servers on ephemeral loopback ports: paging (offset/total), 503 no_db,
++# truncated, null owner_h160, malformed rows, chain-down.
++#   python3 run_gd_discover.py [path/to/greatdane]
++import json, os, shutil, subprocess, sys, tempfile, threading
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++from urllib.parse import urlparse, parse_qs
++from marionette_driver.marionette import Marionette
++HERE = os.path.dirname(os.path.abspath(__file__))
++TREE = os.path.abspath(os.path.join(HERE, "../../../../.."))
++APP = sys.argv[1] if len(sys.argv) > 1 else TREE + "/obj-gd/dist/Dane.app/Contents/MacOS/greatdane"
++H = "ab" * 20
++ALL = [{"name": "dn%03d" % i, "owner_h160": None if i % 2 else H, "lease_expiry": 777, "state": 1, "price": 0}
++       for i in range(45)]
++
++def mock(fn):
++    class Hd(BaseHTTPRequestHandler):
++        def log_message(self, *a): pass
++        def do_GET(self):
++            u = urlparse(self.path); q = {k: v[0] for k, v in parse_qs(u.query, keep_blank_values=True).items()}
++            code, body = fn(q) if u.path == "/gd/names" else (404, {"status": "not_found"})
++            b = json.dumps(body).encode(); self.send_response(code)
++            self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(b)))
++            self.end_headers(); self.wfile.write(b)
++    s = ThreadingHTTPServer(("127.0.0.1", 0), Hd); threading.Thread(target=s.serve_forever, daemon=True).start()
++    return s.server_address[1]
++
++def paged(q):
++    o, l = int(q.get("offset", 0)), int(q.get("limit", 20)); rows = ALL[o:o + l]
++    return 200, {"tld": "pepe", "status": "ok", "prefix": q.get("prefix", ""), "names": rows, "total": len(ALL),
++                 "offset": o, "limit": l, "count": len(rows), "truncated": False}
++PEP = mock(paged)
++DOGE = mock(lambda q: (503, {"tld": "doge", "status": "no_db"}))
++TRUNC = mock(lambda q: (200, {"tld": "pepe", "status": "ok", "names": ALL[:3] + [{"name": "Bad Name"}, "str", None,
++                               {"name": "zz", "owner_h160": "xyz"}], "total": 4, "count": 4, "truncated": True}))
++
++prof = tempfile.mkdtemp(prefix="gd-disc-")
++open(prof + "/user.js", "w").write('user_pref("marionette.port", 2834);\nuser_pref("browser.aboutwelcome.enabled", false);\n'
++    'user_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\n')
++p = subprocess.Popen([APP, "--headless", "--marionette", "-remote-allow-system-access", "--no-remote", "--profile", prof],
++                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++fails = 0
++def check(name, ok, info=""):
++    global fails
++    print(("PASS " if ok else "FAIL ") + name + (f"  [{info}]" if info and not ok else ""))
++    fails += 0 if ok else 1
++rc = 1
++try:
++    m = Marionette(host="127.0.0.1", port=2834); m.start_session()
++    with m.using_context("chrome"):
++        r = m.execute_async_script('''let [pep, doge, trunc, done] = arguments;
++          (async () => { try {
++          const D = ChromeUtils.importESModule("resource:///modules/GreatDANEDiscover.sys.mjs");
++          const all = { label: "", suffix: null };
++          let chains = [{ tld: "pepe", ports: { pac: pep } }, { tld: "doge", ports: { pac: doge } }, { tld: "zz", ports: null }];
++          let o = {};
++          let r0 = await D.lookup(all, chains, 0), h0 = D.renderDiscover("", all, r0);
++          o.p0 = [r0.rows.length, r0.total, r0.more, r0.noDb, r0.down, r0.rows[1].owner, r0.rows[0].owner,
++                  h0.includes('id="next"'), h0.includes('id="prev"'), h0.includes("unowned"), h0.includes("Still syncing: .doge")];
++          let r2 = await D.lookup(all, chains, 40), h2 = D.renderDiscover("", all, r2);
++          o.p2 = [r2.rows.length, r2.more, h2.includes('id="prev"'), h2.includes('id="next"'), r2.rows[0].host];
++          let dq = { label: "", suffix: "do" }, r3 = await D.lookup(dq, chains, 0);
++          o.nodb = [r3.rows.length, r3.noDb, D.renderDiscover("", dq, r3).includes("still syncing")];
++          let tq = { label: "dn", suffix: null }, r4 = await D.lookup(tq, [{ tld: "pepe", ports: { pac: trunc } }], 0);
++          o.trunc = [r4.truncated, r4.rows.map(x => x.host), r4.rows.map(x => x.owner),
++                     D.renderDiscover("dn", tq, r4).includes('id="truncated"')];
++          o.parse = [D.parseOffset("-1"), D.parseOffset("x"), D.parseOffset("40"), D.parseQuery("x".repeat(33)),
++                     JSON.stringify(D.parseQuery("Foo.PE")), D.parseQuery("a.b.c")];
++          done(o); } catch (e) { done({ err: String(e) + e.stack }); } })();''',
++          script_args=[PEP, DOGE, TRUNC], sandbox=None, script_timeout=30000)
++    if "err" in r: check("script ran", False, r["err"])
++    else:
++        p0 = r["p0"]
++        check("page 1: 20 rows of total 45, more", p0[:3] == [20, 45, True], p0)
++        check("no_db chain reported, down chain listed", p0[3] == ["doge"] and p0[4] == ["zz"], p0)
++        check("null owner_h160 -> unowned, hex kept", p0[5] is None and p0[6] == "ab" * 20 and p0[9], p0)
++        check("page 1 has Next, no Previous", p0[7] and not p0[8], p0)
++        check("syncing chain noted beside results", p0[10], p0)
++        p2 = r["p2"]
++        check("offset 40: last 5 rows, Previous only", p2[:4] == [5, False, True, False] and p2[4] == "dn040.pepe", p2)
++        check("all chains no_db -> 'still syncing'", r["nodb"] == [0, ["doge"], True], r["nodb"])
++        t = r["trunc"]
++        check("truncated surfaced", t[0] and t[3], t)
++        check("malformed rows dropped, bad owner -> null", t[1] == ["dn000.pepe", "dn001.pepe", "dn002.pepe", "zz.pepe"]
++              and t[2] == [H, None, H, None], t)
++        pr = r["parse"]
++        check("offset/query parsing bounded", pr[:4] == [0, 0, 40, None] and pr[4] == '{"label":"foo","suffix":"pe"}'
++              and pr[5] is None, pr)
++    with m.using_context("chrome"):
++        m.execute_script("Services.startup.quit(Ci.nsIAppStartup.eAttemptQuit)")
++    rc = 0 if fails == 0 else 1
++finally:
++    try: p.wait(20)
++    except Exception: p.terminate(); p.wait(20)
++    shutil.rmtree(prof, ignore_errors=True)
++print(f"failed={fails}")
++sys.exit(rc)
+diff --git a/browser/components/urlbar/UrlbarProviderGreatDANENames.sys.mjs b/browser/components/urlbar/UrlbarProviderGreatDANENames.sys.mjs
+index 267ff6c1fc..21a3dd5ab8 100644
+--- a/browser/components/urlbar/UrlbarProviderGreatDANENames.sys.mjs
++++ b/browser/components/urlbar/UrlbarProviderGreatDANENames.sys.mjs
+@@ -63,7 +63,8 @@ export class UrlbarProviderGreatDANENames extends UrlbarProvider {
+             new Promise((_, rej) => lazy.setTimeout(() => rej(new Error("timeout")), 500)),
+           ]);
+           let j = await r.json();
+-          return (j.names || []).map(n => n + "." + c.tld);
++          if (!r.ok || j?.status != "ok" || !Array.isArray(j.names)) return []; // 400 bad_* / 503 no_db
++          return j.names.map(n => (n && typeof n == "object" ? n.name : n) + "." + c.tld);
+         } catch (e) {
+           return [];
+         }
