@@ -1,0 +1,137 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 09:32:56 -0500
+Subject: [PATCH 021/144] GreatDANE: about:dane shows the node's chain-port
+ listen status (ok / bind failed, dial-only / off); log listen changes;
+ document that the ready-line 'ca' field is never read
+
+---
+ .../components/greatdane/GreatDANE.sys.mjs    |  7 +++++
+ .../greatdane/GreatDANEAbout.sys.mjs          | 26 ++++++++++++++--
+ .../test/unit/test_greatdane_failclosed.js    | 30 ++++++++++++++++++-
+ 3 files changed, 60 insertions(+), 3 deletions(-)
+
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index 5aace78ed6..c624ef02dc 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -126,6 +126,9 @@ export const GreatDANE = {
+ 
+   async _onNodeMsg(c, msg) {
+     if (msg.event == "ready" && msg.tld == c.tld) {
++      // Only the ports and dane_api are used. A node CA ("ca", dropped by the
++      // node in dane-02) is never read or trusted: TLS for chain hosts is
++      // verified by DANE in PSM.
+       if (!msg.dane_api) {
+         log(c.coin, "node lacks --dane-api; refusing to use it");
+         return;
+@@ -137,6 +140,10 @@ export const GreatDANE = {
+       c.since = Date.now();
+       log(c.coin, "ready", JSON.stringify(c.ports));
+     } else if (msg.event == "status" && msg.coin == c.coin) {
++      if (msg.listen != c.status?.listen) {
++        log(c.coin, "listen", msg.listen ?? "-", msg.listen_port ?? "",
++            msg.listen_error || "");
++      }
+       c.status = msg;
+     }
+   },
+diff --git a/browser/components/greatdane/GreatDANEAbout.sys.mjs b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+index bfed04a680..d552ca330f 100644
+--- a/browser/components/greatdane/GreatDANEAbout.sys.mjs
++++ b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+@@ -72,17 +72,39 @@ function safeTarget(u) {
+   return null;
+ }
+ 
++// Chain-port listener from the node's status event (dane-03). Inbound is
++// optional: a failed bind means the node runs dial-only, so it's shown as a
++// warning, never as an error. Missing or unknown fields show "-".
++export function listenCell(st = {}) {
++  let port = Number.isInteger(st.listen_port) && st.listen_port > 0 ? ":" + st.listen_port : "";
++  switch (st.listen) {
++    case "ok":
++      return { cls: "ready", text: `ok ${port}`.trim() };
++    case "bind_failed": {
++      let why = st.listen_error || (st.listen_errno ? "errno " + st.listen_errno : "");
++      return { cls: "syncing", text: `bind failed ${port}${why ? " (" + why + ")" : ""} - dial-only` };
++    }
++    case "off":
++      return { cls: "", text: "off (dial-only)" };
++    case "pending":
++      return { cls: "", text: "pending" };
++    default:
++      return { cls: "", text: "-" };
++  }
++}
++
+ function chainRows() {
+   let rows = "";
+   for (let c of GreatDANE._chains.values()) {
+     let st = c.status || {};
+     let state = c.state == "ready" ? (GreatDANE._synced(c) ? "ready" : "syncing") : c.state;
+     let up = c.since && c.state == "ready" ? Math.round((Date.now() - c.since) / 1000) + " s" : "-";
++    let lc = listenCell(st);
+     rows += `<tr><td>.${esc(c.tld)} (${esc(c.coin)})</td><td class="${esc(state)}">${esc(state)}</td>
+       <td>${esc(st.height ?? "-")}</td><td>${esc(st.peer_height || "-")}</td>
+       <td>${esc(st.peers_pepenet ?? "-")} / ${esc(st.peers_known ?? "-")}</td>
+       <td>${esc(st.passes ?? "-")}</td><td>${esc(st.dane_ok ?? "-")} / ${esc(st.dane_fail ?? "-")}</td>
+-      <td>${c.ports ? esc(c.ports.pac) : "-"}</td><td>${up}</td><td>${esc(c.restarts)}</td></tr>`;
++      <td>${c.ports ? esc(c.ports.pac) : "-"}</td><td class="${esc(lc.cls)}">${esc(lc.text)}</td><td>${up}</td><td>${esc(c.restarts)}</td></tr>`;
+   }
+   return rows;
+ }
+@@ -122,7 +144,7 @@ body{font:15px system-ui,sans-serif;background:var(--bg);color:var(--fg);margin:
+ table{border-collapse:collapse;width:100%}td,th{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left}
+ .ready{color:#6f6}.syncing{color:#fc4}.starting,.down{color:#f66}</style></head><body>
+ ${box}<h2>Chains</h2><table><tr><th>Chain</th><th>Node</th><th>Height</th><th>Peer height</th>
+-<th>PepeNet / known peers</th><th>Passes</th><th>DANE ok / fail</th><th>Port</th><th>Up</th><th>Restarts</th></tr>
++<th>PepeNet / known peers</th><th>Passes</th><th>DANE ok / fail</th><th>Port</th><th>Listen</th><th>Up</th><th>Restarts</th></tr>
+ ${chainRows()}</table><p class="code">Updates every ${refresh} s.</p></body></html>`;
+ }
+ 
+diff --git a/browser/components/greatdane/test/unit/test_greatdane_failclosed.js b/browser/components/greatdane/test/unit/test_greatdane_failclosed.js
+index ad554a5e2c..84511a004c 100644
+--- a/browser/components/greatdane/test/unit/test_greatdane_failclosed.js
++++ b/browser/components/greatdane/test/unit/test_greatdane_failclosed.js
+@@ -8,7 +8,7 @@
+ "use strict";
+ 
+ const { GreatDANE } = ChromeUtils.importESModule("resource:///modules/GreatDANE.sys.mjs");
+-const { ErrorTrap, _render, classifyChainFailure } = ChromeUtils.importESModule(
++const { ErrorTrap, _render, classifyChainFailure, listenCell } = ChromeUtils.importESModule(
+   "resource:///modules/GreatDANEAbout.sys.mjs"
+ );
+ 
+@@ -163,3 +163,31 @@ add_task(async function chain_host_pattern_pref() {
+     Services.prefs.clearUserPref("greatdane.chainHostPattern");
+   }
+ });
++
++add_task(async function about_dane_shows_listen_status() {
++  Assert.equal(listenCell({ listen: "ok", listen_port: 33874, listen_errno: 0 }).text, "ok :33874");
++  let bf = listenCell({ listen: "bind_failed", listen_port: 33874, listen_errno: 48,
++                        listen_error: "Address already in use" });
++  Assert.ok(bf.text.includes("bind failed :33874 (Address already in use)") && bf.text.includes("dial-only"),
++            "bind_failed shows port, reason, dial-only: " + bf.text);
++  Assert.equal(listenCell({ listen: "bind_failed", listen_port: 1, listen_errno: 13 }).text,
++               "bind failed :1 (errno 13) - dial-only");
++  Assert.equal(listenCell({ listen: "off", listen_port: 0 }).text, "off (dial-only)");
++  Assert.equal(listenCell({ listen: "pending" }).text, "pending");
++  Assert.equal(listenCell({}).text, "-", "old node without listen fields");
++  Assert.equal(listenCell({ listen: "<b>x</b>" }).text, "-", "unknown value not echoed");
++  try {
++    setChains(chain("pepe", { status: { height: 100, activation: 1, peer_height: 100, passes: 1,
++                                        listen: "ok", listen_port: 33874, listen_errno: 0 } }),
++              chain("doge", { status: { height: 100, activation: 1, peer_height: 100, passes: 1,
++                                        listen: "bind_failed", listen_port: 22556, listen_errno: 48,
++                                        listen_error: "Address <already> in use" } }));
++    let html = _render(Services.io.newURI("about:dane"));
++    Assert.ok(html.includes("<th>Listen</th>"), "about:dane has a Listen column");
++    Assert.ok(html.includes("ok :33874"), "pepe listen ok on 33874");
++    Assert.ok(html.includes("bind failed :22556 (Address &#60;already&#62; in use)") && !html.includes("<already>"), "doge bind_failed, escaped");
++  } finally {
++    GreatDANE._chains.clear();
++    for (let [k, v] of saved) GreatDANE._chains.set(k, v);
++  }
++});
