@@ -1,0 +1,213 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 09:27:23 -0500
+Subject: [PATCH 019/144] GreatDANE: no TLS/QUIC session resumption, tickets,
+ token cache or 0-RTT for chain hosts; fail closed if a chain host resumes
+ anyway; TLSA response parser tolerates whitespace and HTTP/1.0 but rejects
+ ambiguous replies
+
+---
+ netwerk/protocol/http/Http3Session.cpp        |  8 ++-
+ .../manager/ssl/SSLServerCertVerification.cpp | 71 +++++++++++++++----
+ .../manager/ssl/SSLServerCertVerification.h   |  5 ++
+ security/manager/ssl/nsNSSCallbacks.cpp       | 14 ++++
+ security/manager/ssl/nsNSSIOLayer.cpp         | 12 ++++
+ 5 files changed, 95 insertions(+), 15 deletions(-)
+
+diff --git a/netwerk/protocol/http/Http3Session.cpp b/netwerk/protocol/http/Http3Session.cpp
+index f1abcbb04e..814e683f3c 100644
+--- a/netwerk/protocol/http/Http3Session.cpp
++++ b/netwerk/protocol/http/Http3Session.cpp
+@@ -240,7 +240,10 @@ nsresult Http3Session::Init(const nsHttpConnectionInfo* aConnInfo,
+   // connection to the WebTransport server should authenticate using the
+   // expected certificate hash. Therefore, 0RTT should be disabled in this
+   // context to ensure the certificate hash is checked.
+-  if (StaticPrefs::network_http_http3_enable_0rtt() && !hasServCertHashes()) {
++  // GreatDANE: chain hosts never resume or send 0-RTT over QUIC, so every
++  // connection gets a full handshake and a fresh TLSA check.
++  if (StaticPrefs::network_http_http3_enable_0rtt() && !hasServCertHashes() &&
++      !psm::GreatDANEIsChainHost(mConnInfo->GetOrigin())) {
+     uint32_t maxAttempts =
+         StaticPrefs::network_ssl_tokens_cache_records_per_entry();
+     for (uint32_t attempt = 0; attempt < maxAttempts; ++attempt) {
+@@ -713,7 +716,8 @@ nsresult Http3Session::ProcessEvents() {
+         break;
+       case Http3Event::Tag::ResumptionToken: {
+         LOG(("Http3Session::ProcessEvents - ResumptionToken"));
+-        if (StaticPrefs::network_http_http3_enable_0rtt() && !data.IsEmpty()) {
++        if (StaticPrefs::network_http_http3_enable_0rtt() && !data.IsEmpty() &&
++            !psm::GreatDANEIsChainHost(mConnInfo->GetOrigin())) {
+           LOG(("Got a resumption token"));
+           nsAutoCString peerId;
+           mSocketControl->GetPeerId(peerId);
+diff --git a/security/manager/ssl/SSLServerCertVerification.cpp b/security/manager/ssl/SSLServerCertVerification.cpp
+index 629ed81a46..af2c9d0220 100644
+--- a/security/manager/ssl/SSLServerCertVerification.cpp
++++ b/security/manager/ssl/SSLServerCertVerification.cpp
+@@ -849,10 +849,21 @@ static bool GreatDANEFetch(const nsACString& aEndpoint, const nsACString& aHost,
+              (n = PR_Recv(fd, buf, sizeof buf, 0, to)) > 0) {
+         resp.Append(buf, n);
+       }
++      // Accept HTTP/1.0 or 1.1 with exactly status 200. Anything we can't
++      // read unambiguously (truncated, oversized, chunked, odd status line)
++      // fails closed.
+       int32_t b = resp.Find("\r\n\r\n");
+-      if (StringBeginsWith(resp, "HTTP/1.1 200"_ns) && b > 0) {
+-        aBody.Assign(Substring(resp, b + 4));
+-        ok = true;
++      bool statusOk = (StringBeginsWith(resp, "HTTP/1.1 200"_ns) ||
++                       StringBeginsWith(resp, "HTTP/1.0 200"_ns)) &&
++                      resp.Length() > 12 &&
++                      (resp[12] == ' ' || resp[12] == '\r');
++      if (statusOk && b > 0 && resp.Length() < 16384) {
++        nsAutoCString headers(Substring(resp, 0, b));
++        ToLowerCase(headers);
++        if (headers.Find("transfer-encoding") < 0) {
++          aBody.Assign(Substring(resp, b + 4));
++          ok = true;
++        }
+       }
+     }
+   }
+@@ -861,26 +872,60 @@ static bool GreatDANEFetch(const nsACString& aEndpoint, const nsACString& aHost,
+ }
+ 
+ // The node emits flat JSON; pull one string or number field out of it.
++// Whitespace around ':' and values is allowed. Ambiguous input returns ""
++// (which every caller treats as a failure): the key twice, a string with
++// escapes or no closing quote, or a nested value.
++static bool GreatDANEIsWs(char c) {
++  return c == ' ' || c == '\t' || c == '\r' || c == '\n';
++}
+ static nsAutoCString GreatDANEField(const nsACString& aJson, const char* aKey) {
+   nsAutoCString key;
+   key.AppendLiteral("\"");
+   key.Append(aKey);
+-  key.AppendLiteral("\":");
++  key.AppendLiteral("\"");
+   nsAutoCString out;
+-  int32_t i = aJson.Find(key);
+-  if (i < 0) return out;
+-  i += key.Length();
+   int32_t len = aJson.Length();
+-  bool quoted = i < len && aJson[i] == '"';
+-  if (quoted) i++;
+-  while (i < len) {
+-    char ch = aJson[i++];
+-    if (quoted ? ch == '"' : (ch == ',' || ch == '}' || ch == ']')) break;
+-    out.Append(ch);
++  int32_t found = -1;
++  for (int32_t from = 0;;) {
++    int32_t k = aJson.Find(key, from);
++    if (k < 0) break;
++    int32_t j = k + key.Length();
++    while (j < len && GreatDANEIsWs(aJson[j])) j++;
++    if (j < len && aJson[j] == ':') {
++      if (found >= 0) return out;  // duplicate key: ambiguous
++      found = j + 1;
++    }
++    from = k + 1;
++  }
++  if (found < 0) return out;
++  int32_t i = found;
++  while (i < len && GreatDANEIsWs(aJson[i])) i++;
++  if (i >= len) return out;
++  if (aJson[i] == '"') {
++    for (i++; i < len; i++) {
++      char ch = aJson[i];
++      if (ch == '"') return out;
++      if (ch == '\\' || (unsigned char)ch < 0x20) break;
++      out.Append(ch);
++    }
++    out.Truncate();  // escape or unterminated string
++    return out;
+   }
++  if (aJson[i] == '{' || aJson[i] == '[') return out;
++  while (i < len && aJson[i] != ',' && aJson[i] != '}' &&
++         !GreatDANEIsWs(aJson[i])) {
++    out.Append(aJson[i++]);
++  }
++  while (i < len && GreatDANEIsWs(aJson[i])) i++;
++  if (i >= len || (aJson[i] != ',' && aJson[i] != '}')) out.Truncate();
+   return out;
+ }
+ 
++bool GreatDANEIsChainHost(const nsACString& aHost) {
++  nsAutoCString endpoint;
++  return GreatDANEEndpointFor(aHost, endpoint);
++}
++
+ static GreatDANEVerdict GreatDANEVerify(const nsACString& aHost,
+                                         const nsTArray<uint8_t>& aLeaf) {
+   nsAutoCString endpoint;
+diff --git a/security/manager/ssl/SSLServerCertVerification.h b/security/manager/ssl/SSLServerCertVerification.h
+index 5307d402d5..29ea78b323 100644
+--- a/security/manager/ssl/SSLServerCertVerification.h
++++ b/security/manager/ssl/SSLServerCertVerification.h
+@@ -155,6 +155,11 @@ class SSLServerCertVerificationJob : public Runnable {
+   RefPtr<BaseSSLServerCertVerificationResult> mResultTask;
+ };
+ 
++// GreatDANE: true if aHost is under a chain TLD (security.greatdane.tlsa_endpoints).
++// Such hosts must never resume a TLS session or send 0-RTT, so every
++// connection gets a fresh TLSA check.
++bool GreatDANEIsChainHost(const nsACString& aHost);
++
+ }  // namespace psm
+ }  // namespace mozilla
+ 
+diff --git a/security/manager/ssl/nsNSSCallbacks.cpp b/security/manager/ssl/nsNSSCallbacks.cpp
+index 1440500d27..b867be035b 100644
+--- a/security/manager/ssl/nsNSSCallbacks.cpp
++++ b/security/manager/ssl/nsNSSCallbacks.cpp
+@@ -6,6 +6,8 @@
+ #include "nsNSSCallbacks.h"
+ 
+ #include "NSSSocketControl.h"
++#include "SSLServerCertVerification.h"
++#include "mozpkix/pkixnss.h"
+ #include "EnabledSignatureSchemes.h"
+ #include "ScopedNSSTypes.h"
+ #include "SharedCertVerifier.h"
+@@ -1123,6 +1125,18 @@ void HandshakeCallback(PRFileDesc* fd, void* client_data) {
+   if (rv != SECSuccess) {
+     return;
+   }
++
++  // GreatDANE defense in depth: resumption is turned off for chain hosts, so a
++  // resumed handshake means something went wrong. The TLSA check didn't run
++  // on this connection, so fail closed. Re-checking here would block the
++  // socket thread on a network fetch.
++  if (channelInfo.resumed &&
++      GreatDANEIsChainHost(infoObject->GetHostName())) {
++    MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
++            ("[%p] GreatDANE: resumed session for chain host, failing", fd));
++    infoObject->SetCanceled(MOZILLA_PKIX_ERROR_KEY_PINNING_FAILURE);
++    return;
++  }
+   AccumulateCipherSuite(channelInfo);
+ 
+   // Get the protocol version for telemetry
+diff --git a/security/manager/ssl/nsNSSIOLayer.cpp b/security/manager/ssl/nsNSSIOLayer.cpp
+index 46de961b37..9b3d7242f0 100644
+--- a/security/manager/ssl/nsNSSIOLayer.cpp
++++ b/security/manager/ssl/nsNSSIOLayer.cpp
+@@ -1713,6 +1713,18 @@ static nsresult nsSSLIOLayerSetOptions(PRFileDesc* fd, bool forSTARTTLS,
+     return NS_ERROR_FAILURE;
+   }
+ 
++  // GreatDANE: no session cache, tickets, external token cache or 0-RTT for
++  // chain hosts. Every connection runs a full handshake and TLSA check.
++  // SetResumptionTokenFromExternalCache and StoreResumptionToken both respect
++  // these options.
++  if (GreatDANEIsChainHost(nsDependentCString(host))) {
++    if (SECSuccess != SSL_OptionSet(fd, SSL_ENABLE_SESSION_TICKETS, false) ||
++        SECSuccess != SSL_OptionSet(fd, SSL_NO_CACHE, true) ||
++        SECSuccess != SSL_OptionSet(fd, SSL_ENABLE_0RTT_DATA, false)) {
++      return NS_ERROR_FAILURE;
++    }
++  }
++
+   uint32_t flags = infoObject->GetProviderFlags();
+   if (flags & nsISocketProvider::NO_PERMANENT_STORAGE) {
+     if (SECSuccess != SSL_OptionSet(fd, SSL_ENABLE_SESSION_TICKETS, false) ||
