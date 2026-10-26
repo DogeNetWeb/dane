@@ -1,0 +1,98 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 15:55:56 -0500
+Subject: [PATCH 024/144] GreatDANE: first-run update-check skip becomes a time
+ window (greatdane.update.skipFirstRunWindowSec=3600 from
+ greatdane.update.firstRunTime); fail open on any error
+
+---
+ browser/app/profile/firefox.js               |  5 ++-
+ toolkit/mozapps/update/UpdateService.sys.mjs | 41 ++++++++++++--------
+ 2 files changed, 27 insertions(+), 19 deletions(-)
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index 7555454408..062e4bd445 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -146,8 +146,9 @@ pref("app.update.notifyDuringDownload", false);
+ // getAppUpdateAutoEnabled from UpdateUtils.sys.mjs should be used.
+ #ifndef XP_WIN
+   pref("app.update.auto", true);
+-// No background update check during the profile's first session (quiet first run).
+-pref("greatdane.update.skipFirstSession", true);
++// Quiet first run: no background update check within this many seconds of the
++// profile's first run (greatdane.update.firstRunTime). 0 = stock behaviour.
++pref("greatdane.update.skipFirstRunWindowSec", 3600);
+ #endif
+ 
+ // If set to true, the Update Service will apply updates in the background
+diff --git a/toolkit/mozapps/update/UpdateService.sys.mjs b/toolkit/mozapps/update/UpdateService.sys.mjs
+index 21d079868f..b464f076c3 100644
+--- a/toolkit/mozapps/update/UpdateService.sys.mjs
++++ b/toolkit/mozapps/update/UpdateService.sys.mjs
+@@ -3514,33 +3514,40 @@ export class UpdateService {
+   }
+ 
+   /**
+-   * GreatDANE: keep the first run quiet. With greatdane.update.skipFirstSession
+-   * (default true), no background update check happens in the profile's first
+-   * session. The first session is identified by the process start time recorded
+-   * in greatdane.update.firstSessionStart the first time a check is attempted;
+-   * any later session (different start time) behaves like stock Firefox.
+-   * Manual checks (About dialog) are unaffected. Background-task mode is
+-   * unaffected (it only runs after the browser has exited).
++   * GreatDANE: keep the first run quiet. No background update check within
++   * greatdane.update.skipFirstRunWindowSec (default 3600) of the profile's
++   * first-run time, which is recorded (seconds since epoch, as a string) in
++   * greatdane.update.firstRunTime the first time a check is attempted.
++   * Fails open: any error reading/parsing either pref means "check now".
++   * Manual checks and background-task mode are unaffected.
+    */
+   _greatdaneSkipFirstSession() {
+     try {
+-      if (!Services.prefs.getBoolPref("greatdane.update.skipFirstSession", true)) {
+-        return false;
+-      }
+       let bts = Cc["@mozilla.org/backgroundtasks;1"]?.getService(
+         Ci.nsIBackgroundTasks
+       );
+       if (bts?.isBackgroundTaskMode) {
+         return false;
+       }
+-      const PREF = "greatdane.update.firstSessionStart";
+-      let start = String(Services.startup.getStartupInfo().process.getTime());
+-      let recorded = Services.prefs.getStringPref(PREF, "");
+-      if (!recorded) {
+-        Services.prefs.setStringPref(PREF, start);
++      let win = Services.prefs.getIntPref(
++        "greatdane.update.skipFirstRunWindowSec",
++        3600
++      );
++      if (!(win > 0)) {
++        return false;
++      }
++      const PREF = "greatdane.update.firstRunTime";
++      let now = Math.floor(Date.now() / 1000);
++      if (!Services.prefs.prefHasUserValue(PREF)) {
++        Services.prefs.setStringPref(PREF, String(now));
+         return true;
+       }
+-      return recorded == start;
++      let raw = Services.prefs.getStringPref(PREF);
++      if (!/^\d+$/.test(raw)) {
++        return false;
++      }
++      let age = now - Number(raw);
++      return age >= 0 && age < win;
+     } catch (e) {
+       return false;
+     }
+@@ -3587,7 +3594,7 @@ export class UpdateService {
+ 
+     if (this._greatdaneSkipFirstSession()) {
+       LOG("UpdateService:_checkForBackgroundUpdates - GreatDANE: skipping " +
+-          "background check during the profile's first session");
++          "background check inside the first-run window");
+       return false;
+     }
+ 
