@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 15:58:42 -0500
+Subject: [PATCH 033/144] =?UTF-8?q?GreatDANE:=20mozconfigs=20=E2=80=94=20u?=
+ =?UTF-8?q?pdate=20channel=20esr,=20MAR=20channel=20greatdane-esr=20(updat?=
+ =?UTF-8?q?er=20previously=20built=20with=20ACCEPTED=5FMAR=5FCHANNEL=5FIDS?=
+ =?UTF-8?q?=20empty,=20channel=20default);=20track=20arm64=20mozconfig?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ mozconfig        | 11 +++++++++++
+ mozconfig-x86_64 |  4 ++++
+ 2 files changed, 15 insertions(+)
+ create mode 100644 mozconfig
+
+diff --git a/mozconfig b/mozconfig
+new file mode 100644
+index 0000000000..67b3b3baf1
+--- /dev/null
++++ b/mozconfig
+@@ -0,0 +1,11 @@
++ac_add_options --enable-application=browser
++ac_add_options --with-branding=browser/branding/greatdane
++ac_add_options --with-app-basename=GreatDANE
++ac_add_options --disable-tests
++ac_add_options --disable-debug
++ac_add_options --disable-crashreporter
++mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-gd
++# Updates: ESR update channel; updater accepts only greatdane-esr MARs (matches updates/make-mars.sh).
++ac_add_options --enable-update-channel=esr
++export MAR_CHANNEL_ID=greatdane-esr
++export ACCEPTED_MAR_CHANNEL_IDS=greatdane-esr
+diff --git a/mozconfig-x86_64 b/mozconfig-x86_64
+index 4e4ec14870..dbdd9db2a5 100644
+--- a/mozconfig-x86_64
++++ b/mozconfig-x86_64
+@@ -9,3 +9,7 @@ ac_add_options --disable-crashreporter
+ mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-gd-x86_64
+ ac_add_options --with-onnx-runtime
+ ac_add_options --enable-bootstrap=onnxruntime-x86_64-apple-darwin
++# Updates: ESR update channel; updater accepts only greatdane-esr MARs (matches updates/make-mars.sh).
++ac_add_options --enable-update-channel=esr
++export MAR_CHANNEL_ID=greatdane-esr
++export ACCEPTED_MAR_CHANNEL_IDS=greatdane-esr
