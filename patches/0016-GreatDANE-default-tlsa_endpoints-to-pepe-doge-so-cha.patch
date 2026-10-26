@@ -1,0 +1,72 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 09:16:49 -0500
+Subject: [PATCH 016/144] GreatDANE: default tlsa_endpoints to 'pepe=,doge=' so
+ chain TLDs fail closed before the node is ready; keep default TLDs listed
+ when publishing
+
+---
+ .../components/greatdane/GreatDANE.sys.mjs    | 24 +++++++++++++++----
+ modules/libpref/init/StaticPrefList.yaml      |  4 +++-
+ 2 files changed, 23 insertions(+), 5 deletions(-)
+
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index b3571797bf..aacdde9ac6 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -7,6 +7,7 @@ import { Subprocess } from "resource://gre/modules/Subprocess.sys.mjs";
+ import { setTimeout } from "resource://gre/modules/Timer.sys.mjs";
+ 
+ const PREF = "greatdane.";
++const EP_PREF = "security.greatdane.tlsa_endpoints";
+ const DEAD_PORT = 9; // discard; never a listener on loopback here
+ const log = (...a) => console.log("GreatDANE:", ...a);
+ 
+@@ -173,11 +174,26 @@ export const GreatDANE = {
+   // DANE-only and where each node's TLSA API is. A TLD with no live node is
+   // still listed (empty endpoint) so its hosts fail closed, never fall back
+   // to the web PKI.
++  // TLDs in the pref's built-in default ("pepe=,doge=") stay listed even
++  // when no chain is configured for them, so dropping a chain from
++  // greatdane.chains never hands its TLD back to the web PKI.
+   _publishEndpoints() {
+-    let v = [...this._chains.values()]
+-      .map(c => c.tld + "=" + (c.ports ? "127.0.0.1:" + c.ports.pac : ""))
+-      .join(",");
+-    Services.prefs.setStringPref("security.greatdane.tlsa_endpoints", v);
++    let eps = new Map();
++    let def = "";
++    try {
++      def = Services.prefs.getDefaultBranch("").getStringPref(EP_PREF, "");
++    } catch (e) {
++      console.error("GreatDANE: cannot read default", EP_PREF, e);
++    }
++    for (let entry of def.split(",")) {
++      let tld = entry.split("=")[0].trim().toLowerCase();
++      if (tld) eps.set(tld, "");
++    }
++    for (let c of this._chains.values()) {
++      eps.set(c.tld.toLowerCase(), c.ports ? "127.0.0.1:" + c.ports.pac : "");
++    }
++    let v = [...eps].map(([tld, ep]) => tld + "=" + ep).join(",");
++    Services.prefs.setStringPref(EP_PREF, v);
+   },
+ 
+   // Ask the node why a chain host failed: ok | unowned | no_tlsa |
+diff --git a/modules/libpref/init/StaticPrefList.yaml b/modules/libpref/init/StaticPrefList.yaml
+index 7a47f2183e..d3890b1c07 100644
+--- a/modules/libpref/init/StaticPrefList.yaml
++++ b/modules/libpref/init/StaticPrefList.yaml
+@@ -18071,9 +18071,11 @@
+ # (never by the web PKI), and where to ask for it. Comma list of
+ # "tld=127.0.0.1:port"; an empty endpoint ("pepe=") fails every such host
+ # closed. Set at runtime by GreatDANE.sys.mjs from the node's ready line.
++# The default lists both chain TLDs with no endpoint so .pepe/.doge fail
++# closed from the first connection, before any node has reported ready.
+ - name: security.greatdane.tlsa_endpoints
+   type: DataMutexString
+-  value: ""
++  value: "pepe=,doge="
+   mirror: always
+ 
+ - name: security.bad_cert_domain_error.url_fix_enabled
