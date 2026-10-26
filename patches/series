@@ -20,3 +20,4 @@
 0020-GreatDANE-tests-resumption-is-now-a-hard-assertion-T.patch
 0021-GreatDANE-about-dane-shows-the-node-s-chain-port-lis.patch
 0022-GreatDANE-self-hosted-ESR-update-URL-pepecoin.surf-d.patch
+0023-GreatDANE-skip-background-update-checks-during-the-p.patch
