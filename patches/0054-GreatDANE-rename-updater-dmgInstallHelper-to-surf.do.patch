@@ -1,0 +1,451 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 27 Oct 2026 16:20:12 -0500
+Subject: [PATCH 054/144] GreatDANE: rename updater/dmgInstallHelper to
+ surf.dogecoin.dane.*; SM requirements use team MNL79V994R
+
+---
+ browser/app/Makefile.in                              |  4 ++--
+ browser/installer/allowed-dupes.mn                   |  4 ++--
+ build/moz.configure/update-programs.configure        |  4 ++--
+ toolkit/mozapps/dmgInstallHelper/Info.plist.in       |  2 +-
+ toolkit/mozapps/dmgInstallHelper/Launchd.plist       |  4 ++--
+ toolkit/mozapps/dmgInstallHelper/dmgInstallHelper.mm | 10 +++++-----
+ .../dmgInstallHelper/docs/dmgInstallHelper.md        |  6 +++---
+ toolkit/mozapps/dmgInstallHelper/moz.build           |  2 +-
+ toolkit/mozapps/update/common/elevation_type.cpp     |  2 +-
+ toolkit/mozapps/update/common/updatecommon.cpp       |  2 +-
+ .../mozapps/update/tests/data/xpcshellUtilsAUS.js    |  2 +-
+ .../update/tests/gtest/ElevationTypeTests.cpp        |  2 +-
+ toolkit/mozapps/update/updater/Launchd.plist         |  2 +-
+ toolkit/mozapps/update/updater/Makefile.in           |  2 +-
+ toolkit/mozapps/update/updater/launchchild_osx.mm    | 12 ++++++------
+ .../update/updater/macbuild/Contents/Info.plist.in   |  4 ++--
+ toolkit/mozapps/update/updater/moz.build             |  2 +-
+ .../update/updater/updater-xpcshell/Makefile.in      |  2 +-
+ toolkit/xre/MacLaunchHelper.mm                       |  4 ++--
+ toolkit/xre/MacRunFromDmgUtils.mm                    |  4 ++--
+ toolkit/xre/nsCommandLineServiceMac.mm               |  8 ++++----
+ toolkit/xre/nsUpdateDriver.h                         |  2 +-
+ 22 files changed, 43 insertions(+), 43 deletions(-)
+
+diff --git a/browser/app/Makefile.in b/browser/app/Makefile.in
+index 4dc48216e5..b5949d107e 100644
+--- a/browser/app/Makefile.in
++++ b/browser/app/Makefile.in
+@@ -87,9 +87,9 @@ tools repackage:: $(DIST)/bin/$(MOZ_APP_NAME) $(objdir)/macbuild/Contents/MacOS-
+ 	if [ -f $(topsrcdir)/$(MOZ_BRANDING_DIRECTORY)/Assets.car ]; then cp -RL $(topsrcdir)/$(MOZ_BRANDING_DIRECTORY)/Assets.car '$(dist_dest)/Contents/Resources/Assets.car'; fi
+ 	$(MKDIR) -p '$(dist_dest)/Contents/Library/LaunchServices'
+ ifdef MOZ_UPDATER
+-	cp -f '$(dist_dest)/Contents/MacOS/updater.app/Contents/MacOS/org.mozilla.updater' '$(dist_dest)/Contents/Library/LaunchServices'
++	cp -f '$(dist_dest)/Contents/MacOS/updater.app/Contents/MacOS/surf.dogecoin.dane.updater' '$(dist_dest)/Contents/Library/LaunchServices'
+ endif
+-	mv '$(dist_dest)/Contents/Resources/org.mozilla.dmgInstallHelper' '$(dist_dest)/Contents/Library/LaunchServices'
++	mv '$(dist_dest)/Contents/Resources/surf.dogecoin.dane.dmgInstallHelper' '$(dist_dest)/Contents/Library/LaunchServices'
+ 	$(MKDIR) -p '$(dist_dest)/Contents/Frameworks'
+ 	mv '$(dist_dest)/Contents/Resources/ChannelPrefs.framework' '$(dist_dest)/Contents/Frameworks'
+ 	printf APPLMOZB > '$(dist_dest)/Contents/PkgInfo'
+diff --git a/browser/installer/allowed-dupes.mn b/browser/installer/allowed-dupes.mn
+index 96706c155f..368089dfb5 100644
+--- a/browser/installer/allowed-dupes.mn
++++ b/browser/installer/allowed-dupes.mn
+@@ -6,8 +6,8 @@
+ #
+ 
+ # updater on osx is bug 1311194
+-LaunchServices/org.mozilla.updater
+-updater.app/Contents/MacOS/org.mozilla.updater
++LaunchServices/surf.dogecoin.dane.updater
++updater.app/Contents/MacOS/surf.dogecoin.dane.updater
+ 
+ plugin-container.app/Contents/PkgInfo
+ updater.app/Contents/PkgInfo
+diff --git a/build/moz.configure/update-programs.configure b/build/moz.configure/update-programs.configure
+index ec5344f632..5f12bd22c3 100644
+--- a/build/moz.configure/update-programs.configure
++++ b/build/moz.configure/update-programs.configure
+@@ -89,7 +89,7 @@ def mac_prod_requirements_string(identifier):
+         f'identifier "{identifier}" and anchor apple generic and '
+         "certificate 1[field.1.2.840.113635.100.6.2.6] and "
+         "certificate leaf[field.1.2.840.113635.100.6.1.13] and "
+-        'certificate leaf[subject.OU] = "43AQ936H96"'
++        'certificate leaf[subject.OU] = "MNL79V994R"'
+     )
+ 
+ 
+@@ -122,7 +122,7 @@ def requirements_string(exec_id, relaxed):
+ @imports(_from="xml.sax.saxutils", _import="escape")
+ def generate_smprivilegedexec_requirements(relaxed):
+     requirements = ""
+-    smprivilegedexecutables_list = ["org.mozilla.dmgInstallHelper", "org.mozilla.updater"]
++    smprivilegedexecutables_list = ["surf.dogecoin.dane.dmgInstallHelper", "surf.dogecoin.dane.updater"]
+ 
+     for executable in smprivilegedexecutables_list:
+         requirements += f"<key>{escape(executable)}</key>"
+diff --git a/toolkit/mozapps/dmgInstallHelper/Info.plist.in b/toolkit/mozapps/dmgInstallHelper/Info.plist.in
+index e444b163e8..6f8266f35d 100644
+--- a/toolkit/mozapps/dmgInstallHelper/Info.plist.in
++++ b/toolkit/mozapps/dmgInstallHelper/Info.plist.in
+@@ -3,7 +3,7 @@
+ <plist version="1.0">
+ <dict>
+ 	<key>CFBundleIdentifier</key>
+-	<string>org.mozilla.dmgInstallHelper</string>
++	<string>surf.dogecoin.dane.dmgInstallHelper</string>
+ 	<key>CFBundleInfoDictionaryVersion</key>
+ 	<string>6.0</string>
+ 	<key>CFBundleName</key>
+diff --git a/toolkit/mozapps/dmgInstallHelper/Launchd.plist b/toolkit/mozapps/dmgInstallHelper/Launchd.plist
+index 21b17b3b7f..8ee7c60cc6 100644
+--- a/toolkit/mozapps/dmgInstallHelper/Launchd.plist
++++ b/toolkit/mozapps/dmgInstallHelper/Launchd.plist
+@@ -3,10 +3,10 @@
+ <plist version="1.0">
+ <dict>
+ 	<key>Label</key>
+-	<string>org.mozilla.dmgInstallHelper</string>
++	<string>surf.dogecoin.dane.dmgInstallHelper</string>
+ 	<key>MachServices</key>
+ 	<dict>
+-		<key>org.mozilla.dmgInstallHelper</key>
++		<key>surf.dogecoin.dane.dmgInstallHelper</key>
+ 		<true/>
+ 	</dict>
+ </dict>
+diff --git a/toolkit/mozapps/dmgInstallHelper/dmgInstallHelper.mm b/toolkit/mozapps/dmgInstallHelper/dmgInstallHelper.mm
+index b7e2cd81e8..1eaa78edbf 100644
+--- a/toolkit/mozapps/dmgInstallHelper/dmgInstallHelper.mm
++++ b/toolkit/mozapps/dmgInstallHelper/dmgInstallHelper.mm
+@@ -46,7 +46,7 @@ static SecRequirementRef createRequirementFromString(
+ 
+ #define MOZ_RUNINIT __attribute__((annotate("moz_global_var")))
+ MOZ_RUNINIT static os_log_t logger =
+-    os_log_create("org.mozilla.dmgInstallHelper", "main");
++    os_log_create("surf.dogecoin.dane.dmgInstallHelper", "main");
+ 
+ // This will work as a standalone app for testing purposes in a debug
+ // environment. pass the test app bundle as the only parameter.
+@@ -71,7 +71,7 @@ int main(int argc, char* argv[]) {
+ 
+   ListenerDelegate* delegate = [[ListenerDelegate alloc] init];
+   NSXPCListener* listener = [[NSXPCListener alloc]
+-      initWithMachServiceName:@"org.mozilla.dmgInstallHelper"];
++      initWithMachServiceName:@"surf.dogecoin.dane.dmgInstallHelper"];
+ 
+   if (listener != nil) {
+     os_log_info(logger, "Got listener");
+@@ -420,16 +420,16 @@ static bool PerformInstallationFromDMG(NSString* bundlePath,
+ 
+   NSFileManager* manager = [NSFileManager defaultManager];
+   [manager removeItemAtPath:
+-               @"/Library/PrivilegedHelperTools/org.mozilla.dmgInstallHelper"
++               @"/Library/PrivilegedHelperTools/surf.dogecoin.dane.dmgInstallHelper"
+                       error:nil];
+   [manager removeItemAtPath:
+-               @"/Library/LaunchDaemons/org.mozilla.dmgInstallHelper.plist"
++               @"/Library/LaunchDaemons/surf.dogecoin.dane.dmgInstallHelper.plist"
+                       error:nil];
+ 
+   // The following call will terminate the current process due to the "remove"
+   // argument.
+   LaunchTask(@"/bin/launchctl",
+-             @[ @"remove", @"org.mozilla.dmgInstallHelper" ]);
++             @[ @"remove", @"surf.dogecoin.dane.dmgInstallHelper" ]);
+ 
+   exit(0);
+ }
+diff --git a/toolkit/mozapps/dmgInstallHelper/docs/dmgInstallHelper.md b/toolkit/mozapps/dmgInstallHelper/docs/dmgInstallHelper.md
+index 9909e412a3..254d978a60 100644
+--- a/toolkit/mozapps/dmgInstallHelper/docs/dmgInstallHelper.md
++++ b/toolkit/mozapps/dmgInstallHelper/docs/dmgInstallHelper.md
+@@ -64,7 +64,7 @@ The DMG Install Helper should clean up after itself, but if it doesn't you can r
+ ```
+ #! /bin/sh
+ 
+-sudo launchctl unload /Library/LaunchDaemons/org.mozilla.dmgInstallHelper.plist
+-sudo rm /Library/LaunchDaemons/org.mozilla.dmgInstallHelper.plist
+-sudo rm /Library/PrivilegedHelperTools/org.mozilla.dmgInstallHelper
++sudo launchctl unload /Library/LaunchDaemons/surf.dogecoin.dane.dmgInstallHelper.plist
++sudo rm /Library/LaunchDaemons/surf.dogecoin.dane.dmgInstallHelper.plist
++sudo rm /Library/PrivilegedHelperTools/surf.dogecoin.dane.dmgInstallHelper
+ ```
+diff --git a/toolkit/mozapps/dmgInstallHelper/moz.build b/toolkit/mozapps/dmgInstallHelper/moz.build
+index b505b24863..1f295b6852 100644
+--- a/toolkit/mozapps/dmgInstallHelper/moz.build
++++ b/toolkit/mozapps/dmgInstallHelper/moz.build
+@@ -8,7 +8,7 @@ with Files("**"):
+ SPHINX_TREES["docs"] = "docs"
+ 
+ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "cocoa":
+-    Program("org.mozilla.dmgInstallHelper")
++    Program("surf.dogecoin.dane.dmgInstallHelper")
+ 
+     SOURCES = [
+         "dmgInstallHelper.mm"
+diff --git a/toolkit/mozapps/update/common/elevation_type.cpp b/toolkit/mozapps/update/common/elevation_type.cpp
+index 0b9060795e..56ed23cb3a 100644
+--- a/toolkit/mozapps/update/common/elevation_type.cpp
++++ b/toolkit/mozapps/update/common/elevation_type.cpp
+@@ -58,7 +58,7 @@ BoolResult isProcessElevated(const NS_tchar* cmd) {
+   if (!cmd) {
+     return BoolResult::False;
+   }
+-  return strstr(cmd, "/Library/PrivilegedHelperTools/org.mozilla.updater") !=
++  return strstr(cmd, "/Library/PrivilegedHelperTools/surf.dogecoin.dane.updater") !=
+                  nullptr
+              ? BoolResult::True
+              : BoolResult::False;
+diff --git a/toolkit/mozapps/update/common/updatecommon.cpp b/toolkit/mozapps/update/common/updatecommon.cpp
+index fb715b7d08..dd70bf4564 100644
+--- a/toolkit/mozapps/update/common/updatecommon.cpp
++++ b/toolkit/mozapps/update/common/updatecommon.cpp
+@@ -545,7 +545,7 @@ bool IsValidFullPath(NS_tchar* origFullPath) {
+ #if defined(XP_MACOSX)
+ // This is never deallocated by the system
+ MOZ_RUNINIT static os_log_t updaterLogger =
+-    os_log_create("org.mozilla.updater", "Updater");
++    os_log_create("surf.dogecoin.dane.updater", "Updater");
+ #endif
+ 
+ /**
+diff --git a/toolkit/mozapps/update/tests/data/xpcshellUtilsAUS.js b/toolkit/mozapps/update/tests/data/xpcshellUtilsAUS.js
+index 4e0005d793..a70904a109 100644
+--- a/toolkit/mozapps/update/tests/data/xpcshellUtilsAUS.js
++++ b/toolkit/mozapps/update/tests/data/xpcshellUtilsAUS.js
+@@ -2043,7 +2043,7 @@ function copyTestUpdaterToBinDir() {
+     stripQuarantineBitFromPath(updater.path);
+     updater.append("Contents");
+     updater.append("MacOS");
+-    updater.append("org.mozilla.updater");
++    updater.append("surf.dogecoin.dane.updater");
+   }
+   return updater;
+ }
+diff --git a/toolkit/mozapps/update/tests/gtest/ElevationTypeTests.cpp b/toolkit/mozapps/update/tests/gtest/ElevationTypeTests.cpp
+index 362162af19..e0833d7b71 100644
+--- a/toolkit/mozapps/update/tests/gtest/ElevationTypeTests.cpp
++++ b/toolkit/mozapps/update/tests/gtest/ElevationTypeTests.cpp
+@@ -153,7 +153,7 @@ TEST_F(ElevationTypeTest, IsProcessElevated_NonElevatedCmd) {
+ 
+ TEST_F(ElevationTypeTest, IsProcessElevated_ElevatedCmd) {
+   BoolResult res =
+-      isProcessElevated("/Library/PrivilegedHelperTools/org.mozilla.updater");
++      isProcessElevated("/Library/PrivilegedHelperTools/surf.dogecoin.dane.updater");
+   EXPECT_EQ(res, BoolResult::True);
+ }
+ #endif
+diff --git a/toolkit/mozapps/update/updater/Launchd.plist b/toolkit/mozapps/update/updater/Launchd.plist
+index f0b5cef085..780bc523a9 100644
+--- a/toolkit/mozapps/update/updater/Launchd.plist
++++ b/toolkit/mozapps/update/updater/Launchd.plist
+@@ -3,7 +3,7 @@
+ <plist version="1.0">
+ <dict>
+   <key>Label</key>
+-  <string>org.mozilla.updater</string>
++  <string>surf.dogecoin.dane.updater</string>
+   <key>RunAtLoad</key>
+   <true/>
+ </dict>
+diff --git a/toolkit/mozapps/update/updater/Makefile.in b/toolkit/mozapps/update/updater/Makefile.in
+index 5792ef3628..28b0a1ae66 100644
+--- a/toolkit/mozapps/update/updater/Makefile.in
++++ b/toolkit/mozapps/update/updater/Makefile.in
+@@ -19,7 +19,7 @@ libs::
+ 	rsync -a -C $(DIST)/bin/Info.plist $(DIST)/bin/updater.app/Contents
+ 	$(call py_action,preprocessor updater.app/Contents/Resources/English.lproj/InfoPlist.strings,-Fsubstitution --output-encoding utf-16 -DAPP_NAME='$(MOZ_APP_DISPLAYNAME)' $(srcdir)/macbuild/Contents/Resources/English.lproj/InfoPlist.strings.in -o $(DIST)/bin/updater.app/Contents/Resources/English.lproj/InfoPlist.strings)
+ 	$(NSINSTALL) -D $(DIST)/bin/updater.app/Contents/MacOS
+-	$(NSINSTALL) $(DIST)/bin/org.mozilla.updater $(DIST)/bin/updater.app/Contents/MacOS
++	$(NSINSTALL) $(DIST)/bin/surf.dogecoin.dane.updater $(DIST)/bin/updater.app/Contents/MacOS
+ 	$(NSINSTALL) -D $(DIST)/bin/updater.app/Contents/Frameworks
+ ifneq (,$(COMPILE_ENVIRONMENT))
+ 	$(NSINSTALL) $(DIST)/bin/UpdateSettings $(DIST)/bin/updater.app/Contents/Frameworks/UpdateSettings.framework
+diff --git a/toolkit/mozapps/update/updater/launchchild_osx.mm b/toolkit/mozapps/update/updater/launchchild_osx.mm
+index 56da758876..2c1c4f67d8 100644
+--- a/toolkit/mozapps/update/updater/launchchild_osx.mm
++++ b/toolkit/mozapps/update/updater/launchchild_osx.mm
+@@ -192,7 +192,7 @@ id ConnectToUpdateServer() {
+   while (!isConnected && currTry < numRetries) {
+     @try {
+       updateServer = (id)[NSConnection
+-          rootProxyForConnectionWithRegisteredName:@"org.mozilla.updater.server"
++          rootProxyForConnectionWithRegisteredName:@"surf.dogecoin.dane.updater.server"
+                                               host:nil
+                                    usingNameServer:[NSSocketPortNameServer
+                                                        sharedInstance]];
+@@ -236,14 +236,14 @@ void CleanupElevatedMacUpdate(bool aFailureOccurred) {
+ 
+   NSFileManager* manager = [NSFileManager defaultManager];
+   [manager
+-      removeItemAtPath:@"/Library/PrivilegedHelperTools/org.mozilla.updater"
++      removeItemAtPath:@"/Library/PrivilegedHelperTools/surf.dogecoin.dane.updater"
+                  error:nil];
+-  [manager removeItemAtPath:@"/Library/LaunchDaemons/org.mozilla.updater.plist"
++  [manager removeItemAtPath:@"/Library/LaunchDaemons/surf.dogecoin.dane.updater.plist"
+                       error:nil];
+ 
+   // The following call will terminate the current process due to the "remove"
+   // argument.
+-  LaunchTask(@"/bin/launchctl", @[ @"remove", @"org.mozilla.updater" ]);
++  LaunchTask(@"/bin/launchctl", @[ @"remove", @"surf.dogecoin.dane.updater" ]);
+ }
+ 
+ // Note: Caller is responsible for freeing aArgv.
+@@ -326,7 +326,7 @@ bool ObtainUpdaterArguments(int* aArgc, char*** aArgv,
+   NSConnection* server = [NSConnection connectionWithReceivePort:serverPort
+                                                         sendPort:serverPort];
+   [server setRootObject:self];
+-  if ([server registerName:@"org.mozilla.updater.server"
++  if ([server registerName:@"surf.dogecoin.dane.updater.server"
+             withNameServer:[NSSocketPortNameServer sharedInstance]] == NO) {
+     NSLog(@"Unable to register as DirectoryServer.");
+     NSLog(@"Is another copy running?");
+@@ -346,7 +346,7 @@ bool ObtainUpdaterArguments(int* aArgc, char*** aArgv,
+ /**
+  * The MAR channel ID(s) are stored in the UpdateSettings.framework that ships
+  * with the updater.app bundle. When an elevated update is occurring, the
+- * org.mozilla.updater binary is extracted and installed individually as a
++ * surf.dogecoin.dane.updater binary is extracted and installed individually as a
+  * Privileged Helper Tool. This Privileged Helper Tool does not have access to
+  * the UpdateSettings.framework and we therefore rely on the unelevated updater
+  * process to pass this information to the elevated updater process in the same
+diff --git a/toolkit/mozapps/update/updater/macbuild/Contents/Info.plist.in b/toolkit/mozapps/update/updater/macbuild/Contents/Info.plist.in
+index 58be384061..fb934d5ba5 100644
+--- a/toolkit/mozapps/update/updater/macbuild/Contents/Info.plist.in
++++ b/toolkit/mozapps/update/updater/macbuild/Contents/Info.plist.in
+@@ -7,11 +7,11 @@
+ 	<key>CFBundleDisplayName</key>
+ 	<string>updater</string>
+ 	<key>CFBundleExecutable</key>
+-	<string>org.mozilla.updater</string>
++	<string>surf.dogecoin.dane.updater</string>
+ 	<key>CFBundleIconFile</key>
+ 	<string>updater.icns</string>
+ 	<key>CFBundleIdentifier</key>
+-	<string>org.mozilla.updater</string>
++	<string>surf.dogecoin.dane.updater</string>
+ 	<key>CFBundleInfoDictionaryVersion</key>
+ 	<string>6.0</string>
+ 	<key>CFBundleName</key>
+diff --git a/toolkit/mozapps/update/updater/moz.build b/toolkit/mozapps/update/updater/moz.build
+index 7e362df573..609cfad873 100644
+--- a/toolkit/mozapps/update/updater/moz.build
++++ b/toolkit/mozapps/update/updater/moz.build
+@@ -3,7 +3,7 @@
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
+ if CONFIG["MOZ_WIDGET_TOOLKIT"] == "cocoa":
+-    Program("org.mozilla.updater")
++    Program("surf.dogecoin.dane.updater")
+ else:
+     Program("updater")
+ 
+diff --git a/toolkit/mozapps/update/updater/updater-xpcshell/Makefile.in b/toolkit/mozapps/update/updater/updater-xpcshell/Makefile.in
+index 5a910add70..b8499498f3 100644
+--- a/toolkit/mozapps/update/updater/updater-xpcshell/Makefile.in
++++ b/toolkit/mozapps/update/updater/updater-xpcshell/Makefile.in
+@@ -28,7 +28,7 @@ ifeq (cocoa,$(MOZ_WIDGET_TOOLKIT))
+ 	$(NSINSTALL) $(srcdir)/../macos-frameworks/UpdateSettings/Info.plist  $(XPCSHELLTESTDIR)/data/updater-xpcshell.app/Contents/Frameworks/UpdateSettings.framework/Resources
+ 	rm -Rf $(XPCSHELLTESTDIR)/data/updater.app
+ 	mv $(XPCSHELLTESTDIR)/data/updater-xpcshell.app $(XPCSHELLTESTDIR)/data/updater.app
+-	mv $(XPCSHELLTESTDIR)/data/updater.app/Contents/MacOS/updater-xpcshell $(XPCSHELLTESTDIR)/data/updater.app/Contents/MacOS/org.mozilla.updater
++	mv $(XPCSHELLTESTDIR)/data/updater.app/Contents/MacOS/updater-xpcshell $(XPCSHELLTESTDIR)/data/updater.app/Contents/MacOS/surf.dogecoin.dane.updater
+ 
+ ifdef MOCHITESTBROWSERDIR
+ 	rsync -a -C $(XPCSHELLTESTDIR)/data/updater.app $(MOCHITESTBROWSERDIR)/
+diff --git a/toolkit/xre/MacLaunchHelper.mm b/toolkit/xre/MacLaunchHelper.mm
+index 6dec5ce49e..f8d7e60f4c 100644
+--- a/toolkit/xre/MacLaunchHelper.mm
++++ b/toolkit/xre/MacLaunchHelper.mm
+@@ -199,7 +199,7 @@ bool InstallPrivilegedHelperWithId(const char* helperId, os_log_t logger) {
+ }
+ 
+ bool InstallElevatedUpdater() {
+-  return InstallPrivilegedHelperWithId("org.mozilla.updater");
++  return InstallPrivilegedHelperWithId("surf.dogecoin.dane.updater");
+ }
+ 
+ void AbortElevatedUpdate() {
+@@ -212,7 +212,7 @@ void AbortElevatedUpdate() {
+   while (currTry < numRetries) {
+     @try {
+       updateServer = (id)[NSConnection
+-          rootProxyForConnectionWithRegisteredName:@"org.mozilla.updater.server"
++          rootProxyForConnectionWithRegisteredName:@"surf.dogecoin.dane.updater.server"
+                                               host:nil
+                                    usingNameServer:[NSSocketPortNameServer
+                                                        sharedInstance]];
+diff --git a/toolkit/xre/MacRunFromDmgUtils.mm b/toolkit/xre/MacRunFromDmgUtils.mm
+index d930f8f688..6a687bca86 100644
+--- a/toolkit/xre/MacRunFromDmgUtils.mm
++++ b/toolkit/xre/MacRunFromDmgUtils.mm
+@@ -285,7 +285,7 @@ bool LaunchElevatedDmgInstall(NSString* aBundlePath, NSString* aDestPath) {
+ 
+   os_log_info(runFromDMGLogger, "Launch elevated DMG Install");
+   bool didSucceed = InstallPrivilegedHelperWithId(
+-      "org.mozilla.dmgInstallHelper", runFromDMGLogger);
++      "surf.dogecoin.dane.dmgInstallHelper", runFromDMGLogger);
+ 
+   os_log_info(runFromDMGLogger, "Installed helper: %s",
+               didSucceed ? "Yes" : "No");
+@@ -294,7 +294,7 @@ bool LaunchElevatedDmgInstall(NSString* aBundlePath, NSString* aDestPath) {
+   }
+ 
+   NSXPCConnection* connection = [[[NSXPCConnection alloc]
+-      initWithMachServiceName:@"org.mozilla.dmgInstallHelper"
++      initWithMachServiceName:@"surf.dogecoin.dane.dmgInstallHelper"
+                       options:NSXPCConnectionPrivileged] autorelease];
+ 
+   if (connection == nil) {
+diff --git a/toolkit/xre/nsCommandLineServiceMac.mm b/toolkit/xre/nsCommandLineServiceMac.mm
+index 3fc9808a55..b85ffb1130 100644
+--- a/toolkit/xre/nsCommandLineServiceMac.mm
++++ b/toolkit/xre/nsCommandLineServiceMac.mm
+@@ -60,7 +60,7 @@ void SetupMacCommandLine(int& argc, char**& argv, bool forRestart) {
+     // Essentially, we are using the updater as a relauncher process.
+     NSString* updaterPath = [[path stringByDeletingLastPathComponent]
+         stringByAppendingPathComponent:
+-            @"updater.app/Contents/MacOS/org.mozilla.updater"];
++            @"updater.app/Contents/MacOS/surf.dogecoin.dane.updater"];
+     AddToCommandLine(updaterPath.UTF8String);
+     AddToCommandLine("--openAppBundle");
+   }
+@@ -68,14 +68,14 @@ void SetupMacCommandLine(int& argc, char**& argv, bool forRestart) {
+   // We adjust the path to point to the .app bundle, rather than the executable
+   // itself, to allow for the use of the NSWorkspace API for launching and
+   // relaunching the application. We intentionally exclude the
+-  // org.mozilla.updater binary because we are experiencing NSCocoaErrors of
++  // surf.dogecoin.dane.updater binary because we are experiencing NSCocoaErrors of
+   // type `kLSUnknownErr` when trying to launch the updater.app with the
+   // NSWorkspace API, at least on macOS 10.15. The updater is launched using
+   // NSTask instead. We do not experience these NSCocoaErrors on more modern
+   // versions of macOS and we may be able to switch to the NSWorkspace API once
+   // we no longer support the older versions of macOS where these errors occur.
+   // See bug 1911178.
+-  if (![path hasSuffix:@"org.mozilla.updater"] && ![path hasSuffix:@".app"]) {
++  if (![path hasSuffix:@"surf.dogecoin.dane.updater"] && ![path hasSuffix:@".app"]) {
+     // Ensure that the path in the first argument points to the .app bundle.
+     // This strips three last path components, for example:
+     //
+@@ -84,7 +84,7 @@ void SetupMacCommandLine(int& argc, char**& argv, bool forRestart) {
+     path = [[[path stringByDeletingLastPathComponent]
+         stringByDeletingLastPathComponent] stringByDeletingLastPathComponent];
+   }
+-  if (![path hasSuffix:@"org.mozilla.updater"] && ![path hasSuffix:@".app"]) {
++  if (![path hasSuffix:@"surf.dogecoin.dane.updater"] && ![path hasSuffix:@".app"]) {
+     // We were unable to obtain the path to the .app bundle and are unable to
+     // build a valid command line.
+     return;
+diff --git a/toolkit/xre/nsUpdateDriver.h b/toolkit/xre/nsUpdateDriver.h
+index 254faadf63..d82c06b839 100644
+--- a/toolkit/xre/nsUpdateDriver.h
++++ b/toolkit/xre/nsUpdateDriver.h
+@@ -30,7 +30,7 @@ typedef PRProcess* ProcessType;
+ #  define MAYBE_WAIT_TIMEOUT_MS (60U * 1000U)
+ #elif XP_MACOSX
+ #  define UPDATER_APP "updater.app"
+-#  define UPDATER_BIN "org.mozilla.updater"
++#  define UPDATER_BIN "surf.dogecoin.dane.updater"
+ #else
+ #  define UPDATER_BIN "updater"
+ #endif
