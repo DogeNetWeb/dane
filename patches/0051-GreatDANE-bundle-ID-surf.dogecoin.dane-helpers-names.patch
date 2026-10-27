@@ -1,0 +1,103 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 27 Oct 2026 13:12:38 -0500
+Subject: [PATCH 051/144] GreatDANE: bundle ID surf.dogecoin.dane; helpers
+ namespaced under it
+
+--with-distribution-id=surf in both mozconfigs, MOZ_MACBUNDLE_ID=dogecoin.dane.
+plugin-container/gpu-helper/media-plugin-helper -> surf.dogecoin.dane.{plugincontainer,gpu-helper,media-plugin-helper}.
+App basename GreatDANE, profile dir, greatdane.* prefs and MAR channel greatdane-esr unchanged.
+---
+ browser/branding/greatdane/configure.sh |  2 +-
+ mozconfig                               |  2 ++
+ mozconfig-x86_64                        |  2 ++
+ toolkit/moz.configure                   | 20 +++++++++++++++-----
+ 4 files changed, 20 insertions(+), 6 deletions(-)
+
+diff --git a/browser/branding/greatdane/configure.sh b/browser/branding/greatdane/configure.sh
+index 19ed09e0e5..515382b39d 100644
+--- a/browser/branding/greatdane/configure.sh
++++ b/browser/branding/greatdane/configure.sh
+@@ -3,4 +3,4 @@
+ # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+ 
+ MOZ_APP_DISPLAYNAME=Dane
+-MOZ_MACBUNDLE_ID=surf.pepecoin.greatdane
++MOZ_MACBUNDLE_ID=dogecoin.dane
+diff --git a/mozconfig b/mozconfig
+index 67b3b3baf1..96193bd4cc 100644
+--- a/mozconfig
++++ b/mozconfig
+@@ -1,6 +1,8 @@
+ ac_add_options --enable-application=browser
+ ac_add_options --with-branding=browser/branding/greatdane
+ ac_add_options --with-app-basename=GreatDANE
++# Bundle ID: <distribution-id>.<MOZ_MACBUNDLE_ID> = surf.dogecoin.dane
++ac_add_options --with-distribution-id=surf
+ ac_add_options --disable-tests
+ ac_add_options --disable-debug
+ ac_add_options --disable-crashreporter
+diff --git a/mozconfig-x86_64 b/mozconfig-x86_64
+index dbdd9db2a5..4da8bb510c 100644
+--- a/mozconfig-x86_64
++++ b/mozconfig-x86_64
+@@ -3,6 +3,8 @@ ac_add_options --enable-application=browser
+ ac_add_options --target=x86_64-apple-darwin
+ ac_add_options --with-branding=browser/branding/greatdane
+ ac_add_options --with-app-basename=GreatDANE
++# Bundle ID: <distribution-id>.<MOZ_MACBUNDLE_ID> = surf.dogecoin.dane
++ac_add_options --with-distribution-id=surf
+ ac_add_options --disable-tests
+ ac_add_options --disable-debug
+ ac_add_options --disable-crashreporter
+diff --git a/toolkit/moz.configure b/toolkit/moz.configure
+index 593f8b9b9c..67f9b70334 100644
+--- a/toolkit/moz.configure
++++ b/toolkit/moz.configure
+@@ -3379,7 +3379,11 @@ with only_when(target_is_osx):
+     set_config("MOZ_CHILD_PROCESS_BUNDLE", "plugin-container.app/Contents/MacOS/")
+     set_config(
+         "MOZ_CHILD_PROCESS_BUNDLEID",
+-        depends("--with-distribution-id")(lambda v: f"{v[0]}.plugincontainer"),
++        # GreatDANE: namespace the child-process bundle under the app's bundle ID
++        # (surf.dogecoin.dane.plugincontainer) instead of <distribution-id>.plugincontainer.
++        depends("--with-distribution-id", "MOZ_MACBUNDLE_ID")(
++            lambda v, b: f"{v[0]}.{b[0]}.plugincontainer" if b else f"{v[0]}.plugincontainer"
++        ),
+     )
+     set_config("MOZ_CHILD_PROCESS_BUNDLENAME", "plugin-container.app")
+ 
+@@ -3868,11 +3872,14 @@ with only_when(target_is_osx):
+ 
+     # Generate a lower case string with no spaces to be used as the bundle ID
+     # for the EME helper .app of the form org.mozilla.<executable-name>.
+-    @depends(moz_app_displayname, moz_eme_process_name, "--with-distribution-id")
+-    def moz_eme_process_bundle_id(app_displayname, eme_process_name, distribution_id):
++    @depends(moz_app_displayname, moz_eme_process_name, "--with-distribution-id", moz_mac_bundle_id)
++    def moz_eme_process_bundle_id(app_displayname, eme_process_name, distribution_id, mac_bundle_id):
+         if not app_displayname:
+             return
+ 
++        # GreatDANE: helpers live under the app bundle ID, e.g. surf.dogecoin.dane.media-plugin-helper.
++        if mac_bundle_id:
++            return f"{mac_bundle_id}.{eme_process_name}"
+         eme_process_bundle_id = app_displayname.replace(" ", "-").lower()
+         return f"{distribution_id[0]}.{eme_process_bundle_id}-{eme_process_name}"
+ 
+@@ -3902,11 +3909,14 @@ with only_when(target_is_osx):
+ 
+     # Generate a lower case string with no spaces to be used as the bundle ID
+     # for the GPU helper .app of the form org.mozilla.<executable-name>.
+-    @depends(moz_app_displayname, moz_gpu_process_name, "--with-distribution-id")
+-    def moz_gpu_process_bundle_id(app_displayname, gpu_process_name, distribution_id):
++    @depends(moz_app_displayname, moz_gpu_process_name, "--with-distribution-id", moz_mac_bundle_id)
++    def moz_gpu_process_bundle_id(app_displayname, gpu_process_name, distribution_id, mac_bundle_id):
+         if not app_displayname:
+             return
+ 
++        # GreatDANE: helpers live under the app bundle ID, e.g. surf.dogecoin.dane.gpu-helper.
++        if mac_bundle_id:
++            return f"{mac_bundle_id}.{gpu_process_name}"
+         gpu_process_bundle_id = app_displayname.replace(" ", "-").lower()
+         return f"{distribution_id[0]}.{gpu_process_bundle_id}-{gpu_process_name}"
+ 
