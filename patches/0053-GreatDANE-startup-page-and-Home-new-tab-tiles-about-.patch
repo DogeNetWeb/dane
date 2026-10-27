@@ -1,0 +1,64 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 27 Oct 2026 14:52:14 -0500
+Subject: [PATCH 053/144] GreatDANE: startup page and Home = new-tab tiles
+ (about:home); drop pepecoin.surf homepage; greatdane.doge tile
+
+---
+ browser/app/profile/firefox.js                      |  8 ++++++--
+ .../greatdane/test/marionette/run_gd_prefs.py       | 13 ++++++++++++-
+ 2 files changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index 1ca24f97c7..30afcd503a 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -3703,7 +3703,12 @@ pref("browser.urlbar.suggest.quicksuggest.sponsored", false);
+ // for facebook/reddit/wikipedia/twitter. Region-independent — remote/region
+ // top-sites lists would otherwise override default.sites.
+ pref("browser.topsites.useRemoteSetting", false);
+-pref("browser.newtabpage.activity-stream.default.sites", "https://www.youtube.com/,https://pepecoin.surf/,https://www.amazon.com/,https://dogecoin.surf/,https://grokipedia.com/,https://x.com/");
++pref("browser.newtabpage.activity-stream.default.sites", "https://www.youtube.com/,https://pepecoin.surf/,https://www.amazon.com/,https://dogecoin.surf/,https://grokipedia.com/,https://x.com/,https://greatdane.doge/");
++// Startup + Home button: the new-tab page with the tiles (no forced site homepage).
++pref("browser.startup.page", 1);
++pref("browser.startup.homepage", "about:home");
++pref("browser.newtabpage.enabled", true);
++pref("browser.newtabpage.activity-stream.enabled", true);
+ // Updates: Dane's own self-hosted, MAR-signed ESR channel (UPDATE-PLAN.md,
+ // Option A). Static update.xml; nginx/R2 rewrites unknown paths to a
+ // "no update" answer. Mozilla's AUS is never contacted. MAR signatures are
+@@ -3713,7 +3718,6 @@ pref("browser.newtabpage.activity-stream.default.sites", "https://www.youtube.co
+ pref("app.update.auto", true);
+ pref("app.update.url", "https://pepecoin.surf/dane/update/3/%PRODUCT%/%VERSION%/%BUILD_ID%/%BUILD_TARGET%/%LOCALE%/%CHANNEL%/update.xml");
+ pref("browser.fixup.domainsuffixwhitelist.pepe", true);
+-pref("browser.startup.homepage", "https://pepecoin.surf/");
+ // Search suggestions are stock (on); a typed chain name with its suffix is
+ // never sent (UrlbarProviderSearchSuggestions guard). Registered .pepe/.doge
+ // names are suggested from the local nodes only (UrlbarProviderGreatDANENames).
+diff --git a/browser/components/greatdane/test/marionette/run_gd_prefs.py b/browser/components/greatdane/test/marionette/run_gd_prefs.py
+index f5c56a1e7b..ec3c5d1bf3 100644
+--- a/browser/components/greatdane/test/marionette/run_gd_prefs.py
++++ b/browser/components/greatdane/test/marionette/run_gd_prefs.py
+@@ -86,10 +86,21 @@ try:
+       sponsored: Services.prefs.getBoolPref("browser.newtabpage.activity-stream.showSponsoredTopSites", true),
+       contile: Services.prefs.getBoolPref("browser.topsites.contile.enabled", true),
+     };""", sandbox=None)
+-    expect = "https://www.youtube.com/,https://pepecoin.surf/,https://www.amazon.com/,https://dogecoin.surf/,https://grokipedia.com/,https://x.com/"
++    expect = "https://www.youtube.com/,https://pepecoin.surf/,https://www.amazon.com/,https://dogecoin.surf/,https://grokipedia.com/,https://x.com/,https://greatdane.doge/"
+     check("default top-site tiles", r["sites"] == expect, r)
+     check("remote/region default sites off", r["remote"] is False, r)
+     check("sponsored top sites off", r["sponsored"] is False and r["contile"] is False, r)
++    # Startup + Home open the new-tab page with the tiles (no forced site homepage)
++    r = m.execute_script("""return {
++      home: Services.prefs.getStringPref("browser.startup.homepage", ""),
++      homeDefault: Services.prefs.getDefaultBranch("").getStringPref("browser.startup.homepage", ""),
++      page: Services.prefs.getIntPref("browser.startup.page", -1),
++      newtab: Services.prefs.getBoolPref("browser.newtabpage.enabled", false),
++      welcome: Services.prefs.getStringPref("startup.homepage_welcome_url", "x"),
++      override: Services.prefs.getStringPref("startup.homepage_override_url", "x"),
++    };""", sandbox=None)
++    check("startup/home = about:home tiles", r["home"] == "about:home" and r["homeDefault"] == "about:home" and r["page"] == 1 and r["newtab"] is True, r)
++    check("no forced welcome/override homepage", r["welcome"] == "" and r["override"] == "", r)
+     # Hidden sections (Privacy)
+     m.execute_async_script(OPEN, script_args=["privacy"], sandbox=None); time.sleep(2)
+     # Settings redesign: data collection lives in the "Permissions and data" pane.
