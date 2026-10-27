@@ -1,0 +1,119 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 21:50:28 -0500
+Subject: [PATCH 041/144] GreatDANE: rename built-in theme Firefox Alpenglow ->
+ Alpenglow (display name only)
+
+---
+ .../en-US/browser/appExtensionFields.ftl      |  2 +-
+ browser/themes/addons/alpenglow/manifest.json | 44 +++++++++++++------
+ 2 files changed, 31 insertions(+), 15 deletions(-)
+
+diff --git a/browser/locales/en-US/browser/appExtensionFields.ftl b/browser/locales/en-US/browser/appExtensionFields.ftl
+index 06f56085fb..0f6f260fb3 100644
+--- a/browser/locales/en-US/browser/appExtensionFields.ftl
++++ b/browser/locales/en-US/browser/appExtensionFields.ftl
+@@ -14,5 +14,5 @@ extension-firefox-compact-light-description=A theme with a light color scheme.
+ extension-firefox-compact-dark-name=Dark
+ extension-firefox-compact-dark-description=A theme with a dark color scheme.
+ 
+-extension-firefox-alpenglow-name=Firefox Alpenglow
++extension-firefox-alpenglow-name=Alpenglow
+ extension-firefox-alpenglow-description=Use a colorful appearance for buttons, menus, and windows.
+diff --git a/browser/themes/addons/alpenglow/manifest.json b/browser/themes/addons/alpenglow/manifest.json
+index 495a2a47f8..563e5127a0 100644
+--- a/browser/themes/addons/alpenglow/manifest.json
++++ b/browser/themes/addons/alpenglow/manifest.json
+@@ -1,35 +1,43 @@
+ {
+   "manifest_version": 2,
+-
+   "browser_specific_settings": {
+     "gecko": {
+       "id": "firefox-alpenglow@mozilla.org"
+     }
+   },
+-
+-  "name": "Firefox Alpenglow",
++  "name": "Alpenglow",
+   "description": "Use a colorful appearance for buttons, menus, and windows.",
+   "author": "Mozilla",
+   "version": "1.5.3",
+-  "icons": { "32": "icon.svg" },
+-
++  "icons": {
++    "32": "icon.svg"
++  },
+   "theme": {
+     "images": {
+       "additional_backgrounds": [
+         "background-noodles-right.svg",
+         "background-noodles-left.svg",
+-        { "linear-gradient": "to bottom, #FF6BBA -18.096%, #FFC999 50%" }
++        {
++          "linear-gradient": "to bottom, #FF6BBA -18.096%, #FFC999 50%"
++        }
+       ]
+     },
+-
+     "properties": {
+       "additional_backgrounds_alignment": [
+         "right top",
+         "left top",
+         "right top"
+       ],
+-      "additional_backgrounds_tiling": ["no-repeat", "no-repeat", "repeat-x"],
+-      "additional_backgrounds_size": ["auto", "auto", "auto 144px"],
++      "additional_backgrounds_tiling": [
++        "no-repeat",
++        "no-repeat",
++        "repeat-x"
++      ],
++      "additional_backgrounds_size": [
++        "auto",
++        "auto",
++        "auto 144px"
++      ],
+       "zap_gradient": "linear-gradient(90deg, #9059FF 0%, #FF4AA2 52.08%, #FFBD4F 100%)"
+     },
+     "colors": {
+@@ -75,18 +83,27 @@
+       "additional_backgrounds": [
+         "background-noodles-right-dark.svg",
+         "background-noodles-left-dark.svg",
+-        { "linear-gradient": "to bottom, #20123A 0%, #291D4F 50%" }
++        {
++          "linear-gradient": "to bottom, #20123A 0%, #291D4F 50%"
++        }
+       ]
+     },
+-
+     "properties": {
+       "additional_backgrounds_alignment": [
+         "right top",
+         "left top",
+         "right top"
+       ],
+-      "additional_backgrounds_tiling": ["no-repeat", "no-repeat", "repeat-x"],
+-      "additional_backgrounds_size": ["auto", "auto", "auto 144px"],
++      "additional_backgrounds_tiling": [
++        "no-repeat",
++        "no-repeat",
++        "repeat-x"
++      ],
++      "additional_backgrounds_size": [
++        "auto",
++        "auto",
++        "auto 144px"
++      ],
+       "zap_gradient": "linear-gradient(90deg, #9059FF 0%, #FF4AA2 52.08%, #FFBD4F 100%)"
+     },
+     "colors": {
+@@ -129,7 +146,6 @@
+       "focus_outline": "hsla(265, 100%, 72%, 1)"
+     }
+   },
+-
+   "theme_experiment": {
+     "colors": {
+       "focus_outline": "--focus-outline-color"
