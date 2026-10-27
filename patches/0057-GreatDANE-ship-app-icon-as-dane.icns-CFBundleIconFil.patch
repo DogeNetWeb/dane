@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 27 Oct 2026 16:21:20 -0500
+Subject: [PATCH 057/144] GreatDANE: ship app icon as dane.icns
+ (CFBundleIconFile)
+
+---
+ browser/app/Makefile.in                     | 2 +-
+ browser/app/macbuild/Contents/Info.plist.in | 2 +-
+ browser/installer/package-manifest.in       | 4 ++--
+ 3 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/browser/app/Makefile.in b/browser/app/Makefile.in
+index b5949d107e..aff356083d 100644
+--- a/browser/app/Makefile.in
++++ b/browser/app/Makefile.in
+@@ -82,7 +82,7 @@ tools repackage:: $(DIST)/bin/$(MOZ_APP_NAME) $(objdir)/macbuild/Contents/MacOS-
+ 	rsync -aL --include-from='$(srcdir)/macbuild/Contents/MacOS-files-copy.in' --exclude '*' $(DIST)/bin/ '$(dist_dest)/Contents/MacOS'
+ 	$(RM) '$(dist_dest)/Contents/MacOS/$(MOZ_APP_NAME)'
+ 	rsync -aL $(DIST)/bin/$(MOZ_APP_NAME) '$(dist_dest)/Contents/MacOS'
+-	cp -RL $(topsrcdir)/$(MOZ_BRANDING_DIRECTORY)/firefox.icns '$(dist_dest)/Contents/Resources/firefox.icns'
++	cp -RL $(topsrcdir)/$(MOZ_BRANDING_DIRECTORY)/firefox.icns '$(dist_dest)/Contents/Resources/dane.icns'
+ 	cp -RL $(topsrcdir)/$(MOZ_BRANDING_DIRECTORY)/document.icns '$(dist_dest)/Contents/Resources/document.icns'
+ 	if [ -f $(topsrcdir)/$(MOZ_BRANDING_DIRECTORY)/Assets.car ]; then cp -RL $(topsrcdir)/$(MOZ_BRANDING_DIRECTORY)/Assets.car '$(dist_dest)/Contents/Resources/Assets.car'; fi
+ 	$(MKDIR) -p '$(dist_dest)/Contents/Library/LaunchServices'
+diff --git a/browser/app/macbuild/Contents/Info.plist.in b/browser/app/macbuild/Contents/Info.plist.in
+index 8f7d397f33..382b860081 100644
+--- a/browser/app/macbuild/Contents/Info.plist.in
++++ b/browser/app/macbuild/Contents/Info.plist.in
+@@ -189,7 +189,7 @@
+ 	<key>CFBundleGetInfoString</key>
+ 	<string>@MAC_APP_NAME@ @APP_VERSION@</string>
+ 	<key>CFBundleIconFile</key>
+-	<string>firefox.icns</string>
++	<string>dane.icns</string>
+ 	<key>CFBundleIconName</key>
+ 	<string>AppIcon</string>
+ 	<key>CFBundleIdentifier</key>
+diff --git a/browser/installer/package-manifest.in b/browser/installer/package-manifest.in
+index 70d6ba0744..ea21e86a62 100644
+--- a/browser/installer/package-manifest.in
++++ b/browser/installer/package-manifest.in
+@@ -40,9 +40,9 @@
+ #endif
+ @APPNAME@/Contents/Frameworks
+ @APPNAME@/Contents/PkgInfo
+-@RESPATH@/firefox.icns
++@RESPATH@/dane.icns
+ @RESPATH@/document.icns
+-; GreatDANE: no Assets.car (app icon comes from firefox.icns via CFBundleIconFile)
++; GreatDANE: no Assets.car (app icon comes from dane.icns via CFBundleIconFile)
+ @RESPATH@/@LPROJ_ROOT@.lproj/*
+ #endif
+ 
