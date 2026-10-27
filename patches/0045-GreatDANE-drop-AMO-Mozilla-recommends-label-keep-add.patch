@@ -1,0 +1,35 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 22:10:39 -0500
+Subject: [PATCH 045/144] GreatDANE: drop AMO 'Mozilla recommends' label; keep
+ add-on search
+
+discopane-intro3 no longer says 'a selection Mozilla recommends';
+addon-badge-recommended4 title neutralized. AMO search endpoint unchanged.
+---
+ toolkit/locales/en-US/toolkit/about/aboutAddons.ftl | 5 ++---
+ 1 file changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/toolkit/locales/en-US/toolkit/about/aboutAddons.ftl b/toolkit/locales/en-US/toolkit/about/aboutAddons.ftl
+index c2515bdacc..5570226d32 100644
+--- a/toolkit/locales/en-US/toolkit/about/aboutAddons.ftl
++++ b/toolkit/locales/en-US/toolkit/about/aboutAddons.ftl
+@@ -328,8 +328,7 @@ discopane-intro3 =
+     Extensions and themes let you customize { -brand-product-name }. They can boost privacy,
+     enhance productivity, improve media, change the way { -brand-product-name } looks, and
+     so much more. These small software programs are often developed by a third party. Here’s
+-    a selection Mozilla <a data-l10n-name="learn-more-trigger">recommends</a> for
+-    exceptional security, performance, and functionality.
++    a selection with exceptional security, performance, and functionality.
+ 
+ # Notice to make user aware that the recommendations are personalized.
+ discopane-notice-recommendations2 =
+@@ -497,7 +496,7 @@ addon-detail-group-label-quarantined-domains =
+ # recommendation. As such, we hard code "Firefox" and avoid personalising
+ # language like the words "our" or "we".
+ addon-badge-recommended4 =
+-  .title = Mozilla only recommends extensions that meet standards for security and performance
++  .title = Recommended extensions meet standards for security and performance
+ # We hard code "Mozilla" in the string below because the extensions are built
+ # by Mozilla and we don't want forks to display "by Fork".
+ addon-badge-line4 =
