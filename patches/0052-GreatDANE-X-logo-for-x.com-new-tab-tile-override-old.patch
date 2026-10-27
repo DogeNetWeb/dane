@@ -1,0 +1,128 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 27 Oct 2026 13:13:25 -0500
+Subject: [PATCH 052/144] GreatDANE: X logo for x.com new-tab tile (override
+ old Twitter bird)
+
+---
+ .../topsites/content/tippytop/favicons/x-com.ico | Bin 0 -> 1189 bytes
+ .../content/tippytop/images/x-com@2x.png         | Bin 0 -> 2743 bytes
+ .../topsites/content/tippytop/top_sites.json     |   7 ++++++-
+ 3 files changed, 6 insertions(+), 1 deletion(-)
+ create mode 100644 browser/components/topsites/content/tippytop/favicons/x-com.ico
+ create mode 100644 browser/components/topsites/content/tippytop/images/x-com@2x.png
+
+diff --git a/browser/components/topsites/content/tippytop/favicons/x-com.ico b/browser/components/topsites/content/tippytop/favicons/x-com.ico
+new file mode 100644
+index 0000000000000000000000000000000000000000..7ed5e7120b82e1723f5c6badaebc0a2021d66dda
+GIT binary patch
+literal 1189
+zcmV;W1X}w50096301yxW0000W0E+<t044wc03aX$0000W0Q3R?0I>l80EtjeM-2)Z
+z3IG5A4M|8uQUCw|5C8xG5C{eU001BJ|6u?C0a8gsK~#90t&^dS0x=Xt&ube{d;o$m
+zWDE%kk3y6183ckDHD7@sAr%-9d;u1RMiPQSAaNulDEihcvopJ}*@V5xGq3IKJ$bDF
+z${RB89DZtGjKNxqwKnUC2+p~u2Eu<KhzKG=nx=T~Nz*h-<eXzRo6&4Gv))q!Rb{u^
+z(Q37b<Cr8#2qCauuc=fj91aJJF@zAFBUo#>-|q~EL*h8bIY+%-=XSf%>-7*3091?A
+znlI;^0_wfj(P*Um{a&lps)~pjWAyv}mj>;2ThHgS4h93A&*z1;d=(HLe6?DQ&1S=5
+zu^@^fE|&|(<B`c^l41Tpctnh%NKdDeCP|`z_WONZE|<F9ZnfL(DxlWduf+K&gb?U-
+zI!vci#^W)iQVH)p<#L(p^-81BV6|Gko<iY)eBwOD`$|6yj4_Bvfzw)>CCuOcYl6S(
+z?cewTm0PCaIplVt00000NkvXXu0mjfiBL{Q4GJ0x0000DNk~Le0000W0000W2nGNE
+z0CReJ^Z)<?yGcYrRCt{2mOV==K@^7HnS59Ti){ppRR~B#NFhi-u(Y#?g@u*cs*Qz}
+zq!q2jMiE63(&!)1MlcG3pf(m7ln|_qB35yqTkVqEYs`mUY;s^=cjpY}*>ld!yhalG
+zMYF#dybaI>kfd-u2Wzd2F;(9@&l7yUd3=9Bp6AsCF#5r5XsvB1Xr+Cb0b`6tMn-~X
+zYpu%VvMw$zR4$h#DaeE$+;v^W<8cAX<#G)H@!1H4LP%n1X^FpWV`BqJgu~$~-*`Mu
+zp-=!|ad8o2OfdJws6A<|MH1O;7J#v_G3Mvz0hpSaLK2Zk1W7oK!_CbN0L#nERqI;@
+zFvei5B^Ha3&*!<ix<V5B`}+V43=ANNj*bqFj*bA>-Q5kcVvPA7KxKN9$s_=KdwWRY
+z;o*UNK9A!#Y;SJ^aD04BBoe_|+i39m0F||#o}LC^W@d(-o*n@1?(P7%y}iY8oMuwr
+zI6x)D=H?~<eSLjQPEG<)EEaKHx0T?H1Na>sjYhe?zUJxa2}x{iZSns8PJe&@{{^V*
+zheRR)z~SK`lDNOW=kf88SS;2|^R<=%N$l+G1ZTp+!UA1gT>xaW*{X8=mmXMISpneu
+z{G7G5H2?+&2T7;X0L;zJH49PS$v<rTL#S9R(%ajMB+kyxD3wZt!(rCf*8vzB8mcPU
+zw*dS<86O|V^E_T(UrD7>LBn--ck}Y{!pX@Ak~lp*rBEo)+1ZJ;wvnc+J?Sq_rBb}T
+zz2SKt>2x{(^Z#&kbQFNq)m0`YCIC1%IB0ZN)DCWpA(>3_{QL~S?Cfk+Nh&jx$z=Yy
+zv@)4Y-BQ%l1HPz8BocC6SEW)(mzS5H-ueEw;o)ILqfr6DHJ!`lYKj-BNkP(z;HYPH
+zC7CZoB<bVh<4fOAC{*>{h%Eb2N!E(}x+-o1v;qDAe<l73+w_?n00000NkvXXu0mjf
+DUWFM)
+
+literal 0
+HcmV?d00001
+
+diff --git a/browser/components/topsites/content/tippytop/images/x-com@2x.png b/browser/components/topsites/content/tippytop/images/x-com@2x.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..68417140f0452009179b9ac4eaf646452c707b12
+GIT binary patch
+literal 2743
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/browser/components/topsites/content/tippytop/top_sites.json b/browser/components/topsites/content/tippytop/top_sites.json
+index eea5757cb8..3a48fbf65d 100644
+--- a/browser/components/topsites/content/tippytop/top_sites.json
++++ b/browser/components/topsites/content/tippytop/top_sites.json
+@@ -187,10 +187,15 @@
+     "favicon_url": "favicons/turbotax.png"
+   },
+   {
+-    "domains": ["twitter.com", "x.com"],
++    "domains": ["twitter.com"],
+     "image_url": "images/twitter-com@2x.png",
+     "favicon_url": "favicons/twitter-com.ico"
+   },
++  {
++    "domains": ["x.com"],
++    "image_url": "images/x-com@2x.png",
++    "favicon_url": "favicons/x-com.ico"
++  },
+   {
+     "domains": ["vk.com"],
+     "image_url": "images/vk-com@2x.png",
