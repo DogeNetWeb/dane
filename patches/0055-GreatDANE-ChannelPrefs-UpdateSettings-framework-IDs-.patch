@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 27 Oct 2026 16:21:07 -0500
+Subject: [PATCH 055/144] GreatDANE: ChannelPrefs/UpdateSettings framework IDs
+ -> surf.dogecoin.dane.*
+
+---
+ toolkit/mozapps/macos-frameworks/ChannelPrefs/Info.plist        | 2 +-
+ .../update/updater/macos-frameworks/UpdateSettings/Info.plist   | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/toolkit/mozapps/macos-frameworks/ChannelPrefs/Info.plist b/toolkit/mozapps/macos-frameworks/ChannelPrefs/Info.plist
+index f7ce763d75..b9246edd80 100644
+--- a/toolkit/mozapps/macos-frameworks/ChannelPrefs/Info.plist
++++ b/toolkit/mozapps/macos-frameworks/ChannelPrefs/Info.plist
+@@ -7,7 +7,7 @@
+ 	<key>CFBundleExecutable</key>
+ 	<string>ChannelPrefs</string>
+ 	<key>CFBundleIdentifier</key>
+-	<string>org.mozilla.channelprefs</string>
++	<string>surf.dogecoin.dane.channelprefs</string>
+ 	<key>CFBundleInfoDictionaryVersion</key>
+ 	<string>6.0</string>
+ 	<key>CFBundleName</key>
+diff --git a/toolkit/mozapps/update/updater/macos-frameworks/UpdateSettings/Info.plist b/toolkit/mozapps/update/updater/macos-frameworks/UpdateSettings/Info.plist
+index 65777a475f..a80770a3b7 100644
+--- a/toolkit/mozapps/update/updater/macos-frameworks/UpdateSettings/Info.plist
++++ b/toolkit/mozapps/update/updater/macos-frameworks/UpdateSettings/Info.plist
+@@ -7,7 +7,7 @@
+   <key>CFBundleExecutable</key>
+   <string>UpdateSettings</string>
+   <key>CFBundleIdentifier</key>
+-  <string>org.mozilla.updatesettings</string>
++  <string>surf.dogecoin.dane.updatesettings</string>
+   <key>CFBundleInfoDictionaryVersion</key>
+   <string>6.0</string>
+   <key>CFBundleName</key>
