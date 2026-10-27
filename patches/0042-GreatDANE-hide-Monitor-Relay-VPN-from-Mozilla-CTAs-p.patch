@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 22:10:33 -0500
+Subject: [PATCH 042/144] GreatDANE: hide Monitor/Relay/VPN 'from Mozilla' CTAs
+ (pxiToolbar prefs)
+
+Pref-only: identity.fxaccounts.toolbar.pxiToolbarEnabled and
+.monitorEnabled/.relayEnabled/.vpnEnabled = false. Gates PanelUI-fxa-cta-menu
+("Try other protection tools from Mozilla"). Services themselves stay enabled.
+---
+ browser/branding/greatdane/pref/firefox-branding.js | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/browser/branding/greatdane/pref/firefox-branding.js b/browser/branding/greatdane/pref/firefox-branding.js
+index f473e5d53b..f1e8d1aa63 100644
+--- a/browser/branding/greatdane/pref/firefox-branding.js
++++ b/browser/branding/greatdane/pref/firefox-branding.js
+@@ -34,3 +34,10 @@ pref("devtools.selfxss.count", 5);
+ // GreatDANE: don't promote downloading Firefox mobile from about:protections
+ // (the card's brand string already says Dane, but the store links are Firefox).
+ pref("browser.contentblocking.report.show_mobile_app", false);
++
++// GreatDANE: hide Monitor / Relay / VPN "from Mozilla" CTAs in the FxA /
++// app menu. Pref-only; the services themselves are not disabled.
++pref("identity.fxaccounts.toolbar.pxiToolbarEnabled", false);
++pref("identity.fxaccounts.toolbar.pxiToolbarEnabled.monitorEnabled", false);
++pref("identity.fxaccounts.toolbar.pxiToolbarEnabled.relayEnabled", false);
++pref("identity.fxaccounts.toolbar.pxiToolbarEnabled.vpnEnabled", false);
