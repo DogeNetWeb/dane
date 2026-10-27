@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 27 Oct 2026 09:27:53 -0500
+Subject: [PATCH 049/144] GreatDANE: hide Mozilla VPN promo on
+ about:protections
+
+Sweep leftover: about:protections still showed Get Mozilla VPN card/banner.
+Gate with browser.vpn_promo.enabled=false and hide_vpn_banner=true in
+branding prefs, plus .vpn-card/.vpn-banner in the chrome hide CSS.
+---
+ browser/branding/greatdane/pref/firefox-branding.js | 4 ++++
+ browser/components/greatdane/GreatDANE.sys.mjs      | 3 +++
+ 2 files changed, 7 insertions(+)
+
+diff --git a/browser/branding/greatdane/pref/firefox-branding.js b/browser/branding/greatdane/pref/firefox-branding.js
+index b44a86aa53..f75ee9fdb4 100644
+--- a/browser/branding/greatdane/pref/firefox-branding.js
++++ b/browser/branding/greatdane/pref/firefox-branding.js
+@@ -42,6 +42,10 @@ pref("identity.fxaccounts.toolbar.pxiToolbarEnabled.monitorEnabled", false);
+ pref("identity.fxaccounts.toolbar.pxiToolbarEnabled.relayEnabled", false);
+ pref("identity.fxaccounts.toolbar.pxiToolbarEnabled.vpnEnabled", false);
+ 
++// GreatDANE: hide Mozilla VPN card/banner on about:protections (not a Dane product).
++pref("browser.vpn_promo.enabled", false);
++pref("browser.contentblocking.report.hide_vpn_banner", true);
++
+ // GreatDANE: import bookmarks/history/passwords from a real Firefox install.
+ // Distinct from browser.migrate.firefox.enabled (profile-refresh migrator).
+ pref("browser.migrate.mozilla-firefox.enabled", true);
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index 0636b8997b..c3e2e4bf35 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -172,6 +172,9 @@ export const GreatDANE = {
+     a[data-l10n-id*="learn-more"],
+     .discopane-intro-learn-more-link,
+     a[is="moz-support-link"] { display: none !important; }
++    /* about:protections Mozilla VPN promo (prefs also gate; CSS is belt-and-suspenders) */
++    .vpn-card,
++    .vpn-banner { display: none !important; }
+   `,
+ 
+   _injectStyle(doc, id) {
