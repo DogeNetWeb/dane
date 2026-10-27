@@ -1,0 +1,118 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 22:10:40 -0500
+Subject: [PATCH 046/144] GreatDANE: hide support.mozilla.org Learn more links
+ (no Dane help yet)
+
+GD_HIDE_CSS in about:preferences and GreatDANE _injectChromeHide for chrome
+panels and about: documents. Hides .learnMore, moz-support-link, and
+a[href*='support.mozilla.org']. pepecoin.surf/dane/help 404s, so hide rather
+than redirect. Also CSS-hides PanelUI-fxa-cta-menu as belt-and-suspenders for
+the pxiToolbar prefs. Help menu Get Help / app.support.baseURL left as-is.
+---
+ .../components/greatdane/GreatDANE.sys.mjs    | 63 +++++++++++++++++++
+ browser/components/preferences/preferences.js | 10 ++-
+ 2 files changed, 72 insertions(+), 1 deletion(-)
+
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index 32778be6a7..8bd8d19469 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -113,6 +113,7 @@ export const GreatDANE = {
+     if (topic == "browser-delayed-startup-finished") {
+       // subject is the new browser window: watch its tabs for error pages
+       subject.gBrowser?.addTabsProgressListener(lazy.ErrorTrap);
++      this._injectChromeHide(subject);
+       if (!this._firstWin) {
+         this._firstWin = subject;
+         this._onFirstWin?.(subject);
+@@ -128,6 +129,68 @@ export const GreatDANE = {
+     }
+   },
+ 
++  // Shared CSS: Mozilla product CTAs + support.mozilla.org "Learn more".
++  // Prefs also gate the CTA panel; CSS is belt-and-suspenders so a remote
++  // experiment cannot re-show them. No Dane help page exists yet, so Learn
++  // more is hidden rather than redirected (see REBRAND-NOTES.md).
++  _HIDE_CSS: `
++    #PanelUI-fxa-cta-menu,
++    #PanelUI-products-separator { display: none !important; }
++    .learnMore,
++    a.learn-more,
++    a[href*="support.mozilla.org"],
++    a[data-l10n-id$="learn-more"],
++    a[data-l10n-id$="learn-more-link"],
++    a[data-l10n-id*="learn-more"],
++    .discopane-intro-learn-more-link,
++    a[is="moz-support-link"] { display: none !important; }
++  `,
++
++  _injectStyle(doc, id) {
++    if (!doc || doc.getElementById(id)) {
++      return;
++    }
++    let el = doc.createElementNS("http://www.w3.org/1999/xhtml", "style");
++    el.id = id;
++    el.textContent = this._HIDE_CSS;
++    (doc.head || doc.documentElement).appendChild(el);
++  },
++
++  _injectChromeHide(win) {
++    try {
++      this._injectStyle(win.document, "gd-chrome-hide");
++      // about: pages (protections, logins, addons, …) are separate documents
++      let mm = win.gBrowser;
++      if (mm && !win._gdHideProgress) {
++        win._gdHideProgress = {
++          onLocationChange: (browser) => {
++            try {
++              let uri = browser?.currentURI?.spec || "";
++              if (!uri.startsWith("about:")) return;
++              let doc = browser.contentDocument;
++              if (doc?.readyState === "complete") {
++                this._injectStyle(doc, "gd-about-hide");
++              } else if (doc) {
++                doc.addEventListener(
++                  "DOMContentLoaded",
++                  () => this._injectStyle(doc, "gd-about-hide"),
++                  { once: true }
++                );
++              }
++            } catch (e) {}
++          },
++        };
++        mm.addTabsProgressListener(win._gdHideProgress);
++        // Seed currently open about: tabs
++        for (let tab of mm.tabs || []) {
++          win._gdHideProgress.onLocationChange(tab.linkedBrowser);
++        }
++      }
++    } catch (e) {
++      console.warn("GreatDANE: chrome hide inject failed", e);
++    }
++  },
++
+   // A window to prompt in: the first browser window, once it exists.
+   _window() {
+     if (this._firstWin) return Promise.resolve(this._firstWin);
+diff --git a/browser/components/preferences/preferences.js b/browser/components/preferences/preferences.js
+index 7ecb07486d..4fbba0ee12 100644
+--- a/browser/components/preferences/preferences.js
++++ b/browser/components/preferences/preferences.js
+@@ -526,7 +526,15 @@ const GD_HIDE_CSS = `
+      with the primary-button color. Both properties inherit into moz-promo's
+      shadow <img>, so it follows light/dark/HCM themes. */
+   moz-promo[imagesrc$="kit-concerned.svg"] { -moz-context-properties: fill;
+-    fill: var(--button-background-color-primary); }`;
++    fill: var(--button-background-color-primary); }
++  /* support.mozilla.org "Learn more" — no Dane help page yet, so hide */
++  .learnMore,
++  a.learn-more,
++  a[data-l10n-id$="learn-more"],
++  a[data-l10n-id$="learn-more-link"],
++  a[data-l10n-id*="learn-more"],
++  .discopane-intro-learn-more-link,
++  a[is="moz-support-link"] { display: none !important; }`;
+ const GD_SYNC_CSS = `
+   #category-sync, [data-category="paneSync"] { display: none !important; }`;
+ function gdApplyHiding() {
