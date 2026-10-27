@@ -1,0 +1,101 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 27 Oct 2026 09:27:52 -0500
+Subject: [PATCH 048/144] GreatDANE: kill chain nodes on quit (Rosetta SIGABRT)
+
+Under Rosetta (arch -x86_64), a still-live greatdane-node during
+AsyncSignalControlThread / XPCOM teardown aborts the browser with
+SIGABRT (smoke quit rc=-6). arm64 was unaffected.
+
+On quit-application, close stdin then Subprocess.kill(300), and register
+an AsyncShutdown.profileBeforeChange blocker per spawned node as a
+backstop. setChainEnabled(false) uses the same stop path.
+---
+ .../components/greatdane/GreatDANE.sys.mjs    | 41 ++++++++++++++++++-
+ 1 file changed, 39 insertions(+), 2 deletions(-)
+
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index 8bd8d19469..0636b8997b 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -17,6 +17,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
+   ErrorTrap: "resource:///modules/GreatDANEAbout.sys.mjs",
+   registerDiscover: "resource:///modules/GreatDANEDiscover.sys.mjs",
+   Legacy: "resource:///modules/GreatDANELegacy.sys.mjs",
++  AsyncShutdown: "resource://gre/modules/AsyncShutdown.sys.mjs",
+ });
+ 
+ const pps = Cc["@mozilla.org/network/protocol-proxy-service;1"].getService(
+@@ -96,11 +97,33 @@ export const GreatDANE = {
+       c.restarts = 0;
+       if (c.state == "off") this._spawn(c);
+     } else {
+-      try { c.proc?.stdin.close(); } catch (e) {} // node exits; no restart
++      this._stopNode(c); // node exits; no restart
+       if (!c.proc) c.state = "off";
+     }
+   },
+ 
++
++  // Stop a chain node: close stdin, then Subprocess.kill (SIGTERM then SIGKILL).
++  // Safe to call more than once. Used on quit and when disabling a chain.
++  _stopNode(c) {
++    let proc = c.proc;
++    if (!proc) {
++      this._clearShutdownBlocker(c);
++      return;
++    }
++    try { proc.stdin.close(); } catch (e) {}
++    try { proc.kill(300); } catch (e) {}
++    this._clearShutdownBlocker(c);
++  },
++
++  _clearShutdownBlocker(c) {
++    if (!c._shutdownBlocker) return;
++    try {
++      lazy.AsyncShutdown.profileBeforeChange.removeBlocker(c._shutdownBlocker);
++    } catch (e) {}
++    c._shutdownBlocker = null;
++  },
++
+   observe(subject, topic, data) {
+     if (topic == "nsPref:changed") {
+       let m = /^greatdane\.([a-z]+)\.(enabled|listen|listen_port)$/.exec(data);
+@@ -123,8 +146,13 @@ export const GreatDANE = {
+     }
+     if (topic == "quit-application") {
+       this._quitting = true;
++      // Close stdin for a graceful exit, then kill() so the child cannot
++      // linger into XPCOM teardown. Under Rosetta (x86_64 translation), a
++      // still-live greatdane-node during AsyncSignalControlThread shutdown
++      // aborts the browser with SIGABRT (rc=-6); arm64 is unaffected.
++      // AsyncShutdown blockers added in _spawn are a backstop.
+       for (let c of this._chains.values()) {
+-        try { c.proc?.stdin.close(); } catch (e) {}
++        this._stopNode(c);
+       }
+     }
+   },
+@@ -271,6 +299,14 @@ export const GreatDANE = {
+         stdout: "pipe",
+         stderr: "pipe",
+       });
++      // Kill on profile-before-change if the node is still alive (Subprocess docs).
++      let proc = c.proc;
++      let blocker = () => proc.kill();
++      c._shutdownBlocker = blocker;
++      lazy.AsyncShutdown.profileBeforeChange.addBlocker(
++        `GreatDANE: kill ${c.coin} node on shutdown`,
++        blocker
++      );
+       this._drainStderr(c.proc);
+       let buf = "";
+       for (;;) {
+@@ -296,6 +332,7 @@ export const GreatDANE = {
+     c.state = "down";
+     this._publishEndpoints();
+     c.lastExit = Date.now();
++    this._clearShutdownBlocker(c);
+     c.proc = null;
+     if (c.off) { c.state = "off"; return; }
+     if (this._quitting) return;

@@ -45,3 +45,4 @@
 0045-GreatDANE-drop-AMO-Mozilla-recommends-label-keep-add.patch
 0046-GreatDANE-hide-support.mozilla.org-Learn-more-links-.patch
 0047-GreatDANE-import-bookmarks-history-passwords-from-re.patch
+0048-GreatDANE-kill-chain-nodes-on-quit-Rosetta-SIGABRT.patch
