@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 27 Oct 2026 12:08:45 -0500
+Subject: [PATCH 050/144] GreatDANE: region-independent default new-tab
+ top-site tiles
+
+Override the classic US Activity Stream six (YouTube, Facebook, Amazon,
+Reddit, Wikipedia, Twitter) with Dane destinations for four of them, and
+turn off remote/region top-sites so they cannot replace the list.
+Sponsored tiles stay off. Tippy-top: x.com reuses the twitter.com icon.
+---
+ browser/app/profile/firefox.js                        |  5 +++++
+ .../greatdane/test/marionette/run_gd_prefs.py         | 11 +++++++++++
+ .../topsites/content/tippytop/top_sites.json          |  2 +-
+ 3 files changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index a11558d6d1..1ca24f97c7 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -3699,6 +3699,11 @@ pref("browser.newtabpage.activity-stream.showSponsoredTopSites", false);
+ pref("browser.newtabpage.activity-stream.discoverystream.enabled", false);
+ pref("browser.topsites.contile.enabled", false);
+ pref("browser.urlbar.suggest.quicksuggest.sponsored", false);
++// Default top-site tiles: classic US Activity Stream order, Dane destinations
++// for facebook/reddit/wikipedia/twitter. Region-independent — remote/region
++// top-sites lists would otherwise override default.sites.
++pref("browser.topsites.useRemoteSetting", false);
++pref("browser.newtabpage.activity-stream.default.sites", "https://www.youtube.com/,https://pepecoin.surf/,https://www.amazon.com/,https://dogecoin.surf/,https://grokipedia.com/,https://x.com/");
+ // Updates: Dane's own self-hosted, MAR-signed ESR channel (UPDATE-PLAN.md,
+ // Option A). Static update.xml; nginx/R2 rewrites unknown paths to a
+ // "no update" answer. Mozilla's AUS is never contacted. MAR signatures are
+diff --git a/browser/components/greatdane/test/marionette/run_gd_prefs.py b/browser/components/greatdane/test/marionette/run_gd_prefs.py
+index 0bf969125b..f5c56a1e7b 100644
+--- a/browser/components/greatdane/test/marionette/run_gd_prefs.py
++++ b/browser/components/greatdane/test/marionette/run_gd_prefs.py
+@@ -79,6 +79,17 @@ try:
+     check("pep toggle writes pref", r["gd-pep-enabled"] == [True, False, True], r)
+     check("doge toggle writes pref", r["gd-doge-enabled"] == [True, False, True], r)
+     check("first-run toggle writes window pref", r["upd"] == [3600, 0, 3600], r)
++    # Default top-site tiles (region-independent; sponsored off)
++    r = m.execute_script("""return {
++      sites: Services.prefs.getStringPref("browser.newtabpage.activity-stream.default.sites", ""),
++      remote: Services.prefs.getBoolPref("browser.topsites.useRemoteSetting", true),
++      sponsored: Services.prefs.getBoolPref("browser.newtabpage.activity-stream.showSponsoredTopSites", true),
++      contile: Services.prefs.getBoolPref("browser.topsites.contile.enabled", true),
++    };""", sandbox=None)
++    expect = "https://www.youtube.com/,https://pepecoin.surf/,https://www.amazon.com/,https://dogecoin.surf/,https://grokipedia.com/,https://x.com/"
++    check("default top-site tiles", r["sites"] == expect, r)
++    check("remote/region default sites off", r["remote"] is False, r)
++    check("sponsored top sites off", r["sponsored"] is False and r["contile"] is False, r)
+     # Hidden sections (Privacy)
+     m.execute_async_script(OPEN, script_args=["privacy"], sandbox=None); time.sleep(2)
+     # Settings redesign: data collection lives in the "Permissions and data" pane.
+diff --git a/browser/components/topsites/content/tippytop/top_sites.json b/browser/components/topsites/content/tippytop/top_sites.json
+index 28782c1705..eea5757cb8 100644
+--- a/browser/components/topsites/content/tippytop/top_sites.json
++++ b/browser/components/topsites/content/tippytop/top_sites.json
+@@ -187,7 +187,7 @@
+     "favicon_url": "favicons/turbotax.png"
+   },
+   {
+-    "domains": ["twitter.com"],
++    "domains": ["twitter.com", "x.com"],
+     "image_url": "images/twitter-com@2x.png",
+     "favicon_url": "favicons/twitter-com.ico"
+   },
