@@ -1,0 +1,25 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Mon, 26 Oct 2026 21:50:26 -0500
+Subject: [PATCH 040/144] GreatDANE prefs: hide legacy sync Download-Firefox
+ mobile promo (.fxaMobilePromo)
+
+---
+ browser/components/preferences/preferences.js | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/browser/components/preferences/preferences.js b/browser/components/preferences/preferences.js
+index b83699286a..7ecb07486d 100644
+--- a/browser/components/preferences/preferences.js
++++ b/browser/components/preferences/preferences.js
+@@ -519,7 +519,9 @@ const GD_HIDE_CSS = `
+   [groupid="ipprotection"], [data-srd-groupid="ipprotection"],
+   #relayIntegrationBox, #setting-control-relayIntegration, #relayIntegration,
+   #category-more-from-mozilla, #topstories,
+-  [data-category="paneMoreFromMozilla"] { display: none !important; }
++  [data-category="paneMoreFromMozilla"],
++  /* legacy sync pane: "Download Firefox for Android/iOS" */
++  .fxaMobilePromo { display: none !important; }
+   /* sad-dane.svg (fill="context-fill", overrides kit-concerned.svg): tint it
+      with the primary-button color. Both properties inherit into moz-promo's
+      shadow <img>, so it follows light/dark/HCM themes. */
