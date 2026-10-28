@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Wed, 28 Oct 2026 17:06:24 -0500
+Subject: [PATCH 058/144] GreatDANE: pin embedded node to eb86f17 (dual-stack
+ inbound, /64 bans, v6 advertise off)
+
+---
+ greatdane/tools/NODE_PIN            | 3 +++
+ greatdane/tools/finish-universal.sh | 1 +
+ 2 files changed, 4 insertions(+)
+ create mode 100644 greatdane/tools/NODE_PIN
+
+diff --git a/greatdane/tools/NODE_PIN b/greatdane/tools/NODE_PIN
+new file mode 100644
+index 0000000000..48895afa91
+--- /dev/null
++++ b/greatdane/tools/NODE_PIN
+@@ -0,0 +1,3 @@
++# Embedded greatdane-node pin (pepenet-desktop). Build scripts must check HEAD matches.
++# eb86f17 = dane-ipv6-inbound: dual-stack inbound, /64 bans + caps (cherry-pick 54a38e0 of pep a42e04e), v6 self-advertise opt-in (off).
++eb86f17b6c28d982423a4d25da5d08a823dd0433
+diff --git a/greatdane/tools/finish-universal.sh b/greatdane/tools/finish-universal.sh
+index e8525048d8..e33b33b231 100755
+--- a/greatdane/tools/finish-universal.sh
++++ b/greatdane/tools/finish-universal.sh
+@@ -8,6 +8,7 @@ cd $TREE
+ for m in mozconfig mozconfig-x86_64; do st "faster+package $m"
+   MOZCONFIG=$TREE/$m ./mach --no-interactive build > $G/fin-$m.log 2>&1
+   MOZCONFIG=$TREE/$m ./mach --no-interactive package >> $G/fin-$m.log 2>&1; done
++PIN=$(grep -v "^#" $TREE/greatdane/tools/NODE_PIN); [ "$(git -C $ND rev-parse HEAD)" = "$PIN" ] || { st "node HEAD != NODE_PIN $PIN"; exit 1; }
+ st "node pinned sqlite"
+ for a in arm64 x86_64; do cmake --build $ND/build-pin-$a --target greatdane-node -j6 > $G/pin-build-$a.log 2>&1; done
+ mkdir -p $ND/build-pin-universal

@@ -8,6 +8,7 @@ cd $TREE
 for m in mozconfig mozconfig-x86_64; do st "faster+package $m"
   MOZCONFIG=$TREE/$m ./mach --no-interactive build > $G/fin-$m.log 2>&1
   MOZCONFIG=$TREE/$m ./mach --no-interactive package >> $G/fin-$m.log 2>&1; done
+PIN=$(grep -v "^#" $TREE/greatdane/tools/NODE_PIN); [ "$(git -C $ND rev-parse HEAD)" = "$PIN" ] || { st "node HEAD != NODE_PIN $PIN"; exit 1; }
 st "node pinned sqlite"
 for a in arm64 x86_64; do cmake --build $ND/build-pin-$a --target greatdane-node -j6 > $G/pin-build-$a.log 2>&1; done
 mkdir -p $ND/build-pin-universal

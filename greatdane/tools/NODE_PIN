@@ -1,0 +1,3 @@
+# Embedded greatdane-node pin (pepenet-desktop). Build scripts must check HEAD matches.
+# eb86f17 = dane-ipv6-inbound: dual-stack inbound, /64 bans + caps (cherry-pick 54a38e0 of pep a42e04e), v6 self-advertise opt-in (off).
+eb86f17b6c28d982423a4d25da5d08a823dd0433
