@@ -1,0 +1,75 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Thu, 29 Oct 2026 09:24:39 -0500
+Subject: [PATCH 061/144] greatdane/tools: unique BuildID per build (fresh
+ MOZ_BUILD_DATE, refuse reuse with different dmg sha, BuildID-named
+ BUILDINFO/dmg copies)
+
+---
+ greatdane/tools/finish-universal.sh | 10 +++++++++-
+ greatdane/tools/gd-buildinfo.sh     | 17 +++++++++++++----
+ 2 files changed, 22 insertions(+), 5 deletions(-)
+
+diff --git a/greatdane/tools/finish-universal.sh b/greatdane/tools/finish-universal.sh
+index e33b33b231..788dbb884d 100755
+--- a/greatdane/tools/finish-universal.sh
++++ b/greatdane/tools/finish-universal.sh
+@@ -2,7 +2,13 @@
+ # Sequential: faster JS rebuild+package (both, same BuildID) -> pinned-sqlite node (arm64, x86_64, lipo) -> unify -> sign. No notarize.
+ set -euo pipefail
+ G=/Volumes/Storage/build/greatdane; TREE=$G/firefox-esr153; ND=$G/pepenet-desktop
+-export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" MOZ_BUILD_DATE=20261026160337
++export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
++# Fresh BuildID per run (shared by both arches). Never reuse one: a reused
++# MOZ_BUILD_DATE gave two different dmgs the same BuildID (20261027162126).
++REL=$TREE/obj-gd/dist/gd-release
++export MOZ_BUILD_DATE=${GD_BUILD_DATE:-$(date +%Y%m%d%H%M%S)}
++if ls $REL $REL/*/ 2>/dev/null | grep -q -- "$MOZ_BUILD_DATE" || grep -rqs "build_id: *$MOZ_BUILD_DATE" $REL; then
++  echo "BuildID $MOZ_BUILD_DATE already used in $REL; refusing" >&2; exit 1; fi
+ st() { echo "$(date '+%F %T') $*" >> $G/universal.status; }
+ cd $TREE
+ for m in mozconfig mozconfig-x86_64; do st "faster+package $m"
+@@ -14,6 +20,8 @@ for a in arm64 x86_64; do cmake --build $ND/build-pin-$a --target greatdane-node
+ mkdir -p $ND/build-pin-universal
+ lipo -create $ND/build-pin-arm64/greatdane-node $ND/build-pin-x86_64/greatdane-node -output $ND/build-pin-universal/greatdane-node
+ lipo -archs $ND/build-pin-universal/greatdane-node | tee -a $G/universal.status
++for o in obj-gd obj-gd-x86_64; do b=$(sed -n "s/^BuildID=//p" $o/dist/bin/application.ini)
++  [ "$b" = "$MOZ_BUILD_DATE" ] || { st "BuildID mismatch $o: $b != $MOZ_BUILD_DATE"; exit 1; }; done
+ st "unify"
+ U=$G/universal-work; rm -rf $U; mkdir -p $U/arm64 $U/x86_64
+ VER=$(cat browser/config/version_display.txt); V=${VER%esr}
+diff --git a/greatdane/tools/gd-buildinfo.sh b/greatdane/tools/gd-buildinfo.sh
+index 8ed88fac13..a41180282a 100755
+--- a/greatdane/tools/gd-buildinfo.sh
++++ b/greatdane/tools/gd-buildinfo.sh
+@@ -7,11 +7,17 @@ NODE=${2:-$TREE/../pepenet-desktop}; OBJ=${3:-$TREE/obj-gd}
+ cfg() { grep -o "'$1': '[^']*'" "$OBJ/config.status" 2>/dev/null | head -1 | sed "s/.*: '//; s/'\$//"; }
+ AMAL=$(sed -n 's/^SQLITE_AMALGAMATION:PATH=//p' "$NODE/build-pin-arm64/CMakeCache.txt" 2>/dev/null)
+ SQL=$(sed -n 's/^#define SQLITE_VERSION *"\(.*\)"/\1/p' "$AMAL/sqlite3.h" 2>/dev/null)
++BID=$(sed -n 's/^BuildID=//p' "$OBJ/dist/bin/application.ini" 2>/dev/null)
++SHA=$(shasum -a 256 "$DMG" | cut -d' ' -f1); REL=$(dirname "$DMG")
++# BuildIDs are unique per build: refuse if this BuildID is already recorded for a different dmg.
++for f in $(grep -rls "^build_id: *$BID\$" "$REL" 2>/dev/null); do
++  o=$(sed -n 's/^dmg_sha256: *//p' "$f"); [ -z "$o" ] || [ "$o" = "$SHA" ] || {
++    echo "gd-buildinfo: BuildID $BID already used by $f (sha $o) != $SHA; refusing" >&2; exit 1; }; done
+ {
+ echo "product:        Dane $(cat "$TREE/browser/config/version_display.txt")"
+ echo "dmg:            $(basename "$DMG")"
+-echo "dmg_sha256:     $(shasum -a 256 "$DMG" | cut -d' ' -f1)"
+-echo "build_id:       $(sed -n 's/^BuildID=//p' "$OBJ/dist/bin/application.ini" 2>/dev/null)"
++echo "dmg_sha256:     $SHA"
++echo "build_id:       $BID"
+ echo "tree:           $(git -C "$TREE" rev-parse HEAD) ($(git -C "$TREE" rev-parse --abbrev-ref HEAD))$(git -C "$TREE" diff --quiet HEAD || echo ' +dirty')"
+ echo "node:           $(git -C "$NODE" rev-parse HEAD) ($(git -C "$NODE" rev-parse --abbrev-ref HEAD))"
+ echo "sqlite:         ${SQL:-unknown}"
+@@ -19,5 +25,8 @@ echo "update_channel: $(cfg MOZ_UPDATE_CHANNEL)"
+ echo "mar_channel:    $(cfg MAR_CHANNEL_ID)"
+ echo "accepted_mar:   $(cfg ACCEPTED_MAR_CHANNEL_IDS)"
+ echo "generated:      $(date '+%F %T %Z')"
+-} > "$(dirname "$DMG")/BUILDINFO.txt"
+-cat "$(dirname "$DMG")/BUILDINFO.txt"
++} > "$REL/BUILDINFO.txt"
++cp "$REL/BUILDINFO.txt" "$REL/BUILDINFO-$BID.txt"
++# keep a BuildID-named copy of the dmg beside the generic one
++[ -e "$REL/$(basename "$DMG" .dmg)-$BID.dmg" ] || cp "$DMG" "$REL/$(basename "$DMG" .dmg)-$BID.dmg"
++cat "$REL/BUILDINFO.txt"

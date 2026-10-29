@@ -2,7 +2,13 @@
 # Sequential: faster JS rebuild+package (both, same BuildID) -> pinned-sqlite node (arm64, x86_64, lipo) -> unify -> sign. No notarize.
 set -euo pipefail
 G=/Volumes/Storage/build/greatdane; TREE=$G/firefox-esr153; ND=$G/pepenet-desktop
-export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin" MOZ_BUILD_DATE=20261026160337
+export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# Fresh BuildID per run (shared by both arches). Never reuse one: a reused
+# MOZ_BUILD_DATE gave two different dmgs the same BuildID (20261027162126).
+REL=$TREE/obj-gd/dist/gd-release
+export MOZ_BUILD_DATE=${GD_BUILD_DATE:-$(date +%Y%m%d%H%M%S)}
+if ls $REL $REL/*/ 2>/dev/null | grep -q -- "$MOZ_BUILD_DATE" || grep -rqs "build_id: *$MOZ_BUILD_DATE" $REL; then
+  echo "BuildID $MOZ_BUILD_DATE already used in $REL; refusing" >&2; exit 1; fi
 st() { echo "$(date '+%F %T') $*" >> $G/universal.status; }
 cd $TREE
 for m in mozconfig mozconfig-x86_64; do st "faster+package $m"
@@ -14,6 +20,8 @@ for a in arm64 x86_64; do cmake --build $ND/build-pin-$a --target greatdane-node
 mkdir -p $ND/build-pin-universal
 lipo -create $ND/build-pin-arm64/greatdane-node $ND/build-pin-x86_64/greatdane-node -output $ND/build-pin-universal/greatdane-node
 lipo -archs $ND/build-pin-universal/greatdane-node | tee -a $G/universal.status
+for o in obj-gd obj-gd-x86_64; do b=$(sed -n "s/^BuildID=//p" $o/dist/bin/application.ini)
+  [ "$b" = "$MOZ_BUILD_DATE" ] || { st "BuildID mismatch $o: $b != $MOZ_BUILD_DATE"; exit 1; }; done
 st "unify"
 U=$G/universal-work; rm -rf $U; mkdir -p $U/arm64 $U/x86_64
 VER=$(cat browser/config/version_display.txt); V=${VER%esr}

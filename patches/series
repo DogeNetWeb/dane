@@ -58,3 +58,4 @@
 0058-GreatDANE-pin-embedded-node-to-eb86f17-dual-stack-in.patch
 0059-greatdane-tools-add-gd_guard-test-harness-guard-real.patch
 0060-greatdane-add-privacy-note-on-Mozilla-push-service.patch
+0061-greatdane-tools-unique-BuildID-per-build-fresh-MOZ_B.patch
