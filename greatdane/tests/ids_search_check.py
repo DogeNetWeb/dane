@@ -1,0 +1,58 @@
+# IDs + search: app name/vendor/basename/remoting name/ID, bundle ID, update channel, stock search engines and
+# suggestions on, .pepe/.doge urlbar name provider registered and enabled.
+import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "tools"))
+import gd_guard  # must be first: real-profile guard + throwaway dirs
+import os, sys, subprocess, plistlib, json
+from marionette_driver.marionette import Marionette
+APP, ARCH = sys.argv[1], sys.argv[2]
+prof = gd_guard.profile("gd-ids-")
+open(prof + "/user.js", "w").write('user_pref("marionette.port", 2840);\nuser_pref("greatdane.node.dataDir", "' + gd_guard.ND + '");\nuser_pref("greatdane.pep.listen_port", 34876);\nuser_pref("greatdane.doge.listen_port", 23558);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\nuser_pref("browser.aboutwelcome.enabled", false);\n')
+fails = 0
+def check(name, ok, info=""):
+    global fails; fails += 0 if ok else 1
+    print(ARCH, "PASS" if ok else "FAIL", name, info)
+plist = plistlib.load(open(os.path.join(os.path.dirname(APP), "..", "Info.plist"), "rb"))
+check("bundle ID surf.dogecoin.dane", plist.get("CFBundleIdentifier") == "surf.dogecoin.dane", plist.get("CFBundleIdentifier"))
+check("bundle name Dane", plist.get("CFBundleName") == "Dane", plist.get("CFBundleName"))
+p = subprocess.Popen(["arch", "-" + ARCH, APP, "-marionette", "-remote-allow-system-access", "-no-remote", "-profile", prof], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+m = Marionette(host="127.0.0.1", port=2840); m.start_session()
+try:
+    with m.using_context("chrome"):
+        r = m.execute_async_script("""const [resolve]=arguments;(async()=>{
+          const {AppConstants}=ChromeUtils.importESModule('resource://gre/modules/AppConstants.sys.mjs');
+          const SS=ChromeUtils.importESModule('moz-src:///toolkit/components/search/SearchService.sys.mjs').SearchService;
+          const T=(pr,ms,tag)=>Promise.race([pr,new Promise((_,j)=>setTimeout(()=>j(new Error(tag+' timeout')),ms))]);
+          const {setTimeout}=ChromeUtils.importESModule('resource://gre/modules/Timer.sys.mjs');
+          await T(SS.init(),40000,'search.init');
+          const engines=(await T(SS.getEngines(),10000,'getEngines')).map(e=>e.name);
+          const def=(await T(SS.getDefault(),10000,'getDefault')).name;
+          let prov=null; try{const mod=ChromeUtils.importESModule('moz-src:///browser/components/urlbar/UrlbarProviderGreatDANENames.sys.mjs');
+            const src=await (await fetch('moz-src:///browser/components/urlbar/UrlbarProvidersManager.sys.mjs')).text();
+            prov=Object.keys(mod).concat(src.includes('UrlbarProviderGreatDANENames.sys.mjs')?['registered-in-ProvidersManager']:[]);}catch(e){prov=String(e);}
+          const P=Services.prefs;
+          resolve({name:Services.appinfo.name,vendor:Services.appinfo.vendor,id:Services.appinfo.ID,abi:Services.appinfo.XPCOMABI,
+            basename:AppConstants.MOZ_APP_BASENAME,remoting:AppConstants.MOZ_APP_REMOTINGNAME||Services.appinfo.remotingName,
+            channel:AppConstants.MOZ_UPDATE_CHANNEL,build:Services.appinfo.appBuildID,
+            engines,def,suggest:P.getBoolPref('browser.search.suggest.enabled'),
+            urlbarSuggest:P.getBoolPref('browser.urlbar.suggest.searches'),urlbarSuggestDefault:P.getDefaultBranch('').getBoolPref('browser.urlbar.suggest.searches'),urlbarSuggestUser:P.prefHasUserValue('browser.urlbar.suggest.searches'),
+            names:P.getBoolPref('greatdane.urlbar.names',false),prov,
+            profDir:Services.dirsvc.get('ProfD',Ci.nsIFile).path});})().catch(e=>resolve({err:String(e)}))""", script_timeout=60000)
+    print(ARCH, json.dumps(r))
+    if "err" in r: check("chrome script ran", False, r["err"]); raise SystemExit(1)
+    check("appinfo name GreatDANE", r["name"] == "GreatDANE", r["name"])
+    check("app basename GreatDANE", r["basename"] == "GreatDANE", r["basename"])
+    check("app ID stock Firefox ID", r["id"] == "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}", r["id"])
+    check("update channel esr", r["channel"] == "esr", r["channel"])
+    check("BuildID 20261029131529", r["build"] == "20261029131529", r["build"])
+    check("arch matches", ("aarch64" in r["abi"]) == (ARCH == "arm64"), r["abi"])
+    check("stock engines present (>=4, incl. Google)", len(r["engines"]) >= 4 and any(e.startswith("Google") for e in r["engines"]), r["engines"])
+    check("search suggestions on (shipped default; marionette forces urlbar.suggest.searches=false as a user value)", r["suggest"] and r["urlbarSuggestDefault"], r)
+    check(".pepe/.doge name suggestions on", r["names"] and isinstance(r["prov"], list) and "registered-in-ProvidersManager" in r["prov"], r["prov"])
+    check("profile is throwaway", gd_guard.safe(r["profDir"]) is not None, r["profDir"])
+finally:
+    try:
+        with m.using_context("chrome"): m.execute_script("Services.startup.quit(Ci.nsIAppStartup.eAttemptQuit)")
+    except Exception: pass
+    p.wait(30)
+print(ARCH, "RESULT", "PASS" if fails == 0 else "FAIL (%d)" % fails)
+sys.exit(1 if fails else 0)
