@@ -1,0 +1,587 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Thu, 29 Oct 2026 13:12:06 -0500
+Subject: [PATCH 062/144] greatdane/tests: track guarded test harness (smoke,
+ prefs, gmp, hr, push, v6, wire v6 advertise, media); import gd_guard from
+ greatdane/tools
+
+---
+ greatdane/tests/README.md       |   5 ++
+ greatdane/tests/gmp_check.py    |  64 +++++++++++++
+ greatdane/tests/hr_check.py     |  34 +++++++
+ greatdane/tests/media_check.py  |  62 +++++++++++++
+ greatdane/tests/push_check.py   |  23 +++++
+ greatdane/tests/run_gd_prefs.py | 153 ++++++++++++++++++++++++++++++++
+ greatdane/tests/smoke.py        |  38 ++++++++
+ greatdane/tests/v6check.py      |  63 +++++++++++++
+ greatdane/tests/wire_v6adv.py   |  63 +++++++++++++
+ 9 files changed, 505 insertions(+)
+ create mode 100644 greatdane/tests/README.md
+ create mode 100644 greatdane/tests/gmp_check.py
+ create mode 100644 greatdane/tests/hr_check.py
+ create mode 100644 greatdane/tests/media_check.py
+ create mode 100644 greatdane/tests/push_check.py
+ create mode 100644 greatdane/tests/run_gd_prefs.py
+ create mode 100644 greatdane/tests/smoke.py
+ create mode 100644 greatdane/tests/v6check.py
+ create mode 100644 greatdane/tests/wire_v6adv.py
+
+diff --git a/greatdane/tests/README.md b/greatdane/tests/README.md
+new file mode 100644
+index 0000000000..6bba388068
+--- /dev/null
++++ b/greatdane/tests/README.md
+@@ -0,0 +1,5 @@
++# Dane test harness
++All scripts import `greatdane/tools/gd_guard.py` first: it aborts if nowon's real
++GreatDANE profiles.ini/installs.ini change, and gives throwaway profile/node-data dirs.
++Run with the marionette venv, e.g.
++`/Volumes/Storage/build/greatdane/mn-venv/bin/python smoke.py <Dane.app/Contents/MacOS/greatdane> arm64`
+diff --git a/greatdane/tests/gmp_check.py b/greatdane/tests/gmp_check.py
+new file mode 100644
+index 0000000000..23f469c756
+--- /dev/null
++++ b/greatdane/tests/gmp_check.py
+@@ -0,0 +1,64 @@
++# GMP check: download/activate Widevine + OpenH264 via the GMP manager, then
++# Widevine: MediaKeys + license-request message from the CDM; ClearKey: full EME session (license accepted);
++# OpenH264: H.264-only WebRTC loopback, frames decoded.
++import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "tools"))
++import gd_guard  # must be first: real-profile guard + throwaway dirs
++import sys, subprocess, tempfile, time, json, os
++from marionette_driver.marionette import Marionette
++APP, ARCH = sys.argv[1], sys.argv[2]
++prof = gd_guard.profile("gd-test-")
++open(prof+"/user.js","w").write('''user_pref("marionette.port", 2838);
++user_pref("greatdane.node.dataDir", "' + gd_guard.ND + '");\nuser_pref("greatdane.pep.listen_port", 34874);\nuser_pref("greatdane.doge.listen_port", 23556);\nuser_pref("greatdane.legacy.certCleanup", false);
++user_pref("greatdane.legacy.import", false);
++user_pref("browser.shell.checkDefaultBrowser", false);
++user_pref("media.eme.enabled", true);
++user_pref("media.navigator.permission.disabled", true);
++user_pref("media.peerconnection.ice.loopback", true);
++user_pref("media.peerconnection.ice.obfuscate_host_addresses", false);
++''')
++p = subprocess.Popen(["arch","-"+ARCH,APP,"-marionette","-remote-allow-system-access","-no-remote","-profile",prof],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
++m = Marionette(host="127.0.0.1", port=2838); m.start_session(); m.timeout.script = 240
++res = {"arch": ARCH}
++with m.using_context("chrome"):
++    res["install"] = m.execute_async_script("""const done=arguments[arguments.length-1];
++      const {GMPInstallManager}=ChromeUtils.importESModule("resource://gre/modules/GMPInstallManager.sys.mjs");
++      new GMPInstallManager().simpleCheckAndInstall().then(r=>done({ok:true,r:JSON.stringify(r).slice(0,200)}),e=>done({ok:false,err:String(e&&e.message||e)}));""")
++    t0=time.time()
++    while time.time()-t0 < 120:
++        v = m.execute_script("const g=n=>Services.prefs.getStringPref('media.'+n+'.version','');return {widevine:g('gmp-widevinecdm'),openh264:g('gmp-gmpopenh264'),abi:Services.appinfo.XPCOMABI}")
++        if v["widevine"] and v["openh264"]: break
++        time.sleep(3)
++    res["versions"] = v
++m.navigate("file://"+os.path.expanduser("~/gd-pending/gmp_test.html"))
++res["widevine"] = m.execute_async_script(r"""const done=arguments[arguments.length-1];
++ const pssh=Uint8Array.from(atob('AAAAW3Bzc2gAAAAA7e+LqXnWSs6jyCfc1R0h7QAAADsIARIQ62dqu8s0Xpa7z2FmMPGj2hoNd2lkZXZpbmVfdGVzdCIQZmtqM2xqYVNkZmFsa3IzaioCSEQyAA=='),c=>c.charCodeAt(0));
++ navigator.requestMediaKeySystemAccess('com.widevine.alpha',[{initDataTypes:['cenc'],videoCapabilities:[{contentType:'video/mp4; codecs="avc1.42E01E"'}]}])
++ .then(a=>a.createMediaKeys()).then(k=>{const s=k.createSession(); const to=setTimeout(()=>done({ok:false,err:'no message in 30s'}),30000);
++   s.addEventListener('message',e=>{clearTimeout(to);done({ok:true,messageType:e.messageType,bytes:e.message.byteLength});});
++   return s.generateRequest('cenc',pssh);}).catch(e=>done({ok:false,err:String(e)}));""")
++res["clearkey"] = m.execute_async_script(r"""const done=arguments[arguments.length-1];
++ const b64u=a=>btoa(String.fromCharCode(...a)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
++ const kid=new Uint8Array(16).fill(1), key=new Uint8Array(16).fill(2);
++ const init=new TextEncoder().encode(JSON.stringify({kids:[b64u(kid)]}));
++ navigator.requestMediaKeySystemAccess('org.w3.clearkey',[{initDataTypes:['keyids'],videoCapabilities:[{contentType:'video/mp4; codecs="avc1.42E01E"'}]}])
++ .then(a=>a.createMediaKeys()).then(k=>{const s=k.createSession();
++   s.addEventListener('message',e=>{const lic=new TextEncoder().encode(JSON.stringify({keys:[{kty:'oct',kid:b64u(kid),k:b64u(key)}]}));
++     s.update(lic).then(()=>{const st=[];s.keyStatuses.forEach(v=>st.push(v));done({ok:st[0]==='usable',keyStatuses:st});}).catch(e=>done({ok:false,err:String(e)}));});
++   return s.generateRequest('keyids',init);}).catch(e=>done({ok:false,err:String(e)}));""")
++res["openh264"] = m.execute_async_script(r"""const done=arguments[arguments.length-1];
++ const c=document.getElementById('c'),g=c.getContext('2d');let f=0;setInterval(()=>{g.fillStyle='hsl('+(f++*15)+',80%,50%)';g.fillRect(0,0,320,240);g.fillStyle='#000';g.fillText(f,10,20);},33);
++ const st=c.captureStream(30), a=new RTCPeerConnection(), b=new RTCPeerConnection();
++ const gw=pc=>pc.iceGatheringState==='complete'?Promise.resolve():new Promise(r=>pc.addEventListener('icegatheringstatechange',()=>pc.iceGatheringState==='complete'&&r()));
++ const tr=a.addTransceiver(st.getVideoTracks()[0],{direction:'sendonly',streams:[st]});
++ const h=RTCRtpSender.getCapabilities('video').codecs.filter(x=>x.mimeType==='video/H264');
++ if(!h.length) return done({ok:false,err:'no H264 in sender capabilities'});
++ tr.setCodecPreferences(h);
++ (async()=>{await a.setLocalDescription(); await gw(a); await b.setRemoteDescription(a.localDescription); await b.setLocalDescription(); await gw(b); await a.setRemoteDescription(b.localDescription);
++  await new Promise(r=>setTimeout(r,8000)); const s=await b.getStats(); let fd=0,codec='';
++  window.__types=[];s.forEach(r=>window.__types.push(r.type+':'+(r.kind||'')));s.forEach(r=>{if(r.type==='inbound-rtp'&&r.kind==='video'){fd=r.framesDecoded;window.__dec=r.decoderImplementation;const cc=s.get(r.codecId);codec=cc&&cc.mimeType;}});
++  const os=await a.getStats();let enc='';os.forEach(r=>{if(r.type==='outbound-rtp')enc=r.encoderImplementation;});done({ok:fd>0&&codec==='video/H264',framesDecoded:fd,codec,decoder:window.__dec,encoder:enc,ice:a.iceConnectionState+'/'+b.iceConnectionState,types:window.__types.join(',')});})().catch(e=>done({ok:false,err:String(e)}));""")
++print(json.dumps(res))
++try:
++    with m.using_context("chrome"): m.execute_script("Services.startup.quit(Ci.nsIAppStartup.eAttemptQuit)")
++except Exception: pass
++p.wait(30)
+diff --git a/greatdane/tests/hr_check.py b/greatdane/tests/hr_check.py
+new file mode 100644
+index 0000000000..56c8f6eb25
+--- /dev/null
++++ b/greatdane/tests/hr_check.py
+@@ -0,0 +1,34 @@
++# Hardened-runtime check: JS JIT, wasm, video encode+decode+play, on given arch.
++import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "tools"))
++import gd_guard  # must be first: real-profile guard + throwaway dirs
++import sys, subprocess, tempfile, time
++from marionette_driver.marionette import Marionette
++APP, ARCH = sys.argv[1], sys.argv[2]
++prof = gd_guard.profile("gd-test-")
++open(prof+"/user.js","w").write('user_pref("marionette.port", 2838);\nuser_pref("greatdane.node.dataDir", "' + gd_guard.ND + '");\nuser_pref("greatdane.pep.listen_port", 34874);\nuser_pref("greatdane.doge.listen_port", 23556);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\nuser_pref("media.autoplay.default", 0);\n')
++p = subprocess.Popen(["arch","-"+ARCH,APP,"-marionette","-remote-allow-system-access","-no-remote","-profile",prof],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
++m = Marionette(host="127.0.0.1", port=2838); m.start_session()
++m.navigate("data:text/html,<title>hr</title><canvas id=c width=64 height=64></canvas>")
++m.timeout.script = 60
++r = m.execute_async_script(r"""
++const done = arguments[arguments.length-1]; const out = {};
++let t=performance.now(), s=0; for (let i=0;i<5e7;i++) s=(s+i*7)|0; out.js_ms=Math.round(performance.now()-t); out.js_sum=s;
++const w=new Uint8Array([0,97,115,109,1,0,0,0,1,7,1,96,2,127,127,1,127,3,2,1,0,7,7,1,3,97,100,100,0,0,10,9,1,7,0,32,0,32,1,106,11]);
++WebAssembly.instantiate(w).then(({instance})=>{ out.wasm_add=instance.exports.add(40,2);
++ const c=document.getElementById('c'), g=c.getContext('2d'); const st=c.captureStream(30);
++ const rec=new MediaRecorder(st,{mimeType:'video/webm'}); const ch=[]; rec.ondataavailable=e=>ch.push(e.data);
++ let f=0; const iv=setInterval(()=>{g.fillStyle='hsl('+(f++*20)+',80%,50%)';g.fillRect(0,0,64,64);},33);
++ rec.onstop=()=>{clearInterval(iv); const v=document.createElement('video'); v.muted=true; document.body.append(v);
++   v.src=URL.createObjectURL(new Blob(ch,{type:'video/webm'}));
++   v.onerror=()=>{out.video_err=v.error&&v.error.message; done(out);};
++   v.play().then(()=>setTimeout(()=>{out.video_time=v.currentTime; out.decoded=v.getVideoPlaybackQuality().totalVideoFrames; done(out);},1500)).catch(e=>{out.video_err=String(e);done(out);});};
++ rec.start(); setTimeout(()=>rec.stop(),2000);
++}).catch(e=>{out.wasm_err=String(e);done(out);});
++""")
++with m.using_context("chrome"):
++    jit = m.execute_script("return [Services.prefs.getBoolPref('javascript.options.baselinejit'), Services.prefs.getBoolPref('javascript.options.ion'), Services.prefs.getBoolPref('javascript.options.wasm'), Services.appinfo.XPCOMABI]")
++print(ARCH, "prefs(baseline,ion,wasm,abi):", jit, "result:", r)
++try:
++    with m.using_context("chrome"): m.execute_script("Services.startup.quit(Ci.nsIAppStartup.eAttemptQuit)")
++except Exception: pass
++p.wait(30); print(ARCH, "exit", p.returncode)
+diff --git a/greatdane/tests/media_check.py b/greatdane/tests/media_check.py
+new file mode 100644
+index 0000000000..5bfd36ab92
+--- /dev/null
++++ b/greatdane/tests/media_check.py
+@@ -0,0 +1,62 @@
++# Media check on a build: real Widevine DASH playback (Shaka angel-one-widevine + Shaka no_auth license proxy)
++# and clear H.264 playback; reports decoder via mozRequestDebugInfo + MOZ_LOG PlatformDecoderModule.
++import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "tools"))
++import gd_guard  # must be first
++import sys, subprocess, time, json, os
++from marionette_driver.marionette import Marionette
++APP, ARCH = sys.argv[1], sys.argv[2]
++prof = gd_guard.profile("gd-test-")
++open(prof+"/user.js","w").write('user_pref("marionette.port", 2839);\nuser_pref("greatdane.node.dataDir", "%s");\nuser_pref("greatdane.pep.listen_port", 34875);\nuser_pref("greatdane.doge.listen_port", 23557);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\nuser_pref("media.autoplay.default", 0);\n' % gd_guard.ND)
++logf = os.path.join(gd_guard.ND, "moz.log")
++env = dict(os.environ, MOZ_LOG="PlatformDecoderModule:5,EME:3,sync", MOZ_LOG_FILE=logf)
++p = subprocess.Popen(["arch","-"+ARCH,APP,"-marionette","-remote-allow-system-access","-no-remote","-profile",prof],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
++m = Marionette(host="127.0.0.1", port=2839); m.start_session(); m.timeout.script = 240
++res = {"arch": ARCH}
++with m.using_context("chrome"):
++    res["install"] = m.execute_async_script("""const done=arguments[arguments.length-1];
++      const {GMPInstallManager}=ChromeUtils.importESModule("resource://gre/modules/GMPInstallManager.sys.mjs");
++      new GMPInstallManager().simpleCheckAndInstall().then(r=>done(JSON.stringify(r).slice(0,200)),e=>done('ERR '+e));""")
++    for _ in range(40):
++        v = m.execute_script("const g=n=>Services.prefs.getStringPref('media.'+n+'.version','');return {widevine:g('gmp-widevinecdm'),openh264:g('gmp-gmpopenh264')}")
++        if v["widevine"]: break
++        time.sleep(3)
++    res["versions"] = v
++PAGE = r"""(async()=>{const mpd=%s, lic=%s; const out=o=>document.body.setAttribute('data-res',JSON.stringify(o));
++ try{ await new Promise((ok,no)=>{const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/shaka-player/4.11.7/shaka-player.compiled.js';s.onload=ok;s.onerror=()=>no(new Error('shaka load failed'));document.head.appendChild(s);});
++   shaka.polyfill.installAll(); const v=document.createElement('video'); v.muted=true; v.width=640; document.body.appendChild(v);
++   const pl=new shaka.Player(); await pl.attach(v); if(lic) pl.configure({drm:{servers:{'com.widevine.alpha':lic}}});
++   await pl.load(mpd); await v.play(); await new Promise(r=>setTimeout(r,12000));
++   const q=v.getVideoPlaybackQuality(); const vt=pl.getVariantTracks().find(t=>t.active)||{};
++   out({ok:v.currentTime>5&&q.totalVideoFrames>0,currentTime:v.currentTime,frames:q.totalVideoFrames,dropped:q.droppedVideoFrames,codecs:vt.videoCodec,height:vt.height,keySystem:pl.keySystem()});
++ }catch(e){out({ok:false,err:String(e&&e.code||'')+' '+String(e&&e.message||e)});}})();"""
++def play(mpd, lic):
++    m.navigate("https://example.com/")
++    m.execute_script("const s=document.createElement('script');s.textContent=arguments[0];document.body.appendChild(s);", script_args=[PAGE % (json.dumps(mpd), json.dumps(lic))])
++    for _ in range(60):
++        r = m.execute_script("return document.body.getAttribute('data-res')")
++        if r: break
++        time.sleep(2)
++    r = json.loads(r) if r else {"ok": False, "err": "timeout"}
++    try:
++        with m.using_context("chrome"):
++            r["debug"] = m.execute_async_script("""const done=arguments[arguments.length-1];
++              const b=gBrowser.selectedBrowser; done(null);""")
++    except Exception as e: pass
++    return r
++res["widevine_play"] = play("https://storage.googleapis.com/shaka-demo-assets/angel-one-widevine/dash.mpd","https://cwip-shaka-proxy.appspot.com/no_auth")
++res["h264_clear_play"] = play("https://storage.googleapis.com/shaka-demo-assets/angel-one/dash.mpd", None)
++print(json.dumps(res, indent=1))
++try:
++    with m.using_context("chrome"): m.execute_script("Services.startup.quit(Ci.nsIAppStartup.eAttemptQuit)")
++except Exception: pass
++p.wait(30)
++import glob, re
++lines=[l for f in glob.glob(logf+"*") for l in open(f,errors="replace")]
++keys=re.compile(r"(VideoToolbox|AppleVT|FFmpeg|FFVPX|ffvpx|OpenH264|ChromiumCDM|Widevine|GMP|AgnosticDecoder|Create.*Decoder|decoder description)",re.I)
++hits=[l.strip()[:220] for l in lines if keys.search(l)]
++print("MOZ_LOG lines:",len(lines),"matching:",len(hits))
++seen=set()
++for h in hits:
++    k=re.sub(r"^\S+ \S+ - ","",h)[:120]
++    if k not in seen: seen.add(k); print("  ",h)
++    if len(seen)>40: break
+diff --git a/greatdane/tests/push_check.py b/greatdane/tests/push_check.py
+new file mode 100644
+index 0000000000..d510f8b627
+--- /dev/null
++++ b/greatdane/tests/push_check.py
+@@ -0,0 +1,23 @@
++import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "tools"))
++import gd_guard  # must be first: real-profile guard + throwaway dirs
++import sys, subprocess, tempfile, time, json
++from marionette_driver.marionette import Marionette
++A,ARCH=sys.argv[1],sys.argv[2]; prof=gd_guard.profile("gd-push-")
++open(prof+"/user.js","w").write('user_pref("marionette.port", 2838);\nuser_pref("greatdane.node.dataDir", "' + gd_guard.ND + '");\nuser_pref("greatdane.pep.listen_port", 34874);\nuser_pref("greatdane.doge.listen_port", 23556);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\n')
++p=subprocess.Popen(["arch","-"+ARCH,A,"-marionette","-remote-allow-system-access","-no-remote","-profile",prof],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
++m=Marionette(host="127.0.0.1",port=2838); m.start_session(); m.timeout.script=90
++with m.using_context("chrome"):
++  pre=m.execute_script("""let g=n=>{try{return Services.prefs.getBoolPref(n)}catch(e){return 'unset'}};
++   return {enabled:g('dom.push.enabled'),conn:g('dom.push.connection.enabled'),server:Services.prefs.getStringPref('dom.push.serverURL','')}""")
++  if pre["conn"] is False: m.execute_script("Services.prefs.setBoolPref('dom.push.connection.enabled', true)")
++  r=m.execute_async_script("""const done=arguments[arguments.length-1]; const out={};
++   const ps=Cc['@mozilla.org/push/Service;1'].getService(Ci.nsIPushService);
++   const pr=Services.scriptSecurityManager.createContentPrincipal(Services.io.newURI('https://greatdane.example/'),{});
++   Services.perms.addFromPrincipal(pr,'desktop-notification',Services.perms.ALLOW_ACTION);
++   const go=()=>ps.subscribe('https://greatdane.example/sw', pr, (st, sub)=>{out.status='0x'+(st>>>0).toString(16); out.ok=Components.isSuccessCode(st)&&!!sub;
++        out.endpointHost=sub? new URL(sub.endpoint).host : null;
++        if(sub) ps.unsubscribe('https://greatdane.example/sw', pr, (s2,ok)=>{out.unsub=ok; done(out)}); else done(out);});
++   setTimeout(go,5000); setTimeout(()=>done(Object.assign(out,{timeout:true})),80000);""")
++print(json.dumps({"arch":ARCH,"pre":pre,"sub":r}))
++print("RESULT","PASS" if pre["enabled"] is True and r.get("ok") else "FAIL")
++m.delete_session(); p.terminate(); p.wait(30)
+diff --git a/greatdane/tests/run_gd_prefs.py b/greatdane/tests/run_gd_prefs.py
+new file mode 100644
+index 0000000000..c85bde3f96
+--- /dev/null
++++ b/greatdane/tests/run_gd_prefs.py
+@@ -0,0 +1,153 @@
++# Dane settings tests in the built Dane (chrome context via Marionette):
++# the Dane pane loads, its toggles write prefs, Mozilla promo/data-collection
++# sections are hidden, Sync is visible by default and hidden by
++# greatdane.prefs.hideSync, and the first-run update window logic.
++#   python3 run_gd_prefs.py [path/to/greatdane] [screens_dir]
++import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "tools"))
++import gd_guard  # must be first: real-profile guard + throwaway dirs
++import os, shutil, subprocess, sys, tempfile, time
++from marionette_driver.marionette import Marionette
++HERE = os.path.dirname(os.path.abspath(__file__))
++TREE = os.path.abspath(os.path.join(HERE, "../.."))
++APP = sys.argv[1] if len(sys.argv) > 1 else TREE + "/obj-gd/dist/Dane.app/Contents/MacOS/greatdane"
++SHOTS = sys.argv[2] if len(sys.argv) > 2 else None
++prof = gd_guard.profile("gd-prefs-")
++open(prof + "/user.js", "w").write('user_pref("marionette.port", 2833);\nuser_pref("greatdane.node.dataDir", "' + gd_guard.ND + '");\nuser_pref("greatdane.pep.listen_port", 34874);\nuser_pref("greatdane.doge.listen_port", 23556);\nuser_pref("browser.aboutwelcome.enabled", false);\n')
++p = subprocess.Popen([APP, "--headless", "--marionette", "-remote-allow-system-access", "--no-remote", "--profile", prof,
++                      "--width", "1280", "--height", "900"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++fails = 0
++def check(name, ok, info=""):
++    global fails
++    print(("PASS " if ok else "FAIL ") + name + (f"  [{info}]" if info and not ok else ""))
++    fails += 0 if ok else 1
++
++OPEN = '''let [pane, done] = arguments;
++let w = Services.wm.getMostRecentWindow("navigator:browser");
++w.openPreferences(pane);
++let t0 = Date.now();
++(function poll() {
++  let d = w.gBrowser.selectedBrowser.contentDocument;
++  let ok = d && d.readyState == "complete" && d.documentElement.getAttribute("data-gd-ready") != null;
++  if (d && d.readyState == "complete" && d.getElementById("gd-hide-style") && (Date.now() - t0) > 1500) return done(true);
++  if (Date.now() - t0 > 30000) return done(false);
++  w.setTimeout(poll, 200);
++})();'''
++JS = '''let d = Services.wm.getMostRecentWindow("navigator:browser").gBrowser.selectedBrowser.contentDocument;
++let vis = el => !!el && d.defaultView.getComputedStyle(el).display != "none" && el.getClientRects().length > 0;
++let shown = sel => [...d.querySelectorAll(sel)].some(e => d.defaultView.getComputedStyle(e).display != "none");
++'''
++def js(m, body, args=None): return m.execute_script(JS + body, script_args=args or [], sandbox=None)
++def shot(m, name):
++    if SHOTS:
++        os.makedirs(SHOTS, exist_ok=True)
++        open(os.path.join(SHOTS, name), "wb").write(m.screenshot(format="binary"))
++rc = 1
++try:
++    for _ in range(60):
++        try:
++            m = Marionette(host="127.0.0.1", port=2833); m.start_session(); break
++        except Exception: time.sleep(1)
++    m.set_context("chrome"); m.timeout.script = 60
++    # Pane loads
++    check("dane pane loads", m.execute_async_script(OPEN, script_args=["greatdane"], sandbox=None))
++    time.sleep(2)
++    r = js(m, '''return { nav: vis(d.getElementById("category-greatdane")),
++      pep: vis(d.getElementById("gd-pep-enabled")), doge: vis(d.getElementById("gd-doge-enabled")),
++      st: d.getElementById("gd-pep-status")?.getAttribute("label") || "",
++      dir: d.getElementById("gd-data-dir")?.getAttribute("description") || "",
++      pat: !!d.getElementById("gd-chain-host-pattern"), chan: d.getElementById("gd-update-channel")?.getAttribute("description") || "",
++      icon: d.getElementById("category-greatdane")?.getAttribute("iconsrc") };''')
++    check("dane nav button visible", r["nav"], r)
++    check("per-chain toggles shown", r["pep"] and r["doge"], r)
++    check("status row localized", r["st"].startswith("Status:"), r)
++    check("data dir shown read-only", bool(r["dir"]) and r["dir"] != "-", r)
++    check("chain host pattern field", r["pat"], r)
++    check("update channel shown", bool(r["chan"]), r)
++    check("dane icon", r["icon"] == "chrome://branding/content/about-logo.svg", r)
++    shot(m, "dane.png")
++    # Toggles write prefs
++    r = m.execute_async_script(JS + '''let done = arguments[arguments.length - 1];
++      let tick = () => new Promise(r => d.defaultView.setTimeout(r, 400));
++      let press = id => { let t = d.getElementById(id); (t.buttonEl || t.shadowRoot.querySelector("button")).click(); };
++      (async () => { let out = {};
++        for (let [id, pref] of [["gd-pep-enabled", "greatdane.pep.enabled"], ["gd-doge-enabled", "greatdane.doge.enabled"]]) {
++          out[id] = [Services.prefs.getBoolPref(pref)]; press(id); await tick();
++          out[id].push(Services.prefs.getBoolPref(pref)); press(id); await tick(); out[id].push(Services.prefs.getBoolPref(pref));
++        }
++        let W = "greatdane.update.skipFirstRunWindowSec";
++        out.upd = [Services.prefs.getIntPref(W)]; press("gd-update-firstrun-skip"); await tick();
++        out.upd.push(Services.prefs.getIntPref(W)); press("gd-update-firstrun-skip"); await tick(); out.upd.push(Services.prefs.getIntPref(W));
++        done(out); })();''', sandbox=None)
++    check("pep toggle writes pref", r["gd-pep-enabled"] == [True, False, True], r)
++    check("doge toggle writes pref", r["gd-doge-enabled"] == [True, False, True], r)
++    check("first-run toggle writes window pref", r["upd"] == [3600, 0, 3600], r)
++    # Default top-site tiles (region-independent; sponsored off)
++    r = m.execute_script("""return {
++      sites: Services.prefs.getStringPref("browser.newtabpage.activity-stream.default.sites", ""),
++      remote: Services.prefs.getBoolPref("browser.topsites.useRemoteSetting", true),
++      sponsored: Services.prefs.getBoolPref("browser.newtabpage.activity-stream.showSponsoredTopSites", true),
++      contile: Services.prefs.getBoolPref("browser.topsites.contile.enabled", true),
++    };""", sandbox=None)
++    expect = "https://www.youtube.com/,https://pepecoin.surf/,https://www.amazon.com/,https://dogecoin.surf/,https://grokipedia.com/,https://x.com/,https://greatdane.doge/"
++    check("default top-site tiles", r["sites"] == expect, r)
++    check("remote/region default sites off", r["remote"] is False, r)
++    check("sponsored top sites off", r["sponsored"] is False and r["contile"] is False, r)
++    # Startup + Home open the new-tab page with the tiles (no forced site homepage)
++    r = m.execute_script("""return {
++      home: Services.prefs.getStringPref("browser.startup.homepage", ""),
++      homeDefault: Services.prefs.getDefaultBranch("").getStringPref("browser.startup.homepage", ""),
++      page: Services.prefs.getIntPref("browser.startup.page", -1),
++      newtab: Services.prefs.getBoolPref("browser.newtabpage.enabled", false),
++      welcome: Services.prefs.getStringPref("startup.homepage_welcome_url", "x"),
++      override: Services.prefs.getStringPref("startup.homepage_override_url", "x"),
++    };""", sandbox=None)
++    check("startup/home = about:home tiles", r["home"] == "about:home" and r["homeDefault"] == "about:home" and r["page"] == 1 and r["newtab"] is True, r)
++    check("no forced welcome/override homepage", r["welcome"] == "" and r["override"] == "", r)
++    # Hidden sections (Privacy)
++    m.execute_async_script(OPEN, script_args=["privacy"], sandbox=None); time.sleep(2)
++    # Settings redesign: data collection lives in the "Permissions and data" pane.
++    m.execute_async_script(OPEN, script_args=["permissionsData"], sandbox=None); time.sleep(2)
++    dc = js(m, '''let g = d.querySelector('setting-group[groupid="dataCollection"]');
++      return !!g && g.checkVisibility() && g.getBoundingClientRect().height > 0;''')
++    m.execute_async_script(OPEN, script_args=["privacy"], sandbox=None); time.sleep(2)
++    r = js(m, '''return { dc: arguments[0],
++      vpn: shown('[groupid="ipprotection"]'), relay: [...d.querySelectorAll("#relayIntegrationBox, #setting-control-relayIntegration, #relayIntegration")].some(vis),
++      relayPresent: d.querySelectorAll("#setting-control-relayIntegration, #relayIntegration").length > 0,
++      mfm: vis(d.getElementById("category-more-from-mozilla")),
++      sync: vis(d.getElementById("category-sync")) };''', [dc])
++    check("data collection opt-outs visible", r["dc"], r)
++    check("VPN hidden", not r["vpn"], r)
++    check("Relay hidden (incl. 'Suggest Firefox Relay email masks')", r["relayPresent"] and not r["relay"], r)
++    check("More from Mozilla hidden", not r["mfm"], r)
++    check("Sync visible by default", r["sync"], r)
++    shot(m, "privacy-security.png")
++    m.execute_async_script(OPEN, script_args=["general"], sandbox=None); time.sleep(2); shot(m, "general.png")
++    m.execute_async_script(OPEN, script_args=["sync"], sandbox=None); time.sleep(2); shot(m, "sync.png")
++    r = js(m, '''Services.prefs.setBoolPref("greatdane.prefs.hideSync", true);
++      let a = vis(d.getElementById("category-sync"));
++      Services.prefs.setBoolPref("greatdane.prefs.hideSync", false);
++      return [a, vis(d.getElementById("category-sync"))];''')
++    check("Sync hidden when hideSync=true, back when false", r == [False, True], r)
++    # First-run update window (fail open)
++    r = js(m, '''let us = Cc["@mozilla.org/updates/update-service;1"].getService().wrappedJSObject;
++      let P = "greatdane.update.firstRunTime", W = "greatdane.update.skipFirstRunWindowSec", now = Math.floor(Date.now()/1000);
++      let o = {};
++      Services.prefs.clearUserPref(P); o.first = us._greatdaneSkipFirstSession(); o.recorded = Services.prefs.prefHasUserValue(P);
++      Services.prefs.setStringPref(P, String(now - 10)); o.inside = us._greatdaneSkipFirstSession();
++      Services.prefs.setStringPref(P, String(now - 4000)); o.after = us._greatdaneSkipFirstSession();
++      Services.prefs.setStringPref(P, "garbage"); o.garbage = us._greatdaneSkipFirstSession();
++      Services.prefs.setStringPref(P, String(now - 10)); Services.prefs.setIntPref(W, 0); o.off = us._greatdaneSkipFirstSession();
++      Services.prefs.clearUserPref(W); Services.prefs.clearUserPref(P);
++      Services.prefs.setIntPref(P, 5); o.wrongType = us._greatdaneSkipFirstSession(); Services.prefs.clearUserPref(P);
++      return o;''')
++    check("update window: first check records time and skips", r["first"] and r["recorded"], r)
++    check("update window: inside window skips", r["inside"], r)
++    check("update window: after window checks", not r["after"], r)
++    check("update window: garbage fails open", not r["garbage"], r)
++    check("update window: 0 disables", not r["off"], r)
++    check("update window: wrong pref type fails open", not r["wrongType"], r)
++    m.delete_session(); rc = 0 if fails == 0 else 1
++finally:
++    p.terminate(); p.wait(20); shutil.rmtree(prof, ignore_errors=True)
++print(f"failed={fails}")
++sys.exit(rc)
+diff --git a/greatdane/tests/smoke.py b/greatdane/tests/smoke.py
+new file mode 100644
+index 0000000000..989ffd74fc
+--- /dev/null
++++ b/greatdane/tests/smoke.py
+@@ -0,0 +1,38 @@
++# Smoke: launch Dane (given arch), load about:dane, check #discover link, read node status, time clean quit.
++import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "tools"))
++import gd_guard  # must be first: real-profile guard + throwaway dirs
++import os, sys, subprocess, tempfile, time, base64
++from marionette_driver.marionette import Marionette
++APP, ARCH = sys.argv[1], sys.argv[2]
++SHOT = sys.argv[3] if len(sys.argv) > 3 else None
++prof = gd_guard.profile("gd-test-")
++open(prof + "/user.js", "w").write('user_pref("marionette.port", 2838);\nuser_pref("greatdane.node.dataDir", "' + gd_guard.ND + '");\nuser_pref("greatdane.pep.listen_port", 34874);\nuser_pref("greatdane.doge.listen_port", 23556);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\n')
++cmd = ["arch", "-" + ARCH, APP, "-marionette", "-remote-allow-system-access", "-no-remote", "-profile", prof]
++p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
++m = Marionette(host="127.0.0.1", port=2838); m.start_session()
++with m.using_context("chrome"):
++    real = m.execute_script("return Services.appinfo.XPCOMABI + ' ' + Services.appinfo.name + ' ' + Services.appinfo.version + ' ' + Services.appinfo.appBuildID")
++print(ARCH, "appinfo:", real)
++m.navigate("about:dane")
++t = m.execute_script("return [document.title, !!document.getElementById('discover'), document.body.innerText.slice(0,200)]")
++print(ARCH, "about:dane title=%r discover_link=%s" % (t[0], t[1]))
++st = None
++for i in range(60):
++    with m.using_context("chrome"):
++        st = m.execute_script("""const {GreatDANE}=ChromeUtils.importESModule('resource:///modules/GreatDANE.sys.mjs');
++          return [...GreatDANE._chains.values()].map(c=>({coin:c.coin,state:c.state,s:c.status&&{state:c.status.state,listen:c.status.listen,port:c.status.listen_port,pin:c.status.peers_in,pout:c.status.peers_out,sync:c.status.sync_pct,dir:c.status.data_dir}}))""")
++    if all(c["s"] and (c["s"]["pout"] or 0) > 0 for c in st): break
++    time.sleep(2)
++print(ARCH, "nodes:", st)
++if SHOT:
++    m.navigate("about:preferences#greatdane"); time.sleep(4)
++    open(SHOT, "wb").write(base64.b64decode(m.screenshot(full=True)))
++    print("shot", SHOT)
++t0 = time.time()
++try:
++    with m.using_context("chrome"):
++        m.execute_script("Services.startup.quit(Ci.nsIAppStartup.eAttemptQuit)")
++except Exception as e: pass
++p.wait(30); print(ARCH, "exit rc=%s in %.1fs" % (p.returncode, time.time() - t0))
++nodes = subprocess.run(["pgrep", "-f", "stage-universal/Dane.app/Contents/MacOS/greatdane-node"], capture_output=True, text=True).stdout.split()
++print(ARCH, "stray nodes after quit:", nodes)
+diff --git a/greatdane/tests/v6check.py b/greatdane/tests/v6check.py
+new file mode 100644
+index 0000000000..5b32dd9e98
+--- /dev/null
++++ b/greatdane/tests/v6check.py
+@@ -0,0 +1,63 @@
++# v6check: Dane launches its pep/doge nodes; check dual-stack inbound on ::1 + 127.0.0.1, listen=false, advertise-v6 off.
++import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "tools"))
++import gd_guard  # must be first: real-profile guard + throwaway dirs
++import os, sys, subprocess, tempfile, time, socket, json
++from marionette_driver.marionette import Marionette
++APP, LISTEN, DD = sys.argv[1], sys.argv[2] == "on", gd_guard.ND
++PP, DP, MP = 34874, 23556, 2838
++prof = gd_guard.profile("gd-v6-")
++up = ['user_pref("marionette.port", %d);' % MP, 'user_pref("greatdane.legacy.certCleanup", false);', 'user_pref("greatdane.legacy.import", false);',
++      'user_pref("browser.shell.checkDefaultBrowser", false);', 'user_pref("greatdane.node.dataDir", "%s");' % DD,
++      'user_pref("greatdane.pep.listen_port", %d);' % PP, 'user_pref("greatdane.doge.listen_port", %d);' % DP]
++if not LISTEN: up += ['user_pref("greatdane.pep.listen", false);', 'user_pref("greatdane.doge.listen", false);']
++open(prof + "/user.js", "w").write("\n".join(up) + "\n")
++env = dict(os.environ); env.pop("IDX_ADVERTISE_V6", None)
++p = subprocess.Popen(["arch", "-arm64", APP, "-marionette", "-remote-allow-system-access", "-no-remote", "-profile", prof], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
++m = Marionette(host="127.0.0.1", port=MP); m.start_session()
++fails = 0
++def chk(ok, msg):
++    global fails; print(("PASS " if ok else "FAIL ") + msg); fails += (not ok)
++st = None
++for i in range(150):
++    with m.using_context("chrome"):
++        st = m.execute_script("""const {GreatDANE}=ChromeUtils.importESModule('resource:///modules/GreatDANE.sys.mjs');
++          return [...GreatDANE._chains.values()].map(c=>({coin:c.coin,state:c.state,s:c.status}))""")
++    if st and all(c["s"] and c["s"].get("listen") not in (None, "pending") for c in st): break
++    time.sleep(2)
++for c in st: print(c["coin"], json.dumps({k: (c["s"] or {}).get(k) for k in ("state","listen","listen_port","listen_error","peers_in","peers_out","data_dir")}))
++def conn(host, port):
++    s = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_STREAM); s.settimeout(3)
++    try: s.connect((host, port)); s.close(); return True
++    except Exception: return False
++time.sleep(2)
++mine = [l for l in subprocess.run(["pgrep", "-fl", "greatdane-node"], capture_output=True, text=True).stdout.splitlines() if DD in l]
++print("node procs:", mine)
++chk(len(mine) == 2, "two embedded nodes using the throwaway data dir")
++chk(not any("--advertise-v6" in l for l in mine), "no --advertise-v6 on node command lines")
++for l in mine:
++    pid = l.split()[0]
++    e = subprocess.run(["ps", "eww", "-o", "command=", "-p", pid], capture_output=True, text=True).stdout
++    chk("IDX_ADVERTISE_V6" not in e, "pid %s env has no IDX_ADVERTISE_V6" % pid)
++S = {c["coin"]: (c["s"] or {}) for c in st}
++if LISTEN:
++    chk(S["pep"].get("listen") == "ok" and S["pep"].get("listen_port") == PP, "pep listen ok on %d" % PP)
++    chk(conn("127.0.0.1", PP), "pep inbound 127.0.0.1:%d" % PP)
++    chk(conn("::1", PP), "pep inbound [::1]:%d" % PP)
++    ls = subprocess.run(["lsof", "-nP", "-iTCP:%d" % PP, "-sTCP:LISTEN"], capture_output=True, text=True).stdout
++    print(ls.strip()); chk("IPv6" in ls, "pep listener socket is IPv6 (dual-stack)")
++    if S["doge"].get("listen") == "ok":
++        chk(conn("127.0.0.1", DP), "doge inbound 127.0.0.1:%d" % DP); chk(conn("::1", DP), "doge inbound [::1]:%d" % DP)
++    else: print("NOTE doge listen =", S["doge"].get("listen"))
++else:
++    for c, s in S.items(): print(c, "listen status:", s.get("listen"))
++    for port in (PP, DP):
++        chk(not conn("127.0.0.1", port), "no inbound 127.0.0.1:%d" % port)
++        chk(not conn("::1", port), "no inbound [::1]:%d" % port)
++    for l in mine: chk("--no-listen" in l, "node started with --no-listen: pid " + l.split()[0])
++with m.using_context("chrome"):
++    try: m.execute_script("Services.startup.quit(Ci.nsIAppStartup.eAttemptQuit)")
++    except Exception: pass
++p.wait(30); time.sleep(5)
++left = [l for l in subprocess.run(["pgrep", "-fl", "greatdane-node"], capture_output=True, text=True).stdout.splitlines() if DD in l]
++chk(not left, "no stray nodes after quit")
++print("RESULT", "PASS" if not fails else "FAIL", "fails=%d" % fails)
+diff --git a/greatdane/tests/wire_v6adv.py b/greatdane/tests/wire_v6adv.py
+new file mode 100644
+index 0000000000..1e3702666a
+--- /dev/null
++++ b/greatdane/tests/wire_v6adv.py
+@@ -0,0 +1,63 @@
++"""Wire test: does the 170846 Dane node self-advertise an IPv6 addr? Fake pep peer on [::1].
++Usage: wire_v6adv.py NODEBIN [adv]   (adv => IDX_ADVERTISE_V6=1). Throwaway dirs via gd_guard."""
++import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "tools"))
++import gd_guard, os, sys, socket, struct, hashlib, time, subprocess, ipaddress, threading
++MAGIC=bytes([0xC0,0xA0,0xF0,0xE0]); FAKE_SELF="2a01:4f8:dead::5"
++def msg(cmd,pl=b""):
++    return MAGIC+cmd.encode().ljust(12,b"\0")+struct.pack("<I",len(pl))+hashlib.sha256(hashlib.sha256(pl).digest()).digest()[:4]+pl
++def na(ip,port): return struct.pack("<Q",1)+ipaddress.ip_address(ip).packed.rjust(16,b"\0") if False else struct.pack("<Q",1)+ipaddress.IPv6Address(ip).packed+struct.pack(">H",port)
++def version():
++    ua=b"/pepenet-wiretest:0.1/"
++    return struct.pack("<iQq",70015,1,int(time.time()))+na(FAKE_SELF,33874)+na("::",0)+struct.pack("<Q",12345)+bytes([len(ua)])+ua+struct.pack("<i",1300000)+b"\1"
++def rv(b,o):
++    v=b[o]; o+=1
++    if v==0xfd: v=struct.unpack_from("<H",b,o)[0]; o+=2
++    elif v==0xfe: v=struct.unpack_from("<I",b,o)[0]; o+=4
++    return v,o
++def addrs(pl):
++    n,o=rv(pl,0); out=[]
++    for _ in range(n):
++        ip=ipaddress.IPv6Address(pl[o+12:o+28]); port=struct.unpack(">H",pl[o+28:o+30])[0]; o+=30
++        out.append(str(ip.ipv4_mapped or ip)+":%d"%port)
++    return out
++adv=len(sys.argv)>2
++ls=socket.socket(socket.AF_INET6); ls.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); ls.bind(("::1",0)); ls.listen(4)
++P=ls.getsockname()[1]
++env={k:v for k,v in os.environ.items() if k!="IDX_ADVERTISE_V6"}
++if adv: env["IDX_ADVERTISE_V6"]="1"
++log=open(os.path.join(gd_guard.ND,"node.stderr"),"w")
++cmd=[sys.argv[1],"--data",gd_guard.ND,"--only","pep","--no-snapshot-fetch","--listen-port","47391","--seeds","[::1]:%d"%P]
++print("cmd:"," ".join(cmd),"IDX_ADVERTISE_V6=%s"%("1" if adv else "unset"))
++p=subprocess.Popen(cmd,env=env,stdout=log,stderr=subprocess.STDOUT)
++seen=[]; ls.settimeout(30); end=time.time()+40
++def handle(c):
++    c.settimeout(2); buf=b""; sent=False
++    while time.time()<end:
++        try: d=c.recv(65536)
++        except socket.timeout: continue
++        except OSError: break
++        if not d: break
++        buf+=d
++        while len(buf)>=24:
++            ln=struct.unpack_from("<I",buf,16)[0]
++            if len(buf)<24+ln: break
++            cm=buf[4:16].rstrip(b"\0").decode(); pl=buf[24:24+ln]; buf=buf[24+ln:]
++            e=(cm,addrs(pl) if cm in("addr","dnaddr") else len(pl)); seen.append(e); print("recv",e,flush=True)
++            if cm=="version":
++                fr=ipaddress.IPv6Address(pl[20+8+12-12+8:20+8+16+8][:16]) if False else None
++                print("  node version addr_from:",ipaddress.IPv6Address(pl[54:70]),flush=True)
++                if not sent: c.sendall(msg("version",version())); sent=True
++                c.sendall(msg("verack")); c.sendall(msg("dngetaddr")); c.sendall(msg("getaddr")); print("  sent version+verack",flush=True)
++try:
++    while time.time()<end:
++        try: c,a=ls.accept()
++        except socket.timeout: break
++        print("accepted from",a,flush=True); threading.Thread(target=handle,args=(c,),daemon=True).start()
++    time.sleep(max(0,end-time.time()))
++finally:
++    p.terminate(); p.wait(10); log.close()
++print("--- node log (self/announce/listen lines):")
++for l in open(os.path.join(gd_guard.ND,"node.stderr")):
++    print(" ",l.rstrip())
++v6=[a for c_,x in seen if c_ in("addr","dnaddr") for a in x if a.startswith(FAKE_SELF)]
++print("RESULT: own IPv6 (FAKE_SELF) self-advertised:",bool(v6),v6)
