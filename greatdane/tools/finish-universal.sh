@@ -29,6 +29,7 @@ VER=$(cat browser/config/version_display.txt); V=${VER%esr}
 ./mach python -m mozbuild.action.unpack_dmg obj-gd-x86_64/dist/greatdane-$V.en-US.mac.dmg $U/x86_64 >> $G/universal-unify.log 2>&1
 ./mach python toolkit/mozapps/installer/unify.py $U/x86_64/Dane.app $U/arm64/Dane.app >> $G/universal-unify.log 2>&1
 lipo -archs $U/x86_64/Dane.app/Contents/MacOS/greatdane | tee -a $G/universal.status
+cp $TREE/greatdane/macos/PrivacyInfo.xcprivacy $U/x86_64/Dane.app/Contents/Resources/PrivacyInfo.xcprivacy
 st "sign (no notarize)"
 DANE_ARCH=universal DANE_APP_SRC=$U/x86_64/Dane.app DANE_NODE=$ND/build-pin-universal/greatdane-node $G/sign-only.sh > $G/universal-sign.log 2>&1
 st "buildinfo"

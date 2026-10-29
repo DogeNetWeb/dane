@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Thu, 29 Oct 2026 17:13:32 -0500
+Subject: [PATCH 065/144] greatdane: ship PrivacyInfo.xcprivacy privacy
+ manifest in Dane.app/Contents/Resources (no tracking, no collected data;
+ required-reason APIs) before signing
+
+---
+ greatdane/macos/PrivacyInfo.xcprivacy | 34 +++++++++++++++++++++++++++
+ greatdane/tools/finish-universal.sh   |  1 +
+ 2 files changed, 35 insertions(+)
+ create mode 100644 greatdane/macos/PrivacyInfo.xcprivacy
+
+diff --git a/greatdane/macos/PrivacyInfo.xcprivacy b/greatdane/macos/PrivacyInfo.xcprivacy
+new file mode 100644
+index 0000000000..7e892547fe
+--- /dev/null
++++ b/greatdane/macos/PrivacyInfo.xcprivacy
+@@ -0,0 +1,34 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<!-- Dane privacy manifest. No tracking, no tracking domains, no data collected by the
++     app vendor. Required-reason API declarations cover stock Gecko usage. Optional for
++     Developer ID distribution; see https://developer.apple.com/documentation/bundleresources/privacy-manifest-files -->
++<plist version="1.0">
++<dict>
++	<key>NSPrivacyTracking</key>
++	<false/>
++	<key>NSPrivacyTrackingDomains</key>
++	<array/>
++	<key>NSPrivacyCollectedDataTypes</key>
++	<array/>
++	<key>NSPrivacyAccessedAPITypes</key>
++	<array>
++		<dict>
++			<key>NSPrivacyAccessedAPIType</key><string>NSPrivacyAccessedAPICategoryUserDefaults</string>
++			<key>NSPrivacyAccessedAPITypeReasons</key><array><string>CA92.1</string></array>
++		</dict>
++		<dict>
++			<key>NSPrivacyAccessedAPIType</key><string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
++			<key>NSPrivacyAccessedAPITypeReasons</key><array><string>C617.1</string></array>
++		</dict>
++		<dict>
++			<key>NSPrivacyAccessedAPIType</key><string>NSPrivacyAccessedAPICategorySystemBootTime</string>
++			<key>NSPrivacyAccessedAPITypeReasons</key><array><string>35F9.1</string></array>
++		</dict>
++		<dict>
++			<key>NSPrivacyAccessedAPIType</key><string>NSPrivacyAccessedAPICategoryDiskSpace</string>
++			<key>NSPrivacyAccessedAPITypeReasons</key><array><string>E174.1</string></array>
++		</dict>
++	</array>
++</dict>
++</plist>
+diff --git a/greatdane/tools/finish-universal.sh b/greatdane/tools/finish-universal.sh
+index 788dbb884d..73133ccaca 100755
+--- a/greatdane/tools/finish-universal.sh
++++ b/greatdane/tools/finish-universal.sh
+@@ -29,6 +29,7 @@ VER=$(cat browser/config/version_display.txt); V=${VER%esr}
+ ./mach python -m mozbuild.action.unpack_dmg obj-gd-x86_64/dist/greatdane-$V.en-US.mac.dmg $U/x86_64 >> $G/universal-unify.log 2>&1
+ ./mach python toolkit/mozapps/installer/unify.py $U/x86_64/Dane.app $U/arm64/Dane.app >> $G/universal-unify.log 2>&1
+ lipo -archs $U/x86_64/Dane.app/Contents/MacOS/greatdane | tee -a $G/universal.status
++cp $TREE/greatdane/macos/PrivacyInfo.xcprivacy $U/x86_64/Dane.app/Contents/Resources/PrivacyInfo.xcprivacy
+ st "sign (no notarize)"
+ DANE_ARCH=universal DANE_APP_SRC=$U/x86_64/Dane.app DANE_NODE=$ND/build-pin-universal/greatdane-node $G/sign-only.sh > $G/universal-sign.log 2>&1
+ st "buildinfo"
