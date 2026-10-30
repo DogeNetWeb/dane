@@ -43,7 +43,9 @@ try:
     check("app basename GreatDANE", r["basename"] == "GreatDANE", r["basename"])
     check("app ID stock Firefox ID", r["id"] == "{ec8030f7-c20a-464f-9b0e-13a3a9e97384}", r["id"])
     check("update channel esr", r["channel"] == "esr", r["channel"])
-    check("BuildID 20261029131529", r["build"] == "20261029131529", r["build"])
+    _ini = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(sys.argv[1]))), "Resources", "application.ini")
+    _bid = [l.split("=", 1)[1].strip() for l in open(_ini) if l.startswith("BuildID=")][0]
+    check("BuildID matches application.ini " + _bid, r["build"] == _bid, r["build"])
     check("arch matches", ("aarch64" in r["abi"]) == (ARCH == "arm64"), r["abi"])
     check("stock engines present (>=4, incl. Google)", len(r["engines"]) >= 4 and any(e.startswith("Google") for e in r["engines"]), r["engines"])
     check("search suggestions on (shipped default; marionette forces urlbar.suggest.searches=false as a user value)", r["suggest"] and r["urlbarSuggestDefault"], r)
