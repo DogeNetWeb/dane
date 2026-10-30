@@ -2,7 +2,7 @@
 # the Dane pane loads, its toggles write prefs, Mozilla promo/data-collection
 # sections are hidden, Sync is visible by default and hidden by
 # greatdane.prefs.hideSync, and the first-run update window logic.
-#   python3 run_gd_prefs.py [path/to/greatdane] [screens_dir]
+#   python3 run_gd_prefs.py [path/to/greatdane] [arm64|x86_64] [screens_dir]   (screens_dir must be absolute)
 import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "tools"))
 import gd_guard  # must be first: real-profile guard + throwaway dirs
 import os, shutil, subprocess, sys, tempfile, time
@@ -10,10 +10,13 @@ from marionette_driver.marionette import Marionette
 HERE = os.path.dirname(os.path.abspath(__file__))
 TREE = os.path.abspath(os.path.join(HERE, "../.."))
 APP = sys.argv[1] if len(sys.argv) > 1 else TREE + "/obj-gd/dist/Dane.app/Contents/MacOS/greatdane"
-SHOTS = sys.argv[2] if len(sys.argv) > 2 else None
+_rest = sys.argv[2:]
+ARCH = _rest.pop(0) if _rest and _rest[0] in ("arm64", "x86_64") else None
+SHOTS = _rest[0] if _rest else None
+if SHOTS and not os.path.isabs(SHOTS): sys.exit("run_gd_prefs: screens_dir must be absolute: %r" % SHOTS)
 prof = gd_guard.profile("gd-prefs-")
-open(prof + "/user.js", "w").write('user_pref("marionette.port", 2833);\nuser_pref("greatdane.node.dataDir", "' + gd_guard.ND + '");\nuser_pref("greatdane.pep.listen_port", 34874);\nuser_pref("greatdane.doge.listen_port", 23556);\nuser_pref("browser.aboutwelcome.enabled", false);\n')
-p = subprocess.Popen([APP, "--headless", "--marionette", "-remote-allow-system-access", "--no-remote", "--profile", prof,
+open(prof + "/user.js", "w").write('user_pref("marionette.port", 2833);\nuser_pref("greatdane.node.dataDir", "' + gd_guard.safe(gd_guard.ND) + '");\nuser_pref("greatdane.pep.listen_port", 34874);\nuser_pref("greatdane.doge.listen_port", 23556);\nuser_pref("browser.aboutwelcome.enabled", false);\n')
+p = subprocess.Popen((["arch", "-" + ARCH] if ARCH else []) + [APP, "--headless", "--marionette", "-remote-allow-system-access", "--no-remote", "--profile", prof,
                       "--width", "1280", "--height", "900"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 fails = 0
 def check(name, ok, info=""):
@@ -48,6 +51,9 @@ try:
             m = Marionette(host="127.0.0.1", port=2833); m.start_session(); break
         except Exception: time.sleep(1)
     m.set_context("chrome"); m.timeout.script = 60
+    _abi = m.execute_script("return Services.appinfo.XPCOMABI", sandbox=None)
+    print("arch:", ARCH or "native", "XPCOMABI:", _abi)
+    if ARCH: check("running as " + ARCH, ("aarch64" in _abi) == (ARCH == "arm64"), _abi)
     # Pane loads
     check("dane pane loads", m.execute_async_script(OPEN, script_args=["greatdane"], sandbox=None))
     time.sleep(2)

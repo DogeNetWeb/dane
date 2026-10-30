@@ -67,3 +67,4 @@
 0067-greatdane-tests-ids_search_check-compares-BuildID-to.patch
 0068-greatdane-tests-ids_search_check-takes-the-expected-.patch
 0069-gd_guard-safe-requires-paths-inside-this-run-s-mkdte.patch
+0070-greatdane-tests-run_gd_prefs-takes-an-arch-runs-unde.patch
