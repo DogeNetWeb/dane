@@ -65,3 +65,4 @@
 0065-greatdane-ship-PrivacyInfo.xcprivacy-privacy-manifes.patch
 0066-greatdane-tests-add-guarded-ids_search_check-bundle-.patch
 0067-greatdane-tests-ids_search_check-compares-BuildID-to.patch
+0068-greatdane-tests-ids_search_check-takes-the-expected-.patch
