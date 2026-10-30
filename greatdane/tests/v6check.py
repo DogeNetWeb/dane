@@ -3,7 +3,7 @@ import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirnam
 import gd_guard  # must be first: real-profile guard + throwaway dirs
 import os, sys, subprocess, tempfile, time, socket, json
 from marionette_driver.marionette import Marionette
-APP, LISTEN, DD = sys.argv[1], sys.argv[2] == "on", gd_guard.ND
+APP, LISTEN, DD = sys.argv[1], sys.argv[2] == "on", gd_guard.safe(gd_guard.ND)
 PP, DP, MP = 34874, 23556, 2838
 prof = gd_guard.profile("gd-v6-")
 up = ['user_pref("marionette.port", %d);' % MP, 'user_pref("greatdane.legacy.certCleanup", false);', 'user_pref("greatdane.legacy.import", false);',

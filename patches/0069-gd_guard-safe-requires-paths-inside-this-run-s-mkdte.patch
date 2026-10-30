@@ -1,0 +1,279 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Fri, 30 Oct 2026 13:19:43 -0500
+Subject: [PATCH 069/144] gd_guard: safe() requires paths inside this run's
+ mkdtemp roots; teardown fails (96) on out-of-root dataDir in any created
+ profile or new dirs in greatdane/, cwd or $HOME; all suites route dataDir
+ through gd_guard.safe(); add guard_negative_test
+
+---
+ greatdane/tests/gmp_check.py           |  2 +-
+ greatdane/tests/guard_negative_test.py | 44 +++++++++++++
+ greatdane/tests/hr_check.py            |  2 +-
+ greatdane/tests/media_check.py         |  2 +-
+ greatdane/tests/push_check.py          |  2 +-
+ greatdane/tests/smoke.py               |  2 +-
+ greatdane/tests/v6check.py             |  2 +-
+ greatdane/tools/gd_guard.py            | 88 ++++++++++++++++++++++++--
+ 8 files changed, 131 insertions(+), 13 deletions(-)
+ create mode 100644 greatdane/tests/guard_negative_test.py
+
+diff --git a/greatdane/tests/gmp_check.py b/greatdane/tests/gmp_check.py
+index 8015c2e405..6fc0bce135 100644
+--- a/greatdane/tests/gmp_check.py
++++ b/greatdane/tests/gmp_check.py
+@@ -15,7 +15,7 @@ user_pref("media.eme.enabled", true);
+ user_pref("media.navigator.permission.disabled", true);
+ user_pref("media.peerconnection.ice.loopback", true);
+ user_pref("media.peerconnection.ice.obfuscate_host_addresses", false);
+-''' % gd_guard.ND)
++''' % gd_guard.safe(gd_guard.ND))
+ p = subprocess.Popen(["arch","-"+ARCH,APP,"-marionette","-remote-allow-system-access","-no-remote","-profile",prof],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+ m = Marionette(host="127.0.0.1", port=2838); m.start_session(); m.timeout.script = 240
+ res = {"arch": ARCH}
+diff --git a/greatdane/tests/guard_negative_test.py b/greatdane/tests/guard_negative_test.py
+new file mode 100644
+index 0000000000..cc1620a77c
+--- /dev/null
++++ b/greatdane/tests/guard_negative_test.py
+@@ -0,0 +1,44 @@
++# Negative tests for gd_guard: proves the guard FAILS on out-of-root profile/node data dirs.
++# Launches no browser. Each case runs a child python that imports gd_guard, then misbehaves.
++# Usage: guard_negative_test.py   (exit 0 = every negative case was caught and the positive control passed)
++import os, shutil, subprocess, sys, tempfile
++HERE = os.path.dirname(os.path.abspath(__file__))
++PRE = "import sys; sys.path.insert(0, %r); import gd_guard, os, tempfile\n" % os.path.join(HERE, "..", "tools")
++STRAY = os.path.join(HERE, "gd-neg-stray-dir")
++CASES = [
++  # name, child code, expect nonzero, expected stderr marker
++  ("control: dataDir = gd_guard.safe(gd_guard.ND)",
++   "p=gd_guard.profile('gd-neg-'); open(p+'/user.js','w').write('user_pref(\"greatdane.node.dataDir\", \"%s\");\\n' % gd_guard.safe(gd_guard.ND))",
++   False, ""),
++  ("safe() on a $TMPDIR dir outside the mkdtemp roots",
++   "d=tempfile.mkdtemp(prefix='gd-neg-outside-')\ntry: gd_guard.safe(d)\nfinally: os.rmdir(d)",
++   True, "outside this run's mkdtemp roots"),
++  ("safe() on the real GreatDANE dir (path only, never opened)",
++   "gd_guard.safe(os.path.expanduser('~/Library/Application Support/GreatDANE/x'))",
++   True, "inside real data dir"),
++  ("safe() on a relative path (the old quoting bug)",
++   "gd_guard.safe(\"' + gd_guard.ND + '\")",
++   True, "outside this run's mkdtemp roots"),
++  ("user.js with the literal-quoted relative dataDir (old gmp_check bug)",
++   "p=gd_guard.profile('gd-neg-'); open(p+'/user.js','w').write('''user_pref(\"greatdane.node.dataDir\", \"' + gd_guard.ND + '\");\\n''')",
++   True, "out-of-root"),
++  ("user.js dataDir in $TMPDIR but outside the mkdtemp roots",
++   "p=gd_guard.profile('gd-neg-'); open(p+'/user.js','w').write('user_pref(\"greatdane.node.dataDir\", \"%s\");\\n' % tempfile.gettempdir())",
++   True, "out-of-root"),
++  ("node data dir created in the greatdane/ source tree during the run",
++   "os.makedirs(%r + '/pep', exist_ok=True)" % STRAY,
++   True, "stray dir"),
++]
++fails = 0
++for name, code, expect_fail, marker in CASES:
++    cwd = tempfile.mkdtemp(prefix="gd-neg-cwd-")
++    try:
++        r = subprocess.run([sys.executable, "-c", PRE + code], cwd=cwd, capture_output=True, text=True, timeout=60)
++    finally:
++        shutil.rmtree(cwd, ignore_errors=True); shutil.rmtree(STRAY, ignore_errors=True)
++    out = (r.stdout + r.stderr).strip().replace("\n", " | ")
++    ok = (r.returncode != 0 and marker in out) if expect_fail else (r.returncode == 0)
++    fails += 0 if ok else 1
++    print("PASS" if ok else "FAIL", "[%s]" % ("must fail" if expect_fail else "must pass"), name, "-> rc=%d" % r.returncode, out[:300])
++print("RESULT", "PASS" if fails == 0 else "FAIL (%d)" % fails)
++sys.exit(1 if fails else 0)
+diff --git a/greatdane/tests/hr_check.py b/greatdane/tests/hr_check.py
+index 56c8f6eb25..bce59a8209 100644
+--- a/greatdane/tests/hr_check.py
++++ b/greatdane/tests/hr_check.py
+@@ -5,7 +5,7 @@ import sys, subprocess, tempfile, time
+ from marionette_driver.marionette import Marionette
+ APP, ARCH = sys.argv[1], sys.argv[2]
+ prof = gd_guard.profile("gd-test-")
+-open(prof+"/user.js","w").write('user_pref("marionette.port", 2838);\nuser_pref("greatdane.node.dataDir", "' + gd_guard.ND + '");\nuser_pref("greatdane.pep.listen_port", 34874);\nuser_pref("greatdane.doge.listen_port", 23556);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\nuser_pref("media.autoplay.default", 0);\n')
++open(prof+"/user.js","w").write('user_pref("marionette.port", 2838);\nuser_pref("greatdane.node.dataDir", "' + gd_guard.safe(gd_guard.ND) + '");\nuser_pref("greatdane.pep.listen_port", 34874);\nuser_pref("greatdane.doge.listen_port", 23556);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\nuser_pref("media.autoplay.default", 0);\n')
+ p = subprocess.Popen(["arch","-"+ARCH,APP,"-marionette","-remote-allow-system-access","-no-remote","-profile",prof],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+ m = Marionette(host="127.0.0.1", port=2838); m.start_session()
+ m.navigate("data:text/html,<title>hr</title><canvas id=c width=64 height=64></canvas>")
+diff --git a/greatdane/tests/media_check.py b/greatdane/tests/media_check.py
+index 1f0b447907..05b9936223 100644
+--- a/greatdane/tests/media_check.py
++++ b/greatdane/tests/media_check.py
+@@ -7,7 +7,7 @@ from marionette_driver.marionette import Marionette
+ APP, ARCH = sys.argv[1], sys.argv[2]
+ ONLY = sys.argv[3].split(",") if len(sys.argv) > 3 else None
+ prof = gd_guard.profile("gd-test-")
+-open(prof+"/user.js","w").write('user_pref("marionette.port", 2839);\nuser_pref("greatdane.node.dataDir", "%s");\nuser_pref("greatdane.pep.listen_port", 34875);\nuser_pref("greatdane.doge.listen_port", 23557);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\nuser_pref("media.autoplay.default", 0);\nuser_pref("media.block-autoplay-until-in-foreground", false);\nuser_pref("media.suspend-background-video.enabled", false);\nuser_pref("widget.macos.occlusion-tracking.enabled", false);\nuser_pref("dom.min_background_timeout_value", 4);\n' % gd_guard.ND)
++open(prof+"/user.js","w").write('user_pref("marionette.port", 2839);\nuser_pref("greatdane.node.dataDir", "%s");\nuser_pref("greatdane.pep.listen_port", 34875);\nuser_pref("greatdane.doge.listen_port", 23557);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\nuser_pref("media.autoplay.default", 0);\nuser_pref("media.block-autoplay-until-in-foreground", false);\nuser_pref("media.suspend-background-video.enabled", false);\nuser_pref("widget.macos.occlusion-tracking.enabled", false);\nuser_pref("dom.min_background_timeout_value", 4);\n' % gd_guard.safe(gd_guard.ND))
+ logf = os.path.join(gd_guard.ND, "moz.log")
+ env = dict(os.environ, MOZ_LOG=os.environ.get("GD_MOZ_LOG","PlatformDecoderModule:5,EME:5,GMP:4,sync"), MOZ_LOG_FILE=logf)
+ p = subprocess.Popen(["arch","-"+ARCH,APP,"-marionette","-remote-allow-system-access","-no-remote","-profile",prof],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+diff --git a/greatdane/tests/push_check.py b/greatdane/tests/push_check.py
+index d510f8b627..513402d7e3 100644
+--- a/greatdane/tests/push_check.py
++++ b/greatdane/tests/push_check.py
+@@ -3,7 +3,7 @@ import gd_guard  # must be first: real-profile guard + throwaway dirs
+ import sys, subprocess, tempfile, time, json
+ from marionette_driver.marionette import Marionette
+ A,ARCH=sys.argv[1],sys.argv[2]; prof=gd_guard.profile("gd-push-")
+-open(prof+"/user.js","w").write('user_pref("marionette.port", 2838);\nuser_pref("greatdane.node.dataDir", "' + gd_guard.ND + '");\nuser_pref("greatdane.pep.listen_port", 34874);\nuser_pref("greatdane.doge.listen_port", 23556);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\n')
++open(prof+"/user.js","w").write('user_pref("marionette.port", 2838);\nuser_pref("greatdane.node.dataDir", "' + gd_guard.safe(gd_guard.ND) + '");\nuser_pref("greatdane.pep.listen_port", 34874);\nuser_pref("greatdane.doge.listen_port", 23556);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\n')
+ p=subprocess.Popen(["arch","-"+ARCH,A,"-marionette","-remote-allow-system-access","-no-remote","-profile",prof],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+ m=Marionette(host="127.0.0.1",port=2838); m.start_session(); m.timeout.script=90
+ with m.using_context("chrome"):
+diff --git a/greatdane/tests/smoke.py b/greatdane/tests/smoke.py
+index 989ffd74fc..0b950724fb 100644
+--- a/greatdane/tests/smoke.py
++++ b/greatdane/tests/smoke.py
+@@ -6,7 +6,7 @@ from marionette_driver.marionette import Marionette
+ APP, ARCH = sys.argv[1], sys.argv[2]
+ SHOT = sys.argv[3] if len(sys.argv) > 3 else None
+ prof = gd_guard.profile("gd-test-")
+-open(prof + "/user.js", "w").write('user_pref("marionette.port", 2838);\nuser_pref("greatdane.node.dataDir", "' + gd_guard.ND + '");\nuser_pref("greatdane.pep.listen_port", 34874);\nuser_pref("greatdane.doge.listen_port", 23556);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\n')
++open(prof + "/user.js", "w").write('user_pref("marionette.port", 2838);\nuser_pref("greatdane.node.dataDir", "' + gd_guard.safe(gd_guard.ND) + '");\nuser_pref("greatdane.pep.listen_port", 34874);\nuser_pref("greatdane.doge.listen_port", 23556);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\n')
+ cmd = ["arch", "-" + ARCH, APP, "-marionette", "-remote-allow-system-access", "-no-remote", "-profile", prof]
+ p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+ m = Marionette(host="127.0.0.1", port=2838); m.start_session()
+diff --git a/greatdane/tests/v6check.py b/greatdane/tests/v6check.py
+index 5b32dd9e98..8fe28a880e 100644
+--- a/greatdane/tests/v6check.py
++++ b/greatdane/tests/v6check.py
+@@ -3,7 +3,7 @@ import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirnam
+ import gd_guard  # must be first: real-profile guard + throwaway dirs
+ import os, sys, subprocess, tempfile, time, socket, json
+ from marionette_driver.marionette import Marionette
+-APP, LISTEN, DD = sys.argv[1], sys.argv[2] == "on", gd_guard.ND
++APP, LISTEN, DD = sys.argv[1], sys.argv[2] == "on", gd_guard.safe(gd_guard.ND)
+ PP, DP, MP = 34874, 23556, 2838
+ prof = gd_guard.profile("gd-v6-")
+ up = ['user_pref("marionette.port", %d);' % MP, 'user_pref("greatdane.legacy.certCleanup", false);', 'user_pref("greatdane.legacy.import", false);',
+diff --git a/greatdane/tools/gd_guard.py b/greatdane/tools/gd_guard.py
+index d44a50e96c..57768c44b5 100644
+--- a/greatdane/tools/gd_guard.py
++++ b/greatdane/tools/gd_guard.py
+@@ -5,11 +5,14 @@ Import first in every suite. On import it:
+     and fails the suite (exit 97) at exit, or on check(), if they changed;
+   * creates throwaway mktemp dirs: gd_guard.profile(prefix) and gd_guard.ND
+     (node data dir), refusing any path inside the real GreatDANE dir or real
+-    node data dirs.
++    node data dirs, and any path not inside one of this run's mkdtemp roots;
++  * at exit, fails the suite (exit 96) if any created profile's user.js/prefs.js
++    points greatdane.node.dataDir outside the mkdtemp roots, or if new dirs
++    appeared in the greatdane/ source tree, the cwd, or $HOME during the run.
+ Env (testing the guard only): GD_GUARD_REAL_DIR overrides the watched dir,
+ e.g. to point at a COPY.
+ """
+-import atexit, hashlib, os, shutil, sys, tempfile
++import atexit, hashlib, os, re, shutil, sys, tempfile, time
+ 
+ REAL = os.path.realpath(os.environ.get("GD_GUARD_REAL_DIR") or
+                         os.path.expanduser("~/Library/Application Support/GreatDANE"))
+@@ -36,13 +39,29 @@ BASE = _snap()
+ _tmp = []
+ 
+ 
+-def safe(path):
+-    rp = os.path.realpath(path)
++def _forbidden(rp):
+     for f in FORBIDDEN:
+         if rp == f or rp.startswith(f + os.sep):
+-            sys.exit("gd_guard: REFUSING path inside real data dir: %s (%s)" % (path, f))
+-    if not rp.startswith(os.path.realpath(tempfile.gettempdir())):
+-        sys.exit("gd_guard: REFUSING non-throwaway path: %s" % path)
++            return f
++    return None
++
++
++def inroot(path):
++    """True if path is one of this run's mkdtemp roots or inside one."""
++    rp = os.path.realpath(path)
++    for r in (os.path.realpath(d) for d in _tmp):
++        if rp == r or rp.startswith(r + os.sep):
++            return True
++    return False
++
++
++def safe(path):
++    rp = os.path.realpath(path)
++    f = _forbidden(rp)
++    if f:
++        sys.exit("gd_guard: REFUSING path inside real data dir: %s (%s)" % (path, f))
++    if not os.path.isabs(path) or not inroot(path):
++        sys.exit("gd_guard: REFUSING path outside this run's mkdtemp roots: %r" % (path,))
+     return path
+ 
+ 
+@@ -52,6 +71,27 @@ def profile(prefix="gd-test-"):
+     return safe(d)
+ 
+ 
++TREE = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
++HOME = os.path.realpath(os.path.expanduser("~"))
++CWD = os.path.realpath(os.getcwd())
++_SKIP = {"__pycache__", ".git", ".pytest_cache"}
++
++
++def _dirs():
++    out = set()
++    for dp, dn, _ in os.walk(TREE):  # greatdane/ source tree: full walk (small)
++        dn[:] = [d for d in dn if d not in _SKIP]
++        out.update(os.path.join(dp, d) for d in dn)
++    for top in (HOME, CWD):  # top level only (cheap)
++        try:
++            out.update(os.path.realpath(e.path) for e in os.scandir(top) if e.is_dir(follow_symlinks=False))
++        except OSError:
++            pass
++    return out
++
++
++START_DIRS = _dirs()
++IGNORE = [os.path.realpath(p) for p in os.environ.get("GD_GUARD_IGNORE", "").split(os.pathsep) if p]
+ ND = tempfile.mkdtemp(prefix="gd-nodedata-")
+ _tmp.append(ND)
+ safe(ND)
+@@ -66,12 +106,46 @@ def check(where="check"):
+     return True
+ 
+ 
++_DD = re.compile(r'user_pref\(\s*"greatdane\.node\.dataDir"\s*,\s*"((?:[^"\\]|\\.)*)"')
++
++
++def bad_datadirs():
++    """dataDir prefs in created profiles that are not absolute paths inside a mkdtemp root."""
++    bad = []
++    for d in _tmp:
++        for n in ("user.js", "prefs.js"):
++            try:
++                txt = open(os.path.join(d, n), encoding="utf-8", errors="replace").read()
++            except OSError:
++                continue
++            for v in _DD.findall(txt):
++                if not os.path.isabs(v) or _forbidden(os.path.realpath(v)) or not inroot(v):
++                    bad.append("%s/%s dataDir=%r" % (d, n, v))
++    return bad
++
++
++def stray_dirs():
++    """Dirs created during the run in the source tree, the cwd, or $HOME (top level)."""
++    return sorted(d for d in _dirs() - START_DIRS
++                  if not any(d == i or d.startswith(i + os.sep) for i in IGNORE))
++
++
++def teardown_problems():
++    return ["out-of-root " + b for b in bad_datadirs()] + ["stray dir " + d for d in stray_dirs()]
++
++
+ @atexit.register
+ def _final():
+     check("exit")
++    probs = teardown_problems()
+     if not os.environ.get("GD_GUARD_KEEP"):
+         for d in _tmp:
+             shutil.rmtree(d, ignore_errors=True)
++    if probs:
++        for p in probs:
++            sys.stderr.write("gd_guard: FAIL (teardown): %s\n" % p)
++        sys.stderr.flush(); sys.stdout.flush()
++        os._exit(96)
+ 
+ 
+ def _watch():

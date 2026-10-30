@@ -3,7 +3,7 @@ import gd_guard  # must be first: real-profile guard + throwaway dirs
 import sys, subprocess, tempfile, time, json
 from marionette_driver.marionette import Marionette
 A,ARCH=sys.argv[1],sys.argv[2]; prof=gd_guard.profile("gd-push-")
-open(prof+"/user.js","w").write('user_pref("marionette.port", 2838);\nuser_pref("greatdane.node.dataDir", "' + gd_guard.ND + '");\nuser_pref("greatdane.pep.listen_port", 34874);\nuser_pref("greatdane.doge.listen_port", 23556);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\n')
+open(prof+"/user.js","w").write('user_pref("marionette.port", 2838);\nuser_pref("greatdane.node.dataDir", "' + gd_guard.safe(gd_guard.ND) + '");\nuser_pref("greatdane.pep.listen_port", 34874);\nuser_pref("greatdane.doge.listen_port", 23556);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\n')
 p=subprocess.Popen(["arch","-"+ARCH,A,"-marionette","-remote-allow-system-access","-no-remote","-profile",prof],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 m=Marionette(host="127.0.0.1",port=2838); m.start_session(); m.timeout.script=90
 with m.using_context("chrome"):

@@ -15,7 +15,7 @@ user_pref("media.eme.enabled", true);
 user_pref("media.navigator.permission.disabled", true);
 user_pref("media.peerconnection.ice.loopback", true);
 user_pref("media.peerconnection.ice.obfuscate_host_addresses", false);
-''' % gd_guard.ND)
+''' % gd_guard.safe(gd_guard.ND))
 p = subprocess.Popen(["arch","-"+ARCH,APP,"-marionette","-remote-allow-system-access","-no-remote","-profile",prof],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 m = Marionette(host="127.0.0.1", port=2838); m.start_session(); m.timeout.script = 240
 res = {"arch": ARCH}
