@@ -6,6 +6,16 @@ A,ARCH=sys.argv[1],sys.argv[2]; prof=gd_guard.profile("gd-push-")
 open(prof+"/user.js","w").write('user_pref("marionette.port", 2838);\nuser_pref("greatdane.node.dataDir", "' + gd_guard.safe(gd_guard.ND) + '");\nuser_pref("greatdane.pep.listen_port", 34874);\nuser_pref("greatdane.doge.listen_port", 23556);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\n')
 p=subprocess.Popen(["arch","-"+ARCH,A,"-marionette","-remote-allow-system-access","-no-remote","-profile",prof],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 m=Marionette(host="127.0.0.1",port=2838); m.start_session(); m.timeout.script=90
+
+# ABI gate: the running app must be the requested arch (arch -x86_64 => x86_64-gcc3, arm64 => aarch64-gcc3).
+_WANT_ABI = {"arm64": "aarch64-gcc3", "x86_64": "x86_64-gcc3"}[ARCH]
+with m.using_context("chrome"): _ABI = m.execute_script("return Services.appinfo.XPCOMABI")
+print("ABI-MARKER requested=%s XPCOMABI=%s %s" % (ARCH, _ABI, "OK" if _ABI == _WANT_ABI else "MISMATCH"), flush=True)
+if _ABI != _WANT_ABI:
+    try:
+        with m.using_context("chrome"): m.execute_script("Services.startup.quit(Ci.nsIAppStartup.eAttemptQuit)")
+    except Exception: pass
+    p.wait(30); sys.exit("FAIL: requested %s but app runs %s" % (ARCH, _ABI))
 with m.using_context("chrome"):
   pre=m.execute_script("""let g=n=>{try{return Services.prefs.getBoolPref(n)}catch(e){return 'unset'}};
    return {enabled:g('dom.push.enabled'),conn:g('dom.push.connection.enabled'),server:Services.prefs.getStringPref('dom.push.serverURL','')}""")

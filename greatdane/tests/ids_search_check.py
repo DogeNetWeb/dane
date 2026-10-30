@@ -43,6 +43,16 @@ check("bundle ID surf.dogecoin.dane", plist.get("CFBundleIdentifier") == "surf.d
 check("bundle name Dane", plist.get("CFBundleName") == "Dane", plist.get("CFBundleName"))
 p = subprocess.Popen(["arch", "-" + ARCH, APP, "-marionette", "-remote-allow-system-access", "-no-remote", "-profile", prof], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 m = Marionette(host="127.0.0.1", port=2840); m.start_session()
+
+# ABI gate: the running app must be the requested arch (arch -x86_64 => x86_64-gcc3, arm64 => aarch64-gcc3).
+_WANT_ABI = {"arm64": "aarch64-gcc3", "x86_64": "x86_64-gcc3"}[ARCH]
+with m.using_context("chrome"): _ABI = m.execute_script("return Services.appinfo.XPCOMABI")
+print("ABI-MARKER requested=%s XPCOMABI=%s %s" % (ARCH, _ABI, "OK" if _ABI == _WANT_ABI else "MISMATCH"), flush=True)
+if _ABI != _WANT_ABI:
+    try:
+        with m.using_context("chrome"): m.execute_script("Services.startup.quit(Ci.nsIAppStartup.eAttemptQuit)")
+    except Exception: pass
+    p.wait(30); sys.exit("FAIL: requested %s but app runs %s" % (ARCH, _ABI))
 try:
     with m.using_context("chrome"):
         r = m.execute_async_script("""const [resolve]=arguments;(async()=>{
@@ -81,7 +91,7 @@ try:
     time.sleep(0.5)
     missed = [k for k in r["kids"] if k not in CHILD]
     check("every live child (requestProcInfo) was captured", not missed, missed)
-    check("arch matches", ("aarch64" in r["abi"]) == (ARCH == "arm64"), r["abi"])
+    check("XPCOMABI == " + _WANT_ABI, r["abi"] == _WANT_ABI, r["abi"])
     check("stock engines present (>=4, incl. Google)", len(r["engines"]) >= 4 and any(e.startswith("Google") for e in r["engines"]), r["engines"])
     check("search suggestions on (shipped default; marionette forces urlbar.suggest.searches=false as a user value)", r["suggest"] and r["urlbarSuggestDefault"], r)
     check(".pepe/.doge name suggestions on", r["names"] and isinstance(r["prov"], list) and "registered-in-ProvidersManager" in r["prov"], r["prov"])

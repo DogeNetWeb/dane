@@ -12,6 +12,16 @@ logf = os.path.join(gd_guard.ND, "moz.log")
 env = dict(os.environ, MOZ_LOG=os.environ.get("GD_MOZ_LOG","PlatformDecoderModule:5,EME:5,GMP:4,sync"), MOZ_LOG_FILE=logf)
 p = subprocess.Popen(["arch","-"+ARCH,APP,"-marionette","-remote-allow-system-access","-no-remote","-profile",prof],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 m = Marionette(host="127.0.0.1", port=2839); m.start_session(); m.timeout.script = 240
+
+# ABI gate: the running app must be the requested arch (arch -x86_64 => x86_64-gcc3, arm64 => aarch64-gcc3).
+_WANT_ABI = {"arm64": "aarch64-gcc3", "x86_64": "x86_64-gcc3"}[ARCH]
+with m.using_context("chrome"): _ABI = m.execute_script("return Services.appinfo.XPCOMABI")
+print("ABI-MARKER requested=%s XPCOMABI=%s %s" % (ARCH, _ABI, "OK" if _ABI == _WANT_ABI else "MISMATCH"), flush=True)
+if _ABI != _WANT_ABI:
+    try:
+        with m.using_context("chrome"): m.execute_script("Services.startup.quit(Ci.nsIAppStartup.eAttemptQuit)")
+    except Exception: pass
+    p.wait(30); sys.exit("FAIL: requested %s but app runs %s" % (ARCH, _ABI))
 res = {"arch": ARCH}
 with m.using_context("chrome"):
     res["install"] = m.execute_async_script("""const done=arguments[arguments.length-1];
