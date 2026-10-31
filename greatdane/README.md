@@ -27,7 +27,10 @@ Decision: per the coordinator's record of its Oct 27 2026 conversation with nowo
   ~/Library/Preferences defaults domain and saved window state; LaunchServices URL-handler registrations for the
   old ID; and any LaunchAgents labelled with the old ID.
 - **No auto-update:** the old build can't update across the ID change. Users install the new dmg from
-  https://dogecoin.surf/dane/download/ and drag it over the old app. The greatdane.doge start page has this note.
+  https://dogecoin.surf/dane/download/ and drag it over the old app. If Finder doesn't offer Replace (the old app may be
+  named GreatDANE.app), delete GreatDANE.app from Applications first, then drag Dane in. The profile isn't affected.
+  The greatdane.doge start page has this note. Later updates are expected to install in-app once Dane's own update
+  signing (MAR key and update server) is in place; until then, updates are manual downloads.
 - **Optional cleanup**, only needed if the old app was ever run from its dmg and its privileged installer was allowed
   (upstream dmgInstallHelper.md, old name):
 
