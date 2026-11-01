@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Sun, 1 Nov 2026 09:05:23 -0600
+Subject: [PATCH 076/144] greatdane/tests: passkey_check is a readiness check;
+ free Marionette port, kill on quit timeout, abnormal child exit fails;
+ document example.com request
+
+---
+ greatdane/tests/README.md        |  2 +-
+ greatdane/tests/passkey_check.py | 31 ++++++++++++++++++++++++-------
+ 2 files changed, 25 insertions(+), 8 deletions(-)
+
+diff --git a/greatdane/tests/README.md b/greatdane/tests/README.md
+index 217fa54c13..aeb50f4dd3 100644
+--- a/greatdane/tests/README.md
++++ b/greatdane/tests/README.md
+@@ -13,4 +13,4 @@ The expected BuildID never comes from the app itself. Checks application.ini ==
+ run_gd_prefs.py: `run_gd_prefs.py <greatdane> [arm64|x86_64] [/abs/screens_dir]`. Without an arch it runs natively. Before this change, a second argument was taken as the screens dir.
+ guard_negative_test.py: proves gd_guard rejects out-of-root dataDir and safe() paths and stray dirs in the source tree. Launches no browser.
+ gd_guard now requires every profile and node data path to be inside this run's mkdtemp roots. At exit, it fails with code 96 if a profile's dataDir is outside them, or if new dirs appeared in greatdane/, the cwd, or $HOME.
+-passkey_check.py: `passkey_check.py <Dane.app> <arm64|x86_64> [--static-only]`. Passkey readiness (PASSKEYS-PLAN.md §5). Static: with no Contents/embedded.provisionprofile, no Mach-O may carry com.apple.developer.web-browser.public-key-credential or com.apple.application-identifier. With a profile, only the main app may carry both (MNL79V994R.surf.dogecoin.dane), and the profile must grant them. Runtime (gd_guard throwaway profile, ABI gate): security.webauthn.enable_macos_passkeys is true and PublicKeyCredential exists. Read-only on the bundle; changes no signing inputs.
++passkey_check.py: `passkey_check.py <Dane.app> <arm64|x86_64> [--static-only]`. Passkey READINESS check (PASSKEYS-PLAN.md §5). A pass is not proof that passkeys work: it only shows there are no stray restricted entitlements, the pref is on and the generic WebAuthn API exists. Static: with no Contents/embedded.provisionprofile, no Mach-O may carry com.apple.developer.web-browser.public-key-credential or com.apple.application-identifier. With a profile, only the main app may carry both (MNL79V994R.surf.dogecoin.dane), and the profile must grant them. Runtime (gd_guard throwaway profile, ABI gate, free Marionette port picked at run time, child killed if it does not quit in 30s): security.webauthn.enable_macos_passkeys is true and PublicKeyCredential exists. The runtime part makes one network request, to https://example.com/ (needed for a secure context). Read-only on the bundle; changes no signing inputs.
+diff --git a/greatdane/tests/passkey_check.py b/greatdane/tests/passkey_check.py
+index ee8d82d3be..84f3997b5a 100644
+--- a/greatdane/tests/passkey_check.py
++++ b/greatdane/tests/passkey_check.py
+@@ -1,4 +1,8 @@
+-# Passkey readiness check (PASSKEYS-PLAN.md section 5), read-only on the app bundle.
++# Passkey READINESS check (PASSKEYS-PLAN.md section 5), read-only on the app bundle.
++# A PASS is NOT proof that passkeys work. It only means: no stray restricted entitlements (or, once a profile is
++# embedded, a consistent entitlement/profile pairing), the pref security.webauthn.enable_macos_passkeys is on, and the
++# generic WebAuthn API (PublicKeyCredential, navigator.credentials) exists. It does not run a platform-passkey ceremony.
++# NETWORK: the runtime part navigates to https://example.com/ (one request) to get a secure context.
+ # Usage: passkey_check.py <Dane.app> <arm64|x86_64> [--static-only]
+ # Static (no launch): if Contents/embedded.provisionprofile is ABSENT, no Mach-O in the bundle may carry
+ #   com.apple.developer.web-browser.public-key-credential or com.apple.application-identifier (expected today).
+@@ -8,7 +12,7 @@
+ #   and PublicKeyCredential / navigator.credentials exist. Never touches signing inputs or Apple accounts.
+ import os as _os, sys as _sys; _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "tools"))
+ import gd_guard  # must be first: real-profile guard + throwaway dirs
+-import os, sys, subprocess, plistlib
++import os, sys, subprocess, plistlib, socket
+ PK = "com.apple.developer.web-browser.public-key-credential"
+ AI = "com.apple.application-identifier"
+ WANT_AI = "MNL79V994R.surf.dogecoin.dane"
+@@ -53,14 +57,22 @@ if has_prof:
+         if pe.get(AI) != WANT_AI: fails.append("profile %s=%r" % (AI, pe.get(AI)))
+         if pe.get(PK) is not True: fails.append("profile does not grant %s" % PK)
+     except Exception as ex: fails.append("profile unreadable: %s" % ex)
+-print("STATIC", "OK" if not fails else "FAIL", fails, flush=True)
++print("READINESS STATIC", "OK" if not fails else "FAIL", fails, flush=True)
+ 
+ if not STATIC_ONLY:
+     from marionette_driver.marionette import Marionette
++    def free_port():
++        s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close(); return port
++    MPORT = free_port()
++    c = socket.socket()
++    if c.connect_ex(("127.0.0.1", MPORT)) == 0:
++        sys.exit("FAIL: picked Marionette port %d but something is listening on it" % MPORT)
++    c.close()
++    print("marionette port:", MPORT)
+     pd = gd_guard.profile("gd-test-")
+-    open(pd + "/user.js", "w").write('user_pref("marionette.port", 2839);\nuser_pref("greatdane.node.dataDir", "' + gd_guard.safe(gd_guard.ND) + '");\nuser_pref("greatdane.pep.listen_port", 34875);\nuser_pref("greatdane.doge.listen_port", 23557);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\n')
++    open(pd + "/user.js", "w").write('user_pref("marionette.port", %d);\n' % MPORT + 'user_pref("greatdane.node.dataDir", "' + gd_guard.safe(gd_guard.ND) + '");\nuser_pref("greatdane.pep.listen_port", 34875);\nuser_pref("greatdane.doge.listen_port", 23557);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\n')
+     p = subprocess.Popen(["arch", "-" + ARCH, main, "-marionette", "-remote-allow-system-access", "-no-remote", "-profile", pd], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+-    m = Marionette(host="127.0.0.1", port=2839); m.start_session()
++    m = Marionette(host="127.0.0.1", port=MPORT); m.start_session()
+     want_abi = {"arm64": "aarch64-gcc3", "x86_64": "x86_64-gcc3"}[ARCH]
+     with m.using_context("chrome"):
+         abi = m.execute_script("return Services.appinfo.XPCOMABI")
+@@ -75,6 +87,11 @@ if not STATIC_ONLY:
+     try:
+         with m.using_context("chrome"): m.execute_script("Services.startup.quit(Ci.nsIAppStartup.eAttemptQuit)")
+     except Exception: pass
+-    p.wait(30); print(ARCH, "exit", p.returncode)
+-print("RESULT", "PASS" if not fails else "FAIL", fails)
++    try:
++        p.wait(30)
++    except subprocess.TimeoutExpired:
++        p.kill(); p.wait(10); fails.append("browser did not quit within 30s; killed")
++    print(ARCH, "exit", p.returncode)
++    if p.returncode != 0: fails.append("browser exited abnormally (%s)" % p.returncode)
++print("READINESS RESULT", "PASS" if not fails else "FAIL", fails)
+ sys.exit(1 if fails else 0)
