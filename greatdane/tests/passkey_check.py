@@ -4,7 +4,12 @@
 # generic WebAuthn API (PublicKeyCredential, navigator.credentials) exists. It does not run a platform-passkey ceremony.
 # NETWORK: the runtime part navigates to https://example.com/ (one request) to get a secure context, plus stock
 #   Firefox background traffic (e.g. Remote Settings, captive-portal and update checks) from the throwaway profile.
-# Usage: passkey_check.py <Dane.app> <arm64|x86_64> [--static-only]
+# Usage: passkey_check.py <App.app> <arm64|x86_64> [--static-only] [--stock] [--log-dir DIR]
+#   --stock: baseline mode for an unmodified Mozilla Firefox build. Launches Contents/MacOS/firefox and skips ONLY the
+#     Dane-specific parts (static entitlement/profile checks, greatdane.* prefs, the enable_macos_passkeys pref check).
+#   --log-dir DIR: every new ~/Library/Logs/DiagnosticReports entry seen during the run is copied into DIR.
+# Self-test: GD_PASSKEY_TEST_LEFTOVER=1 spawns a dummy /bin/sleep whose argv0 is "gd-leftover-selftest=<profile>/selftest"
+#   after the browser exits, to prove the leftover check finds it, kills it, and the run ends in FAIL.
 # A non-zero browser exit (crash, signal, kill) is a FAIL. Test hook: GD_PASSKEY_TEST_FORCE_KILL=1 SIGKILLs the browser
 #   group instead of quitting, to prove that path ends in FAIL with a non-zero script exit.
 # Static (no launch): if Contents/embedded.provisionprofile is ABSENT, no Mach-O in the bundle may carry
@@ -21,6 +26,8 @@ AI = "com.apple.application-identifier"
 WANT_AI = "MNL79V994R.surf.dogecoin.dane"
 APP, ARCH = os.path.realpath(sys.argv[1]), sys.argv[2]
 STATIC_ONLY = "--static-only" in sys.argv
+STOCK = "--stock" in sys.argv
+LOG_DIR = sys.argv[sys.argv.index("--log-dir") + 1] if "--log-dir" in sys.argv else None
 fails = []
 REPO = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 DIAG = os.path.expanduser("~/Library/Logs/DiagnosticReports")
@@ -34,18 +41,32 @@ print("git HEAD:", git("rev-parse", "HEAD"))
 print("git status --porcelain:", git("status", "--porcelain") or "<clean>", flush=True)
 DIAG_BEFORE = diag_list()
 print("DiagnosticReports before (%d):" % len(DIAG_BEFORE), DIAG_BEFORE, flush=True)
-PROTECTED = {41368, os.getpid()}
+PROTECTED = {os.getpid()}  # nothing else is hard-coded: only processes whose args contain our throwaway paths are touched
+
+def args_match(args, path):
+    # Plain-string (no regex) match of an exact path inside the full ps args string, with boundaries:
+    #   before: start of string, a space, or "="   after: end of string, a space, or "/".
+    # Searching the whole string (not split tokens) keeps paths that contain spaces intact.
+    for q in {path, os.path.realpath(path)}:
+        i = args.find(q)
+        while i != -1:
+            j = i + len(q)
+            if (i == 0 or args[i - 1] in " =") and (j == len(args) or args[j] in " /"): return True
+            i = args.find(q, i + 1)
+    return False
+
+def pid_args(pid):
+    return subprocess.run(["ps", "-ww", "-o", "args=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
 
 def procs_with_path(path):
-    # Exact, non-regex match: path must be a whole whitespace-separated argv element (or prefix of one followed by "/").
-    forms = {path, os.path.realpath(path)}; out = []
+    out = []
     r = subprocess.run(["ps", "-axww", "-o", "pid=,args="], capture_output=True, text=True)
     for line in r.stdout.splitlines():
         pid_s, _, args = line.strip().partition(" ")
         try: pid = int(pid_s)
         except ValueError: continue
         if pid in PROTECTED: continue
-        if any(t == q or t.startswith(q + "/") or t.endswith("=" + q) for q in forms for t in args.split()):
+        if args_match(args, path):
             out.append((pid, args))
     return out
 
@@ -64,7 +85,7 @@ for root, dirs, files in os.walk(APP):
     for f in files:
         p = os.path.join(root, f)
         if not os.path.islink(p) and os.access(p, os.X_OK) and macho(p): code.append(p)
-main = os.path.join(APP, "Contents/MacOS/greatdane")
+main = os.path.join(APP, "Contents/MacOS/" + ("firefox" if STOCK else "greatdane"))
 prof = os.path.join(APP, "Contents/embedded.provisionprofile")
 has_prof = os.path.exists(prof)
 print("app:", APP); print("mach-o files:", len(code)); print("embedded.provisionprofile:", "present" if has_prof else "absent")
@@ -86,13 +107,15 @@ if has_prof:
         if pe.get(AI) != WANT_AI: fails.append("profile %s=%r" % (AI, pe.get(AI)))
         if pe.get(PK) is not True: fails.append("profile does not grant %s" % PK)
     except Exception as ex: fails.append("profile unreadable: %s" % ex)
+if STOCK:
+    print("STOCK MODE: Dane-specific static checks skipped:", fails or "none would have failed"); fails = []
 print("READINESS STATIC", "OK" if not fails else "FAIL", fails, flush=True)
 
 if not STATIC_ONLY:
     from marionette_driver.marionette import Marionette
     pd = gd_guard.profile("gd-test-")
     # marionette.port=0: Firefox binds a free port itself and writes it to <profile>/MarionetteActivePort (no race).
-    open(pd + "/user.js", "w").write('user_pref("marionette.port", 0);\n' + 'user_pref("greatdane.node.dataDir", "' + gd_guard.safe(gd_guard.ND) + '");\nuser_pref("greatdane.pep.listen_port", 34875);\nuser_pref("greatdane.doge.listen_port", 23557);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\n')
+    open(pd + "/user.js", "w").write('user_pref("marionette.port", 0);\nuser_pref("browser.shell.checkDefaultBrowser", false);\n' + ("" if STOCK else 'user_pref("greatdane.node.dataDir", "' + gd_guard.safe(gd_guard.ND) + '");\nuser_pref("greatdane.pep.listen_port", 34875);\nuser_pref("greatdane.doge.listen_port", 23557);\nuser_pref("greatdane.legacy.certCleanup", false);\nuser_pref("greatdane.legacy.import", false);\nuser_pref("browser.shell.checkDefaultBrowser", false);\n'))
     p = subprocess.Popen(["arch", "-" + ARCH, main, "-marionette", "-remote-allow-system-access", "-no-remote", "-profile", pd],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
     def killgrp(sig=signal.SIGKILL):
@@ -118,7 +141,8 @@ if not STATIC_ONLY:
         m.navigate("https://example.com/")
         api = m.execute_script("return [typeof PublicKeyCredential, typeof navigator.credentials, isSecureContext]")
         print("runtime: enable_macos_passkeys=%s api=%s" % (pref, api))
-        if pref is not True: fails.append("pref security.webauthn.enable_macos_passkeys is not true")
+        if STOCK: print("STOCK MODE: enable_macos_passkeys pref check skipped")
+        elif pref is not True: fails.append("pref security.webauthn.enable_macos_passkeys is not true")
         if api[0] != "function" or api[1] != "object": fails.append("WebAuthn API missing: %s" % api)
     except Exception as ex:
         fails.append("marionette section error: %s: %s" % (type(ex).__name__, ex))
@@ -140,6 +164,9 @@ if not STATIC_ONLY:
         print(ARCH, "exit", p.returncode)
         if p.returncode != 0 and not killed: fails.append("browser exited abnormally (%s)" % p.returncode)
         time.sleep(1)
+        if os.environ.get("GD_PASSKEY_TEST_LEFTOVER") == "1":
+            dummy = subprocess.Popen(["gd-leftover-selftest=" + os.path.join(pd, "selftest"), "300"], executable="/bin/sleep", start_new_session=True)
+            time.sleep(0.5); print("SELF-TEST: spawned dummy sleep pid %d args: %s" % (dummy.pid, pid_args(dummy.pid)))
         for label, path in (("profile", pd), ("node data dir", gd_guard.ND)):
             left = procs_with_path(path)
             if left:
@@ -147,12 +174,21 @@ if not STATIC_ONLY:
                 for pid, args in left: print("  %d %s" % (pid, args))
                 fails.append("processes left using the throwaway %s: PIDs %s" % (label, [x[0] for x in left]))
                 for pid, args in left:
-                    if path in args or os.path.realpath(path) in args:  # only kill processes whose command line contains this exact path
+                    if args_match(pid_args(pid), path):  # re-read args right before killing; same boundary matcher
                         try: os.kill(pid, signal.SIGKILL); print("  killed", pid)
                         except ProcessLookupError: pass
             else: print("leftover processes on %s: none" % label)
+        if os.environ.get("GD_PASSKEY_TEST_LEFTOVER") == "1":
+            time.sleep(0.5); print("SELF-TEST: dummy pid %d %s" % (dummy.pid, "gone (killed)" if dummy.poll() is not None else "STILL ALIVE"))
+            if dummy.poll() is None: dummy.kill(); fails.append("self-test dummy survived the leftover check")
 DIAG_AFTER = diag_list()
 print("DiagnosticReports after (%d):" % len(DIAG_AFTER), DIAG_AFTER)
-print("DiagnosticReports new this run:", sorted(set(DIAG_AFTER) - set(DIAG_BEFORE)) or "none", flush=True)
+NEW_DIAG = sorted(set(DIAG_AFTER) - set(DIAG_BEFORE))
+print("DiagnosticReports new this run:", NEW_DIAG or "none", flush=True)
+if LOG_DIR and NEW_DIAG:
+    import shutil; os.makedirs(LOG_DIR, exist_ok=True)
+    for n in NEW_DIAG:
+        src = os.path.join(DIAG, n)
+        if os.path.isfile(src): shutil.copy2(src, LOG_DIR); print("copied crash report:", n, "->", LOG_DIR)
 print("READINESS RESULT", "PASS" if not fails else "FAIL", fails, flush=True)
 sys.exit(1 if fails else 0)
