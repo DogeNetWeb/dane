@@ -75,3 +75,4 @@
 0075-greatdane-tests-add-passkey_check.py-entitlement-pro.patch
 0076-greatdane-tests-passkey_check-is-a-readiness-check-f.patch
 0077-greatdane-tests-passkey_check-fails-on-any-abnormal-.patch
+0078-passkey_check-exact-path-leftover-check-for-profile-.patch

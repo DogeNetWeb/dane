@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Sun, 1 Nov 2026 13:09:49 -0600
+Subject: [PATCH 078/144] passkey_check: exact-path leftover check for profile
+ and node data dir (PIDs, scoped kill); per-run git/date/DiagnosticReports
+ logging
+
+---
+ greatdane/tests/passkey_check.py | 45 ++++++++++++++++++++++++++++----
+ 1 file changed, 40 insertions(+), 5 deletions(-)
+
+diff --git a/greatdane/tests/passkey_check.py b/greatdane/tests/passkey_check.py
+index 5358ad263f..c1eb550ae5 100644
+--- a/greatdane/tests/passkey_check.py
++++ b/greatdane/tests/passkey_check.py
+@@ -22,6 +22,32 @@ WANT_AI = "MNL79V994R.surf.dogecoin.dane"
+ APP, ARCH = os.path.realpath(sys.argv[1]), sys.argv[2]
+ STATIC_ONLY = "--static-only" in sys.argv
+ fails = []
++REPO = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
++DIAG = os.path.expanduser("~/Library/Logs/DiagnosticReports")
++def git(*a):
++    return subprocess.run(["git", "-C", REPO] + list(a), capture_output=True, text=True).stdout.strip()
++def diag_list():
++    try: return sorted(os.listdir(DIAG))
++    except OSError as ex: return ["<unreadable: %s>" % ex]
++print("run date:", time.strftime("%Y-%m-%d %H:%M:%S %Z"))
++print("git HEAD:", git("rev-parse", "HEAD"))
++print("git status --porcelain:", git("status", "--porcelain") or "<clean>", flush=True)
++DIAG_BEFORE = diag_list()
++print("DiagnosticReports before (%d):" % len(DIAG_BEFORE), DIAG_BEFORE, flush=True)
++PROTECTED = {41368, os.getpid()}
++
++def procs_with_path(path):
++    # Exact, non-regex match: path must be a whole whitespace-separated argv element (or prefix of one followed by "/").
++    forms = {path, os.path.realpath(path)}; out = []
++    r = subprocess.run(["ps", "-axww", "-o", "pid=,args="], capture_output=True, text=True)
++    for line in r.stdout.splitlines():
++        pid_s, _, args = line.strip().partition(" ")
++        try: pid = int(pid_s)
++        except ValueError: continue
++        if pid in PROTECTED: continue
++        if any(t == q or t.startswith(q + "/") or t.endswith("=" + q) for q in forms for t in args.split()):
++            out.append((pid, args))
++    return out
+ 
+ def ents(path):
+     r = subprocess.run(["codesign", "-d", "--entitlements", "-", "--xml", path], capture_output=True)
+@@ -114,10 +140,19 @@ if not STATIC_ONLY:
+         print(ARCH, "exit", p.returncode)
+         if p.returncode != 0 and not killed: fails.append("browser exited abnormally (%s)" % p.returncode)
+         time.sleep(1)
+-        left = subprocess.run(["pgrep", "-fl", pd], capture_output=True, text=True).stdout.strip()
+-        if left:
+-            fails.append("processes left using the throwaway profile: %s" % left.replace("\n", " | "))
+-            killgrp()
+-        else: print("leftover processes on profile: none")
++        for label, path in (("profile", pd), ("node data dir", gd_guard.ND)):
++            left = procs_with_path(path)
++            if left:
++                print("leftover processes on %s %s: PIDs %s" % (label, path, [x[0] for x in left]))
++                for pid, args in left: print("  %d %s" % (pid, args))
++                fails.append("processes left using the throwaway %s: PIDs %s" % (label, [x[0] for x in left]))
++                for pid, args in left:
++                    if path in args or os.path.realpath(path) in args:  # only kill processes whose command line contains this exact path
++                        try: os.kill(pid, signal.SIGKILL); print("  killed", pid)
++                        except ProcessLookupError: pass
++            else: print("leftover processes on %s: none" % label)
++DIAG_AFTER = diag_list()
++print("DiagnosticReports after (%d):" % len(DIAG_AFTER), DIAG_AFTER)
++print("DiagnosticReports new this run:", sorted(set(DIAG_AFTER) - set(DIAG_BEFORE)) or "none", flush=True)
+ print("READINESS RESULT", "PASS" if not fails else "FAIL", fails, flush=True)
+ sys.exit(1 if fails else 0)
