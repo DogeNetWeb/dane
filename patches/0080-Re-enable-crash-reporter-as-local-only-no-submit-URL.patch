@@ -1,0 +1,84 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Sun, 1 Nov 2026 17:08:02 -0600
+Subject: [PATCH 080/144] Re-enable crash reporter as local-only: no submit
+ URL, auto-submit and submit prompts off; README notes Rosetta issue (also on
+ stock ESR) and native-Intel gate
+
+---
+ browser/branding/greatdane/pref/firefox-branding.js | 9 +++++++++
+ build/application.ini.in                            | 3 ++-
+ greatdane/README.md                                 | 6 ++++++
+ mozconfig                                           | 1 -
+ mozconfig-x86_64                                    | 1 -
+ 5 files changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/browser/branding/greatdane/pref/firefox-branding.js b/browser/branding/greatdane/pref/firefox-branding.js
+index f75ee9fdb4..8aeae5325e 100644
+--- a/browser/branding/greatdane/pref/firefox-branding.js
++++ b/browser/branding/greatdane/pref/firefox-branding.js
+@@ -49,3 +49,12 @@ pref("browser.contentblocking.report.hide_vpn_banner", true);
+ // GreatDANE: import bookmarks/history/passwords from a real Firefox install.
+ // Distinct from browser.migrate.firefox.enabled (profile-refresh migrator).
+ pref("browser.migrate.mozilla-firefox.enabled", true);
++
++// GreatDANE: crash reporter is enabled for local diagnostics only.
++// Reports are never submitted automatically and the submit prompts are off;
++// application.ini carries an empty [Crash Reporter] ServerURL.
++pref("browser.crashReports.unsubmittedCheck.enabled", false);
++pref("browser.crashReports.unsubmittedCheck.autoSubmit2", false);
++pref("services.sync.prefs.sync.browser.crashReports.unsubmittedCheck.autoSubmit2", false);
++pref("browser.tabs.crashReporting.sendReport", false);
++pref("browser.tabs.crashReporting.includeURL", false);
+diff --git a/build/application.ini.in b/build/application.ini.in
+index 377b63809f..8d8183cf35 100644
+--- a/build/application.ini.in
++++ b/build/application.ini.in
+@@ -47,7 +47,8 @@ EnableProfileMigrator=1
+ #if MOZ_CRASHREPORTER
+ [Crash Reporter]
+ Enabled=1
+-ServerURL=@MOZ_CRASHREPORTER_URL@/submit?id=@MOZ_APP_ID@&version=@MOZ_APP_VERSION@&buildid=@MOZ_BUILDID@
++# GreatDANE: crash reports stay local-only. No submit URL (never Mozilla Socorro).
++ServerURL=
+ #endif
+ 
+ #if MOZ_UPDATER
+diff --git a/greatdane/README.md b/greatdane/README.md
+index a22ebffbf7..3f6bad795e 100644
+--- a/greatdane/README.md
++++ b/greatdane/README.md
+@@ -37,3 +37,9 @@ Decision: per the coordinator's record of its Oct 27 2026 conversation with nowo
+       sudo launchctl unload /Library/LaunchDaemons/org.mozilla.dmgInstallHelper.plist
+       sudo rm /Library/LaunchDaemons/org.mozilla.dmgInstallHelper.plist
+       sudo rm /Library/PrivilegedHelperTools/org.mozilla.dmgInstallHelper
++
++## Crash reporter (local-only) and known Rosetta issue
++
++- The crash reporter is enabled again (`--disable-crashreporter` was removed from both mozconfigs), but it is **local-only**. application.ini has an empty `[Crash Reporter] ServerURL`, so there is no Mozilla or other submit endpoint. Auto-submit (`browser.crashReports.unsubmittedCheck.autoSubmit2`), the unsubmitted-report prompt and tab-crash "send report" are all off by default (branding prefs). Minidumps stay in the profile's "Crash Reports" folder.
++- Known issue: the x86_64 (Intel) slice running under Rosetta 2 on Apple silicon can intermittently abort with `assertion failed [arm_interval().contains(address)]: code fragment does not contain the given arm address`. This is a Rosetta 2 fault, also reproduced on stock Firefox ESR (153.6.0esr), and the rate varies a lot between sessions (about 0–28%). It is not a GreatDANE regression.
++- Native-Intel gate: x86_64 release sign-off has to come from runs on a native Intel Mac. Rosetta runs on Apple silicon don't count as passing or failing that gate.
+diff --git a/mozconfig b/mozconfig
+index 96193bd4cc..b460a3ebec 100644
+--- a/mozconfig
++++ b/mozconfig
+@@ -5,7 +5,6 @@ ac_add_options --with-app-basename=GreatDANE
+ ac_add_options --with-distribution-id=surf
+ ac_add_options --disable-tests
+ ac_add_options --disable-debug
+-ac_add_options --disable-crashreporter
+ mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-gd
+ # Updates: ESR update channel; updater accepts only greatdane-esr MARs (matches updates/make-mars.sh).
+ ac_add_options --enable-update-channel=esr
+diff --git a/mozconfig-x86_64 b/mozconfig-x86_64
+index 4da8bb510c..de8a354703 100644
+--- a/mozconfig-x86_64
++++ b/mozconfig-x86_64
+@@ -7,7 +7,6 @@ ac_add_options --with-app-basename=GreatDANE
+ ac_add_options --with-distribution-id=surf
+ ac_add_options --disable-tests
+ ac_add_options --disable-debug
+-ac_add_options --disable-crashreporter
+ mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-gd-x86_64
+ ac_add_options --with-onnx-runtime
+ ac_add_options --enable-bootstrap=onnxruntime-x86_64-apple-darwin

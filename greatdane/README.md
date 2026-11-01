@@ -37,3 +37,9 @@ Decision: per the coordinator's record of its Oct 27 2026 conversation with nowo
       sudo launchctl unload /Library/LaunchDaemons/org.mozilla.dmgInstallHelper.plist
       sudo rm /Library/LaunchDaemons/org.mozilla.dmgInstallHelper.plist
       sudo rm /Library/PrivilegedHelperTools/org.mozilla.dmgInstallHelper
+
+## Crash reporter (local-only) and known Rosetta issue
+
+- The crash reporter is enabled again (`--disable-crashreporter` was removed from both mozconfigs), but it is **local-only**. application.ini has an empty `[Crash Reporter] ServerURL`, so there is no Mozilla or other submit endpoint. Auto-submit (`browser.crashReports.unsubmittedCheck.autoSubmit2`), the unsubmitted-report prompt and tab-crash "send report" are all off by default (branding prefs). Minidumps stay in the profile's "Crash Reports" folder.
+- Known issue: the x86_64 (Intel) slice running under Rosetta 2 on Apple silicon can intermittently abort with `assertion failed [arm_interval().contains(address)]: code fragment does not contain the given arm address`. This is a Rosetta 2 fault, also reproduced on stock Firefox ESR (153.6.0esr), and the rate varies a lot between sessions (about 0–28%). It is not a GreatDANE regression.
+- Native-Intel gate: x86_64 release sign-off has to come from runs on a native Intel Mac. Rosetta runs on Apple silicon don't count as passing or failing that gate.
