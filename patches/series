@@ -74,3 +74,4 @@
 0074-greatdane-README-reinstall-note-delete-GreatDANE.app.patch
 0075-greatdane-tests-add-passkey_check.py-entitlement-pro.patch
 0076-greatdane-tests-passkey_check-is-a-readiness-check-f.patch
+0077-greatdane-tests-passkey_check-fails-on-any-abnormal-.patch
