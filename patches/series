@@ -72,3 +72,4 @@
 0072-greatdane-add-README-documenting-bundle-ID-migration.patch
 0073-greatdane-README-cover-0054-updater-OU-change-and-00.patch
 0074-greatdane-README-reinstall-note-delete-GreatDANE.app.patch
+0075-greatdane-tests-add-passkey_check.py-entitlement-pro.patch
