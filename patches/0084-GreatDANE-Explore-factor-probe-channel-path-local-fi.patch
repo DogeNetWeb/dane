@@ -1,0 +1,310 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Thu, 5 Nov 2026 20:33:40 -0600
+Subject: [PATCH 084/144] GreatDANE Explore: factor probe channel path; local
+ fixture tests for 5xx, no-redirect, body cap, default-8 budget
+
+---
+ .../greatdane/GreatDANEExplore.sys.mjs        | 154 +++++++++++-------
+ .../test/unit/test_GreatDANEExplore.js        | 109 +++++++++++++
+ 2 files changed, 206 insertions(+), 57 deletions(-)
+
+diff --git a/browser/components/greatdane/GreatDANEExplore.sys.mjs b/browser/components/greatdane/GreatDANEExplore.sys.mjs
+index c61a084a7b..84a5236dc2 100644
+--- a/browser/components/greatdane/GreatDANEExplore.sys.mjs
++++ b/browser/components/greatdane/GreatDANEExplore.sys.mjs
+@@ -349,73 +349,110 @@ export async function probeHttps(
+     return { ok: false, skipped: block, status: 0, host, url, title: host };
+   }
+   let base = { host, url: "https://" + host + "/", title: host };
+-  return new Promise(resolve => {
+-    let ch;
+-    try {
+-      // Normal necko channel: same ProtocolProxyFilter + PSM/TLSA verifier as
+-      // a tab. Anonymous (no cookies/auth), uncached, no redirects followed
+-      // (a 3xx still proves TLS+HTTP completed), body discarded, and no
+-      // docshell, so no history/Places writes.
+-      ch = lazy.NetUtil.newChannel({
+-        uri: "https://" + host + "/",
+-        loadUsingSystemPrincipal: true,
+-        contentPolicyType: Ci.nsIContentPolicy.TYPE_OTHER,
+-      }).QueryInterface(Ci.nsIHttpChannel);
+-      ch.loadFlags |=
+-        Ci.nsIRequest.LOAD_ANONYMOUS |
+-        Ci.nsIRequest.LOAD_BYPASS_CACHE |
+-        Ci.nsIRequest.INHIBIT_CACHING |
+-        Ci.nsIChannel.LOAD_BACKGROUND;
+-      ch.redirectionLimit = 0;
+-    } catch (e) {
+-      resolve({ ...base, ok: false, status: 0, error: "CHANNEL" });
+-      return;
++  let ch;
++  try {
++    // Normal necko channel: same ProtocolProxyFilter + PSM/TLSA verifier as
++    // a tab. Anonymous (no cookies/auth), uncached, no redirects followed
++    // (a 3xx still proves TLS+HTTP completed), body discarded at a cap, and
++    // no docshell, so no history/Places writes.
++    ch = newProbeChannel("https://" + host + "/");
++  } catch (e) {
++    return { ...base, ok: false, status: 0, error: "CHANNEL" };
++  }
++  let r = await runProbeChannel(ch, timeoutMs);
++  return { ...base, ok: r.ok, status: r.status, error: r.error };
++}
++
++export const PROBE_BODY_CAP = 65536;
++
++/** Build the anonymous, uncached, no-redirect probe channel for `url`. */
++export function newProbeChannel(url) {
++  let ch = lazy.NetUtil.newChannel({
++    uri: url,
++    loadUsingSystemPrincipal: true,
++    contentPolicyType: Ci.nsIContentPolicy.TYPE_OTHER,
++  }).QueryInterface(Ci.nsIHttpChannel);
++  ch.loadFlags |=
++    Ci.nsIRequest.LOAD_ANONYMOUS |
++    Ci.nsIRequest.LOAD_BYPASS_CACHE |
++    Ci.nsIRequest.INHIBIT_CACHING |
++    Ci.nsIChannel.LOAD_BACKGROUND;
++  ch.redirectionLimit = 0;
++  return ch;
++}
++
++/**
++ * Pure status classification shared by the real channel path.
++ * ok iff no transport/TLS error and 200 <= status < 500.
++ */
++export function classifyProbe({ rv, status, timedOut, secError }) {
++  let error = "";
++  if (timedOut) {
++    error = "TIMEOUT";
++  } else if (!Components.isSuccessCode(rv) && rv != Cr.NS_BINDING_ABORTED) {
++    if (rv == Cr.NS_ERROR_REDIRECT_LOOP && status >= 300 && status < 400) {
++      error = ""; // redirectionLimit hit: server answered with 3xx
++    } else {
++      // Real reason, e.g. NS_ERROR_UNKNOWN_HOST, PROXY_CONNECTION_REFUSED,
++      // or a PSM/TLSA failure (MOZILLA_PKIX_ERROR_KEY_PINNING_FAILURE).
++      error =
++        secError ||
++        ChromeUtils.getXPCOMErrorName?.(rv) ||
++        "0x" + (rv >>> 0).toString(16);
+     }
++  }
++  let ok = !error && status >= 200 && status < 500;
++  if (!error && !ok) {
++    error = "HTTP_" + status;
++  }
++  return { ok, status, error };
++}
++
++/** asyncOpen `ch`, cap body, enforce timeout, classify. Resolves {ok,status,error,bytes,capped}. */
++export function runProbeChannel(ch, timeoutMs) {
++  return new Promise(resolve => {
+     let settled = false;
+     let timedOut = false;
++    let capped = false;
+     let bytes = 0;
+     let timer = lazy.setTimeout(() => {
+       timedOut = true;
+       ch.cancel(Cr.NS_ERROR_NET_TIMEOUT);
+     }, Math.max(500, timeoutMs));
+-    ch.asyncOpen({
+-      onStartRequest() {},
+-      onDataAvailable(req, stream, off, count) {
+-        bytes += count;
+-        lazy.NetUtil.readInputStreamToString(stream, count);
+-        if (bytes > 65536) {
+-          req.cancel(Cr.NS_BINDING_ABORTED); // enough: server answered
+-        }
+-      },
+-      onStopRequest(req, rv) {
+-        if (settled) return;
+-        settled = true;
+-        lazy.clearTimeout(timer);
+-        let status = 0;
+-        try {
+-          status = ch.responseStatus;
+-        } catch (e) {}
+-        let error = "";
+-        if (timedOut) {
+-          error = "TIMEOUT";
+-        } else if (!Components.isSuccessCode(rv) && rv != Cr.NS_BINDING_ABORTED) {
+-          // Real reason, e.g. NS_ERROR_UNKNOWN_HOST, PROXY_CONNECTION_REFUSED,
+-          // or a PSM/TLSA failure (MOZILLA_PKIX_ERROR_KEY_PINNING_FAILURE).
++    try {
++      ch.asyncOpen({
++        onStartRequest() {},
++        onDataAvailable(req, stream, off, count) {
++          bytes += count;
++          lazy.NetUtil.readInputStreamToString(stream, count);
++          if (bytes > PROBE_BODY_CAP && !capped) {
++            capped = true;
++            req.cancel(Cr.NS_BINDING_ABORTED); // enough: server answered
++          }
++        },
++        onStopRequest(req, rv) {
++          if (settled) return;
++          settled = true;
++          lazy.clearTimeout(timer);
++          let status = 0;
+           try {
+-            error = ch.securityInfo?.errorCodeString || "";
++            status = ch.responseStatus;
+           } catch (e) {}
+-          if (!error) {
+-            error = ChromeUtils.getXPCOMErrorName?.(rv) || "0x" + (rv >>> 0).toString(16);
+-          }
+-          if (rv == Cr.NS_ERROR_REDIRECT_LOOP && status >= 300 && status < 400) {
+-            error = ""; // redirectionLimit hit: server answered with 3xx
+-          }
+-        }
+-        let ok = !error && status >= 200 && status < 500;
+-        if (!error && !ok) error = "HTTP_" + status;
+-        resolve({ ...base, ok, status, error });
+-      },
+-    });
++          let secError = "";
++          try {
++            secError = ch.securityInfo?.errorCodeString || "";
++          } catch (e) {}
++          resolve({
++            ...classifyProbe({ rv, status, timedOut, secError }),
++            bytes,
++            capped,
++          });
++        },
++      });
++    } catch (e) {
++      lazy.clearTimeout(timer);
++      resolve({ ok: false, status: 0, error: "CHANNEL", bytes: 0, capped: false });
++    }
+   });
+ }
+ 
+@@ -560,6 +597,9 @@ export const GreatDANEExplore = {
+   canStartSampleRound,
+   sampleCandidates,
+   probeHttps,
++  newProbeChannel,
++  classifyProbe,
++  runProbeChannel,
+   refreshCache,
+   rowsFromCache,
+   getExploreRows,
+diff --git a/browser/components/greatdane/test/unit/test_GreatDANEExplore.js b/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
+index 5716d2ddc2..4b34f7ade1 100644
+--- a/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
++++ b/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
+@@ -137,3 +137,112 @@ add_task(async function test_budget_persists_across_reload_and_time() {
+   Assert.equal(globalBudgetRemaining(c, later), DEFAULT_GLOBAL_BUDGET);
+   Assert.ok(!hostProbedRecently(c, "a.doge", later));
+ });
++
++// ---- Probe status path (isolated local fixture; no chain DNS/TLSA). ----
++// Uses the same newProbeChannel()/runProbeChannel()/classifyProbe() code as
++// probeHttps(), against a loopback httpd.js server over plain HTTP. TLS/TLSA
++// is NOT exercised here (that is covered by live packaged-build runs).
++const { HttpServer } = ChromeUtils.importESModule(
++  "resource://testing-common/httpd.sys.mjs"
++);
++
++add_task(function test_classify_status() {
++  const { classifyProbe } = ChromeUtils.importESModule(
++    "resource:///modules/GreatDANEExplore.sys.mjs"
++  );
++  let ok = (status, rv = Cr.NS_OK, extra = {}) =>
++    classifyProbe({ rv, status, timedOut: false, secError: "", ...extra });
++  Assert.deepEqual(ok(200), { ok: true, status: 200, error: "" });
++  Assert.ok(ok(404).ok);
++  Assert.deepEqual(ok(500), { ok: false, status: 500, error: "HTTP_500" });
++  Assert.deepEqual(ok(503), { ok: false, status: 503, error: "HTTP_503" });
++  Assert.ok(ok(302, Cr.NS_ERROR_REDIRECT_LOOP).ok);
++  Assert.ok(ok(200, Cr.NS_BINDING_ABORTED).ok, "body cap cancel is not an error");
++  Assert.equal(ok(0, Cr.NS_ERROR_NET_TIMEOUT, { timedOut: true }).error, "TIMEOUT");
++  Assert.equal(
++    ok(0, Cr.NS_ERROR_FAILURE, { secError: "MOZILLA_PKIX_ERROR_KEY_PINNING_FAILURE" }).error,
++    "MOZILLA_PKIX_ERROR_KEY_PINNING_FAILURE"
++  );
++  Assert.ok(!ok(0, Cr.NS_ERROR_CONNECTION_REFUSED).ok);
++});
++
++add_task(async function test_probe_channel_fixture() {
++  const { newProbeChannel, runProbeChannel, PROBE_BODY_CAP } =
++    ChromeUtils.importESModule("resource:///modules/GreatDANEExplore.sys.mjs");
++  let hits = { target: 0, cookie: null };
++  let srv = new HttpServer();
++  srv.registerPathHandler("/ok", (req, resp) => {
++    hits.cookie = req.hasHeader("Cookie") ? req.getHeader("Cookie") : null;
++    resp.setStatusLine(req.httpVersion, 200, "OK");
++    resp.write("hello");
++  });
++  srv.registerPathHandler("/e500", (req, resp) => {
++    resp.setStatusLine(req.httpVersion, 500, "Internal Server Error");
++    resp.write("x");
++  });
++  srv.registerPathHandler("/e503", (req, resp) => {
++    resp.setStatusLine(req.httpVersion, 503, "Unavailable");
++  });
++  srv.registerPathHandler("/redir", (req, resp) => {
++    resp.setStatusLine(req.httpVersion, 302, "Found");
++    resp.setHeader("Location", "http://localhost:" + srv.identity.primaryPort + "/target");
++  });
++  srv.registerPathHandler("/target", (req, resp) => {
++    hits.target++;
++    resp.setStatusLine(req.httpVersion, 200, "OK");
++  });
++  srv.registerPathHandler("/big", (req, resp) => {
++    resp.setStatusLine(req.httpVersion, 200, "OK");
++    resp.write("a".repeat(PROBE_BODY_CAP * 8));
++  });
++  srv.start(-1);
++  let base = "http://localhost:" + srv.identity.primaryPort;
++  try {
++    let r = await runProbeChannel(newProbeChannel(base + "/ok"), 5000);
++    Assert.ok(r.ok);
++    Assert.equal(r.status, 200);
++    Assert.equal(hits.cookie, null, "anonymous: no cookies sent");
++
++    r = await runProbeChannel(newProbeChannel(base + "/e500"), 5000);
++    Assert.ok(!r.ok);
++    Assert.equal(r.error, "HTTP_500");
++    r = await runProbeChannel(newProbeChannel(base + "/e503"), 5000);
++    Assert.equal(r.error, "HTTP_503");
++
++    r = await runProbeChannel(newProbeChannel(base + "/redir"), 5000);
++    Assert.equal(r.status, 302);
++    Assert.ok(r.ok, "3xx counts as answered");
++    Assert.equal(hits.target, 0, "redirect not followed");
++
++    r = await runProbeChannel(newProbeChannel(base + "/big"), 5000);
++    Assert.ok(r.ok);
++    Assert.ok(r.capped, "body read cancelled at cap");
++    Assert.less(r.bytes, PROBE_BODY_CAP * 8);
++  } finally {
++    await new Promise(res => srv.stop(res));
++  }
++  // Unreachable port: transport error surfaces.
++  let r = await runProbeChannel(newProbeChannel("http://127.0.0.1:1/"), 3000);
++  Assert.ok(!r.ok);
++  Assert.ok(r.error.length);
++});
++
++add_task(async function test_default8_round_restart_and_time_advance() {
++  do_get_profile();
++  Services.prefs.clearUserPref("greatdane.explore.globalBudgetPerWeek");
++  const { readCache, writeCache, globalBudgetRemaining, canStartSampleRound } =
++    ChromeUtils.importESModule("resource:///modules/GreatDANEExplore.sys.mjs");
++  let now = Date.now();
++  let log = [];
++  for (let i = 0; i < 8; i++) {
++    log.push({ host: "h" + i + ".doge", at: now - i * 1000, ok: i % 2 == 0, status: 200, error: "" });
++  }
++  await writeCache({ lastSampleAt: now, live: [], probeLog: log });
++  let c = await readCache();
++  Assert.equal(c.probeLog.length, 8);
++  Assert.equal(globalBudgetRemaining(c, now), 0, "default cap 8 exhausted");
++  Assert.ok(!canStartSampleRound(c, now + 2 * 24 * 3600 * 1000), "no round while budget 0");
++  let later = now + 8 * 24 * 3600 * 1000;
++  Assert.equal(globalBudgetRemaining(c, later), 8, "restores to 8 after 8d");
++  Assert.ok(canStartSampleRound(c, later));
++});
