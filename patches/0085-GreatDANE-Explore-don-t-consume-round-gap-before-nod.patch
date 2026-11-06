@@ -1,0 +1,118 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Thu, 5 Nov 2026 20:44:21 -0600
+Subject: [PATCH 085/144] GreatDANE Explore: don't consume round gap before
+ node sync; SYSTEM_TICK retries startup round
+
+---
+ .../greatdane/GreatDANEExplore.sys.mjs        | 30 ++++++++++++++++++-
+ .../test/unit/test_GreatDANEExplore.js        | 23 ++++++++++++++
+ 2 files changed, 52 insertions(+), 1 deletion(-)
+
+diff --git a/browser/components/greatdane/GreatDANEExplore.sys.mjs b/browser/components/greatdane/GreatDANEExplore.sys.mjs
+index 84a5236dc2..d978101bf0 100644
+--- a/browser/components/greatdane/GreatDANEExplore.sys.mjs
++++ b/browser/components/greatdane/GreatDANEExplore.sys.mjs
+@@ -477,16 +477,24 @@ export async function refreshCache() {
+     budget,
+     Math.max(0, prefInt(PREF_SAMPLE_SIZE, DEFAULT_SAMPLE_SIZE))
+   );
+-  cache.lastSampleAt = now;
+   if (sampleSize <= 0) {
++    cache.lastSampleAt = now;
+     cache.checkedAt = now;
+     return writeCache(cache);
+   }
++  // Node(s) still starting/syncing: no round yet. Do not stamp lastSampleAt,
++  // or the startup attempt (feed init, ~2.5s after launch) would consume the
++  // 24h round gap before sync and nothing would retry until tomorrow.
++  // SYSTEM_TICK (5 min) re-checks via getExploreRows({allowRefresh:true}).
++  if (!anyChainReady()) {
++    return cache;
++  }
+ 
+   let candidates = await sampleCandidates(cache, sampleSize);
+   // Cap again in case sample returned more somehow.
+   candidates = candidates.slice(0, sampleSize);
+ 
++  let attempted = 0;
+   let liveByHost = new Map(
+     (cache.live || []).filter(validLiveRow).map(r => [r.host, r])
+   );
+@@ -504,6 +512,7 @@ export async function refreshCache() {
+       // Node not usable: no network happened; keep prior rows, no budget.
+       continue;
+     }
++    attempted++;
+     cache.probeLog = cache.probeLog || [];
+     cache.probeLog.push({
+       host: result.host || c.host,
+@@ -526,11 +535,29 @@ export async function refreshCache() {
+     }
+   }
+ 
++  // Stamp the round only if it did real work (or had nothing to probe while
++  // nodes were ready). All-skipped rounds leave the gap open for a retry.
++  if (attempted > 0 || !candidates.length) {
++    cache.lastSampleAt = now;
++  }
+   cache.live = [...liveByHost.values()];
+   cache.checkedAt = Date.now();
+   return writeCache(cache);
+ }
+ 
++export function anyChainReady() {
++  let chains = [...(lazy.GreatDANE._chains?.values() ?? [])].filter(
++    c => c.ports
++  );
++  return chains.some(c => {
++    try {
++      return !lazy.GreatDANE.blockReason(c);
++    } catch (e) {
++      return false;
++    }
++  });
++}
++
+ let _refreshInFlight = null;
+ let _scheduled = null;
+ 
+@@ -595,6 +622,7 @@ export const GreatDANEExplore = {
+   globalBudgetRemaining,
+   hostProbedRecently,
+   canStartSampleRound,
++  anyChainReady,
+   sampleCandidates,
+   probeHttps,
+   newProbeChannel,
+diff --git a/browser/components/greatdane/test/unit/test_GreatDANEExplore.js b/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
+index 4b34f7ade1..57a48cb86a 100644
+--- a/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
++++ b/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
+@@ -246,3 +246,26 @@ add_task(async function test_default8_round_restart_and_time_advance() {
+   Assert.equal(globalBudgetRemaining(c, later), 8, "restores to 8 after 8d");
+   Assert.ok(canStartSampleRound(c, later));
+ });
++
++add_task(async function test_round_not_stamped_before_node_sync() {
++  do_get_profile();
++  const { refreshCache, writeCache, canStartSampleRound, anyChainReady } =
++    ChromeUtils.importESModule("resource:///modules/GreatDANEExplore.sys.mjs");
++  const { GreatDANE } = ChromeUtils.importESModule(
++    "resource:///modules/GreatDANE.sys.mjs"
++  );
++  let saved = new Map(GreatDANE._chains);
++  GreatDANE._chains.clear();
++  GreatDANE._chains.set("doge", { tld: "doge", state: "ready", ports: {} }); // syncing
++  try {
++    Assert.ok(!anyChainReady(), "syncing node is not ready");
++    await writeCache({ live: [], probeLog: [], lastSampleAt: 0 });
++    let c = await refreshCache();
++    Assert.equal(Number(c.lastSampleAt) || 0, 0, "startup attempt pre-sync does not consume round gap");
++    Assert.equal((c.probeLog || []).length, 0, "no budget spent pre-sync");
++    Assert.ok(canStartSampleRound(c), "SYSTEM_TICK may retry after sync");
++  } finally {
++    GreatDANE._chains.clear();
++    for (let [k, v] of saved) GreatDANE._chains.set(k, v);
++  }
++});
