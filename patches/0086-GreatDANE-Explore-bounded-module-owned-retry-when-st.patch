@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Thu, 5 Nov 2026 20:47:15 -0600
+Subject: [PATCH 086/144] GreatDANE Explore: bounded module-owned retry when
+ startup round deferred pre-sync
+
+---
+ .../greatdane/GreatDANEExplore.sys.mjs         | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/browser/components/greatdane/GreatDANEExplore.sys.mjs b/browser/components/greatdane/GreatDANEExplore.sys.mjs
+index d978101bf0..15a8a960d9 100644
+--- a/browser/components/greatdane/GreatDANEExplore.sys.mjs
++++ b/browser/components/greatdane/GreatDANEExplore.sys.mjs
+@@ -487,8 +487,12 @@ export async function refreshCache() {
+   // 24h round gap before sync and nothing would retry until tomorrow.
+   // SYSTEM_TICK (5 min) re-checks via getExploreRows({allowRefresh:true}).
+   if (!anyChainReady()) {
++    _deferredNotReady = true;
++    console.log("GreatDANE Explore: round deferred, no node synced");
+     return cache;
+   }
++  _deferredNotReady = false;
++  console.log("GreatDANE Explore: sample round start, size", sampleSize);
+ 
+   let candidates = await sampleCandidates(cache, sampleSize);
+   // Cap again in case sample returned more somehow.
+@@ -560,6 +564,13 @@ export function anyChainReady() {
+ 
+ let _refreshInFlight = null;
+ let _scheduled = null;
++// Startup round deferred because no node had synced yet. Retry on a bounded
++// backoff timer owned by this module (not tab opens, not SYSTEM_TICK, which
++// Activity Stream suspends while the user is idle).
++let _deferredNotReady = false;
++let _notReadyRetries = 0;
++export const NOT_READY_RETRY_MS = 60 * 1000;
++export const NOT_READY_MAX_RETRIES = 30; // ~30 min after launch, then SYSTEM_TICK only
+ 
+ export async function getExploreRows({ allowRefresh = true } = {}) {
+   if (!prefBool(PREF_ENABLED, true)) {
+@@ -588,10 +599,17 @@ export function scheduleRefresh(delayMs = 2500) {
+     if (_refreshInFlight) {
+       return;
+     }
++    _deferredNotReady = false;
+     _refreshInFlight = refreshCache()
+       .catch(e => console.warn("GreatDANE Explore: refresh failed", e))
+       .finally(() => {
+         _refreshInFlight = null;
++        if (_deferredNotReady && _notReadyRetries < NOT_READY_MAX_RETRIES) {
++          _notReadyRetries++;
++          scheduleRefresh(NOT_READY_RETRY_MS);
++        } else if (!_deferredNotReady) {
++          _notReadyRetries = 0;
++        }
+       });
+   }, Math.max(0, delayMs));
+ }
