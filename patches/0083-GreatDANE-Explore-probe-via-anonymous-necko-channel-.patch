@@ -1,0 +1,214 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Thu, 5 Nov 2026 19:44:14 -0600
+Subject: [PATCH 083/144] GreatDANE Explore: probe via anonymous necko channel,
+ skip while node blocked, expose real failure reason, no redirects
+
+---
+ .../greatdane/GreatDANEExplore.sys.mjs        | 114 +++++++++++++-----
+ .../test/unit/test_GreatDANEExplore.js        |  47 ++++++++
+ 2 files changed, 132 insertions(+), 29 deletions(-)
+
+diff --git a/browser/components/greatdane/GreatDANEExplore.sys.mjs b/browser/components/greatdane/GreatDANEExplore.sys.mjs
+index 3844d69fc3..c61a084a7b 100644
+--- a/browser/components/greatdane/GreatDANEExplore.sys.mjs
++++ b/browser/components/greatdane/GreatDANEExplore.sys.mjs
+@@ -18,6 +18,7 @@
+ const lazy = {};
+ ChromeUtils.defineESModuleGetters(lazy, {
+   GreatDANE: "resource:///modules/GreatDANE.sys.mjs",
++  NetUtil: "resource://gre/modules/NetUtil.sys.mjs",
+   setTimeout: "resource://gre/modules/Timer.sys.mjs",
+   clearTimeout: "resource://gre/modules/Timer.sys.mjs",
+ });
+@@ -334,38 +335,88 @@ export async function probeHttps(
+   try {
+     host = Services.io.newURI(url).host.toLowerCase();
+   } catch (e) {
+-    return { ok: false, status: 0, host: "", url, title: "" };
++    return { ok: false, status: 0, host: "", url, title: "", error: "BAD_URL" };
+   }
+-  if (!lazy.GreatDANE._chainFor(host)) {
+-    return { ok: false, status: 0, host, url, title: host };
++  let chain = lazy.GreatDANE._chainFor(host);
++  if (!chain) {
++    return { ok: false, status: 0, host, url, title: host, error: "NOT_CHAIN" };
+   }
+-  let ctrl = new AbortController();
+-  let timer = lazy.setTimeout(() => ctrl.abort(), Math.max(500, timeoutMs));
+-  try {
+-    let resp = await fetch(url, {
+-      method: "GET",
+-      redirect: "follow",
+-      cache: "no-store",
+-      credentials: "omit",
+-      signal: ctrl.signal,
+-    });
+-    let status = resp.status || 0;
+-    try {
+-      await resp.arrayBuffer();
+-    } catch (e) {}
+-    let ok = status >= 200 && status < 500;
+-    return { ok, status, host, url: "https://" + host + "/", title: host };
+-  } catch (e) {
+-    return {
+-      ok: false,
+-      status: 0,
+-      host,
+-      url: "https://" + host + "/",
+-      title: host,
+-    };
+-  } finally {
+-    lazy.clearTimeout(timer);
++  // While the node is not ready/syncing, ProtocolProxyFilter fails closed to
++  // DEAD_PORT, so any request dies instantly with PROXY_CONNECTION_REFUSED.
++  // That says nothing about the site: skip without spending budget.
++  let block = lazy.GreatDANE.blockReason(chain);
++  if (block) {
++    return { ok: false, skipped: block, status: 0, host, url, title: host };
+   }
++  let base = { host, url: "https://" + host + "/", title: host };
++  return new Promise(resolve => {
++    let ch;
++    try {
++      // Normal necko channel: same ProtocolProxyFilter + PSM/TLSA verifier as
++      // a tab. Anonymous (no cookies/auth), uncached, no redirects followed
++      // (a 3xx still proves TLS+HTTP completed), body discarded, and no
++      // docshell, so no history/Places writes.
++      ch = lazy.NetUtil.newChannel({
++        uri: "https://" + host + "/",
++        loadUsingSystemPrincipal: true,
++        contentPolicyType: Ci.nsIContentPolicy.TYPE_OTHER,
++      }).QueryInterface(Ci.nsIHttpChannel);
++      ch.loadFlags |=
++        Ci.nsIRequest.LOAD_ANONYMOUS |
++        Ci.nsIRequest.LOAD_BYPASS_CACHE |
++        Ci.nsIRequest.INHIBIT_CACHING |
++        Ci.nsIChannel.LOAD_BACKGROUND;
++      ch.redirectionLimit = 0;
++    } catch (e) {
++      resolve({ ...base, ok: false, status: 0, error: "CHANNEL" });
++      return;
++    }
++    let settled = false;
++    let timedOut = false;
++    let bytes = 0;
++    let timer = lazy.setTimeout(() => {
++      timedOut = true;
++      ch.cancel(Cr.NS_ERROR_NET_TIMEOUT);
++    }, Math.max(500, timeoutMs));
++    ch.asyncOpen({
++      onStartRequest() {},
++      onDataAvailable(req, stream, off, count) {
++        bytes += count;
++        lazy.NetUtil.readInputStreamToString(stream, count);
++        if (bytes > 65536) {
++          req.cancel(Cr.NS_BINDING_ABORTED); // enough: server answered
++        }
++      },
++      onStopRequest(req, rv) {
++        if (settled) return;
++        settled = true;
++        lazy.clearTimeout(timer);
++        let status = 0;
++        try {
++          status = ch.responseStatus;
++        } catch (e) {}
++        let error = "";
++        if (timedOut) {
++          error = "TIMEOUT";
++        } else if (!Components.isSuccessCode(rv) && rv != Cr.NS_BINDING_ABORTED) {
++          // Real reason, e.g. NS_ERROR_UNKNOWN_HOST, PROXY_CONNECTION_REFUSED,
++          // or a PSM/TLSA failure (MOZILLA_PKIX_ERROR_KEY_PINNING_FAILURE).
++          try {
++            error = ch.securityInfo?.errorCodeString || "";
++          } catch (e) {}
++          if (!error) {
++            error = ChromeUtils.getXPCOMErrorName?.(rv) || "0x" + (rv >>> 0).toString(16);
++          }
++          if (rv == Cr.NS_ERROR_REDIRECT_LOOP && status >= 300 && status < 400) {
++            error = ""; // redirectionLimit hit: server answered with 3xx
++          }
++        }
++        let ok = !error && status >= 200 && status < 500;
++        if (!error && !ok) error = "HTTP_" + status;
++        resolve({ ...base, ok, status, error });
++      },
++    });
++  });
+ }
+ 
+ /**
+@@ -412,12 +463,17 @@ export async function refreshCache() {
+       continue;
+     }
+     let result = await probeHttps(c.url);
++    if (result.skipped) {
++      // Node not usable: no network happened; keep prior rows, no budget.
++      continue;
++    }
+     cache.probeLog = cache.probeLog || [];
+     cache.probeLog.push({
+       host: result.host || c.host,
+       at: Date.now(),
+       ok: !!result.ok,
+       status: result.status || 0,
++      error: String(result.error || "").slice(0, 40),
+     });
+     if (result.ok) {
+       liveByHost.set(result.host, {
+diff --git a/browser/components/greatdane/test/unit/test_GreatDANEExplore.js b/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
+index 4ae8461daa..5716d2ddc2 100644
+--- a/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
++++ b/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
+@@ -90,3 +90,50 @@ add_task(function test_display_ttl_hides_expired_without_needing_probe() {
+   Assert.equal(rows.length, 1);
+   Assert.equal(rows[0].hostname, "fresh.doge");
+ });
++
++add_task(async function test_probe_skips_when_node_blocked_no_network() {
++  const { probeHttps } = ChromeUtils.importESModule(
++    "resource:///modules/GreatDANEExplore.sys.mjs"
++  );
++  const { GreatDANE } = ChromeUtils.importESModule(
++    "resource:///modules/GreatDANE.sys.mjs"
++  );
++  let saved = new Map(GreatDANE._chains);
++  GreatDANE._chains.clear();
++  GreatDANE._chains.set("doge", { tld: "doge", state: "starting" });
++  try {
++    let r = await probeHttps("https://example.doge/", 1000);
++    Assert.equal(r.skipped, "GD_NODE_NOT_READY");
++    Assert.ok(!r.ok);
++    GreatDANE._chains.get("doge").state = "ready"; // no status => syncing
++    r = await probeHttps("https://example.doge/", 1000);
++    Assert.equal(r.skipped, "GD_NODE_SYNCING");
++    r = await probeHttps("https://example.com/", 1000);
++    Assert.equal(r.error, "NOT_CHAIN");
++  } finally {
++    GreatDANE._chains.clear();
++    for (let [k, v] of saved) GreatDANE._chains.set(k, v);
++  }
++});
++
++add_task(async function test_budget_persists_across_reload_and_time() {
++  do_get_profile();
++  const { readCache, writeCache, globalBudgetRemaining, hostProbedRecently } =
++    ChromeUtils.importESModule("resource:///modules/GreatDANEExplore.sys.mjs");
++  let now = Date.now();
++  await writeCache({
++    lastSampleAt: now,
++    live: [],
++    probeLog: [
++      { host: "a.doge", at: now - 1000, ok: true, status: 200, error: "" },
++      { host: "b.pepe", at: now - 2000, ok: false, status: 0, error: "TIMEOUT" },
++    ],
++  });
++  let c = await readCache(); // simulates restart: state only from disk
++  Assert.equal(c.probeLog.length, 2);
++  Assert.equal(globalBudgetRemaining(c, now), DEFAULT_GLOBAL_BUDGET - 2);
++  Assert.ok(hostProbedRecently(c, "a.doge", now));
++  let later = now + 8 * 24 * 60 * 60 * 1000;
++  Assert.equal(globalBudgetRemaining(c, later), DEFAULT_GLOBAL_BUDGET);
++  Assert.ok(!hostProbedRecently(c, "a.doge", later));
++});
