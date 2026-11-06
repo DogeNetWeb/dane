@@ -1,0 +1,780 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Thu, 5 Nov 2026 18:17:15 -0600
+Subject: [PATCH 082/144] GreatDANE Explore: weekly sparse sample + global
+ probe budget (path A)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Product decisions (nowon via coordinator): reject central checker;
+browser-side HTTPS through normal Dane TLS/TLSA only. Cadence ≤1
+check/site/7d, hard global budget 8 probes/week, sample≤8, directory
+page cap (never enumerate the full name list), min 24h between rounds,
+display TTL 14d (hide expired/failed; no on-demand probe). New-tab
+reads cache only; no Places writes; no probe-to-fill tiles.
+---
+ .../greatdane/pref/firefox-branding.js        |  13 +-
+ .../greatdane/GreatDANEExplore.sys.mjs        | 447 +++++++++++++-----
+ .../test/unit/test_GreatDANEExplore.js        | 107 ++++-
+ .../newtab/lib/SectionsManager.sys.mjs        |   4 +-
+ 4 files changed, 433 insertions(+), 138 deletions(-)
+
+diff --git a/browser/branding/greatdane/pref/firefox-branding.js b/browser/branding/greatdane/pref/firefox-branding.js
+index 22b55efedc..00cf5bb7ca 100644
+--- a/browser/branding/greatdane/pref/firefox-branding.js
++++ b/browser/branding/greatdane/pref/firefox-branding.js
+@@ -60,13 +60,18 @@ pref("browser.tabs.crashReporting.sendReport", false);
+ pref("browser.tabs.crashReporting.includeURL", false);
+ 
+ // GreatDANE: Explore .doge & .pepe on the new-tab page (separate from recent
+-// visits). Inclusion requires HTTPS through Dane TLS/TLSA; results are cached.
+-// Refresh probes are not IP-private (browser contacts those sites via the node).
++// visits). Sparse browser-side HTTPS checks through Dane TLS/TLSA (path A).
++// Refresh probes are not IP-private; cadence is ≤1/site/week + small global budget.
+ pref("greatdane.explore.enabled", true);
+-pref("greatdane.explore.ttlSeconds", 21600);
++pref("greatdane.explore.perSiteIntervalSeconds", 604800); // 7 days
++pref("greatdane.explore.globalBudgetPerWeek", 8);
++pref("greatdane.explore.sampleSize", 8);
+ pref("greatdane.explore.maxTiles", 8);
++pref("greatdane.explore.displayTtlSeconds", 1209600); // 14 days show last-good
++pref("greatdane.explore.minRoundGapSeconds", 86400); // ≥1 day between sample rounds
+ pref("greatdane.explore.probeTimeoutMs", 8000);
+-pref("greatdane.explore.candidateLimit", 40);
++pref("greatdane.explore.dirPageLimit", 10);
++pref("greatdane.explore.dirPagesPerRound", 4);
+ pref("browser.newtabpage.activity-stream.feeds.section.daneexplore", true);
+ pref("browser.newtabpage.activity-stream.section.daneexplore.rows", 1);
+ pref("browser.newtabpage.activity-stream.sectionOrder", "topsites,daneexplore,highlights,topstories");
+diff --git a/browser/components/greatdane/GreatDANEExplore.sys.mjs b/browser/components/greatdane/GreatDANEExplore.sys.mjs
+index fd1ee0bb58..3844d69fc3 100644
+--- a/browser/components/greatdane/GreatDANEExplore.sys.mjs
++++ b/browser/components/greatdane/GreatDANEExplore.sys.mjs
+@@ -1,37 +1,53 @@
+ /* GreatDANE: Explore .doge & .pepe — HTTPS-live name cache for the new-tab
+- * "Explore .doge & .pepe" row. Candidates come from each node's loopback
+- * /gd/names (same as about:dane-discover). Inclusion requires a real HTTPS
+- * fetch through Dane's normal proxy + DANE-EE TLSA/pin path (no bypass, no
+- * loopback-"likely live" substitution). Results are cached on disk; callers
+- * must never trigger a probe merely because about:newtab opened.
++ * "Explore .doge & .pepe" row.
+  *
+- * Privacy: a refresh contacts the probed sites from this browser's network
+- * path (node proxy to the site). That is not IP-private. Prefer a future
+- * session-external curated list if product wants zero per-browser probes.
++ * Product (path A, Nov 5 2026): browser-side cached HTTPS checks through
++ * Dane's normal proxy + DANE-EE TLSA/pin. No central checker. User accepts
++ * that a refresh contacts probed sites from this browser (not IP-private).
++ *
++ * Cadence (very infrequent):
++ *  - Per-site: at most one HTTPS probe per 7 days (persisted).
++ *  - Global: at most N HTTPS probes per rolling 7 days (default 8).
++ *  - Sample rounds: at most one per 24h; each round draws a small random
++ *    sample of candidates from /gd/names pages (never walks the directory).
++ *  - Never probe on about:newtab open; never probe-to-fill empty tiles.
++ *  - Display TTL (default 14d) is separate from check cadence: expired
++ *    successes are hidden, not re-probed on demand.
+  */
+ 
+ const lazy = {};
+ ChromeUtils.defineESModuleGetters(lazy, {
+   GreatDANE: "resource:///modules/GreatDANE.sys.mjs",
+-  lookup: "resource:///modules/GreatDANEDiscover.sys.mjs",
+-  parseQuery: "resource:///modules/GreatDANEDiscover.sys.mjs",
+   setTimeout: "resource://gre/modules/Timer.sys.mjs",
+   clearTimeout: "resource://gre/modules/Timer.sys.mjs",
+ });
+ 
+ export const PREF_ENABLED = "greatdane.explore.enabled";
+-export const PREF_TTL = "greatdane.explore.ttlSeconds";
+-export const PREF_MAX = "greatdane.explore.maxTiles";
++export const PREF_PER_SITE_INTERVAL = "greatdane.explore.perSiteIntervalSeconds";
++export const PREF_GLOBAL_BUDGET = "greatdane.explore.globalBudgetPerWeek";
++export const PREF_SAMPLE_SIZE = "greatdane.explore.sampleSize";
++export const PREF_MAX_TILES = "greatdane.explore.maxTiles";
++export const PREF_DISPLAY_TTL = "greatdane.explore.displayTtlSeconds";
++export const PREF_MIN_ROUND_GAP = "greatdane.explore.minRoundGapSeconds";
+ export const PREF_PROBE_TIMEOUT = "greatdane.explore.probeTimeoutMs";
+-export const PREF_CANDIDATE_LIMIT = "greatdane.explore.candidateLimit";
++export const PREF_DIR_PAGE_LIMIT = "greatdane.explore.dirPageLimit";
++export const PREF_DIR_PAGES_PER_ROUND = "greatdane.explore.dirPagesPerRound";
++
+ export const CACHE_FILENAME = "greatdane-explore-cache.json";
+ 
+-export const DEFAULT_TTL_SECONDS = 6 * 60 * 60; // 6h
++// Defaults: weekly per-site, tiny global budget, small sample; display longer than check gap.
++export const DEFAULT_PER_SITE_INTERVAL = 7 * 24 * 60 * 60; // 7d
++export const DEFAULT_GLOBAL_BUDGET = 8;
++export const DEFAULT_SAMPLE_SIZE = 8;
+ export const DEFAULT_MAX_TILES = 8;
++export const DEFAULT_DISPLAY_TTL = 14 * 24 * 60 * 60; // 14d
++export const DEFAULT_MIN_ROUND_GAP = 24 * 60 * 60; // 24h
+ export const DEFAULT_PROBE_TIMEOUT_MS = 8000;
+-export const DEFAULT_CANDIDATE_LIMIT = 40;
++export const DEFAULT_DIR_PAGE_LIMIT = 10;
++export const DEFAULT_DIR_PAGES_PER_ROUND = 4;
+ 
+ const LABEL = /^[a-z0-9-]{1,63}$/;
++const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+ 
+ function prefBool(name, fallback) {
+   try {
+@@ -52,18 +68,50 @@ function cachePath() {
+   return PathUtils.join(PathUtils.localProfileDir, CACHE_FILENAME);
+ }
+ 
+-/** @returns {Promise<{checkedAt:number, ttlSeconds:number, live:Array<{host:string,url:string,title:string,status:number}>}>} */
++function emptyCache() {
++  return {
++    checkedAt: 0,
++    lastSampleAt: 0,
++    live: [],
++    probeLog: [],
++  };
++}
++
++function validLiveRow(row) {
++  return (
++    row &&
++    typeof row == "object" &&
++    typeof row.host == "string" &&
++    row.host.includes(".") &&
++    LABEL.test(row.host.split(".")[0]) &&
++    typeof row.url == "string" &&
++    row.url.startsWith("https://") &&
++    Number.isFinite(row.checkedAt)
++  );
++}
++
++function validProbe(p) {
++  return (
++    p &&
++    typeof p == "object" &&
++    typeof p.host == "string" &&
++    Number.isFinite(p.at)
++  );
++}
++
+ export async function readCache() {
+   try {
+     let data = await IOUtils.readJSON(cachePath());
+     if (!data || typeof data != "object") {
+       return emptyCache();
+     }
+-    let live = Array.isArray(data.live) ? data.live.filter(validLiveRow) : [];
+     return {
+       checkedAt: Number.isFinite(data.checkedAt) ? data.checkedAt : 0,
+-      ttlSeconds: Number.isFinite(data.ttlSeconds) ? data.ttlSeconds : DEFAULT_TTL_SECONDS,
+-      live,
++      lastSampleAt: Number.isFinite(data.lastSampleAt) ? data.lastSampleAt : 0,
++      live: Array.isArray(data.live) ? data.live.filter(validLiveRow) : [],
++      probeLog: Array.isArray(data.probeLog)
++        ? data.probeLog.filter(validProbe)
++        : [],
+     };
+   } catch (e) {
+     if (!(e instanceof DOMException) || e.name !== "NotFoundError") {
+@@ -73,59 +121,201 @@ export async function readCache() {
+   }
+ }
+ 
+-function emptyCache() {
+-  return { checkedAt: 0, ttlSeconds: DEFAULT_TTL_SECONDS, live: [] };
+-}
+-
+-function validLiveRow(row) {
+-  return (
+-    row &&
+-    typeof row == "object" &&
+-    typeof row.host == "string" &&
+-    LABEL.test(row.host.split(".")[0]) &&
+-    typeof row.url == "string" &&
+-    row.url.startsWith("https://")
+-  );
+-}
+-
+ export async function writeCache(cache) {
++  let now = Date.now();
+   let payload = {
+-    checkedAt: cache.checkedAt || Date.now(),
+-    ttlSeconds: cache.ttlSeconds || prefInt(PREF_TTL, DEFAULT_TTL_SECONDS),
++    checkedAt: cache.checkedAt || now,
++    lastSampleAt: cache.lastSampleAt || 0,
+     live: (cache.live || []).filter(validLiveRow),
+-    // Explicit privacy note for anyone reading the file on disk.
++    // Keep at most ~2 weeks of probe log for budget math.
++    probeLog: (cache.probeLog || [])
++      .filter(validProbe)
++      .filter(p => now - p.at < WEEK_MS * 2)
++      .slice(-200),
+     privacy:
+-      "Refresh probes contact listed hosts from this browser (via Dane node proxy). Not IP-private.",
++      "Refresh probes contact sampled hosts from this browser (via Dane node proxy). Not IP-private. Cadence is sparse (weekly per-site + small global budget).",
++    policy: {
++      perSiteIntervalSeconds: prefInt(
++        PREF_PER_SITE_INTERVAL,
++        DEFAULT_PER_SITE_INTERVAL
++      ),
++      globalBudgetPerWeek: prefInt(PREF_GLOBAL_BUDGET, DEFAULT_GLOBAL_BUDGET),
++      sampleSize: prefInt(PREF_SAMPLE_SIZE, DEFAULT_SAMPLE_SIZE),
++      displayTtlSeconds: prefInt(PREF_DISPLAY_TTL, DEFAULT_DISPLAY_TTL),
++    },
+   };
+-  await IOUtils.writeJSON(cachePath(), payload, { tmpPath: cachePath() + ".tmp" });
++  await IOUtils.writeJSON(cachePath(), payload, {
++    tmpPath: cachePath() + ".tmp",
++  });
+   return payload;
+ }
+ 
+-export function isFresh(cache, now = Date.now()) {
+-  let ttl = Math.max(
+-    60,
+-    Number(cache?.ttlSeconds) || prefInt(PREF_TTL, DEFAULT_TTL_SECONDS)
++/** Probes used in the rolling 7-day window. */
++export function probesInWindow(probeLog, now = Date.now(), windowMs = WEEK_MS) {
++  return (probeLog || []).filter(p => validProbe(p) && now - p.at < windowMs);
++}
++
++export function globalBudgetRemaining(cache, now = Date.now()) {
++  let budget = Math.max(0, prefInt(PREF_GLOBAL_BUDGET, DEFAULT_GLOBAL_BUDGET));
++  let used = probesInWindow(cache?.probeLog, now).length;
++  return Math.max(0, budget - used);
++}
++
++export function hostProbedRecently(cache, host, now = Date.now()) {
++  let gap =
++    Math.max(60, prefInt(PREF_PER_SITE_INTERVAL, DEFAULT_PER_SITE_INTERVAL)) *
++    1000;
++  host = String(host || "").toLowerCase();
++  return (cache?.probeLog || []).some(
++    p => validProbe(p) && p.host === host && now - p.at < gap
+   );
+-  let at = Number(cache?.checkedAt) || 0;
+-  return at > 0 && now - at < ttl * 1000;
+ }
+ 
+-/** List candidate https://host/ URLs from loopback /gd/names (not a liveness claim). */
+-export async function listCandidates(limit = prefInt(PREF_CANDIDATE_LIMIT, DEFAULT_CANDIDATE_LIMIT)) {
+-  let pq = lazy.parseQuery("");
+-  let res = await lazy.lookup(pq);
+-  let hosts = [];
++export function canStartSampleRound(cache, now = Date.now()) {
++  if (!prefBool(PREF_ENABLED, true)) {
++    return false;
++  }
++  if (globalBudgetRemaining(cache, now) <= 0) {
++    return false;
++  }
++  let gap =
++    Math.max(60, prefInt(PREF_MIN_ROUND_GAP, DEFAULT_MIN_ROUND_GAP)) * 1000;
++  let last = Number(cache?.lastSampleAt) || 0;
++  return last === 0 || now - last >= gap;
++}
++
++/** Live rows still within display TTL (check cadence ≠ display expiry). */
++export function rowsFromCache(cache, now = Date.now()) {
++  let ttl =
++    Math.max(60, prefInt(PREF_DISPLAY_TTL, DEFAULT_DISPLAY_TTL)) * 1000;
++  let maxTiles = Math.max(0, prefInt(PREF_MAX_TILES, DEFAULT_MAX_TILES));
++  let rows = (cache?.live || [])
++    .filter(validLiveRow)
++    .filter(row => now - row.checkedAt < ttl)
++    .slice(0, maxTiles)
++    .map(row => ({
++      url: row.url,
++      hostname: row.host,
++      title: row.title || row.host,
++      type: "history",
++      guid: "dane-explore-" + row.host,
++      hasImage: false,
++      description: ".doge / .pepe",
++    }));
++  return rows;
++}
++
++async function fetchNamesPage(port, tld, offset, limit) {
++  try {
++    let r = await Promise.race([
++      fetch(
++        `http://127.0.0.1:${port}/gd/names?prefix=&offset=${offset}&limit=${limit}`,
++        { cache: "no-store" }
++      ),
++      new Promise((_, rej) =>
++        lazy.setTimeout(() => rej(new Error("timeout")), 1500)
++      ),
++    ]);
++    let j = null;
++    try {
++      j = await r.json();
++    } catch (e) {}
++    if (!j || j.status != "ok" || !Array.isArray(j.names)) {
++      return { tld, total: 0, hosts: [] };
++    }
++    let hosts = [];
++    for (let n of j.names) {
++      if (!n || typeof n.name != "string" || !LABEL.test(n.name)) {
++        continue;
++      }
++      hosts.push(n.name + "." + tld);
++    }
++    let total =
++      Number.isInteger(j.total) && j.total >= 0 ? j.total : hosts.length;
++    return { tld, total, hosts };
++  } catch (e) {
++    return { tld, total: 0, hosts: [] };
++  }
++}
++
++/**
++ * Bounded random sample of candidate hosts from /gd/names.
++ * Cap on directory pages fetched does NOT grow with directory size.
++ */
++export async function sampleCandidates(cache, want) {
++  want = Math.max(0, want);
++  if (!want) {
++    return [];
++  }
++  let pageLimit = Math.max(
++    1,
++    prefInt(PREF_DIR_PAGE_LIMIT, DEFAULT_DIR_PAGE_LIMIT)
++  );
++  let maxPages = Math.max(
++    1,
++    prefInt(PREF_DIR_PAGES_PER_ROUND, DEFAULT_DIR_PAGES_PER_ROUND)
++  );
++  let chains = [...(lazy.GreatDANE._chains?.values() ?? [])].filter(
++    c => c.ports
++  );
++  if (!chains.length) {
++    return [];
++  }
++
++  let pool = [];
++  let totalsByTld = {};
++  let pagesUsed = 0;
++  // Round-robin chains; each page pick uses a random offset into that chain.
++  while (pagesUsed < maxPages && pool.length < want * 3) {
++    for (let c of chains) {
++      if (pagesUsed >= maxPages) {
++        break;
++      }
++      // First page (offset 0) learns total; later pages use random offsets.
++      let offset = 0;
++      if (c.tld in totalsByTld) {
++        let total = totalsByTld[c.tld];
++        let maxOff = Math.max(0, total - pageLimit);
++        offset = maxOff > 0 ? Math.floor(Math.random() * (maxOff + 1)) : 0;
++      }
++      let page = await fetchNamesPage(c.ports.pac, c.tld, offset, pageLimit);
++      pagesUsed++;
++      if (page.total > 0) {
++        totalsByTld[c.tld] = page.total;
++      }
++      for (let host of page.hosts) {
++        pool.push(host);
++      }
++    }
++    if (pagesUsed >= maxPages) {
++      break;
++    }
++    // If every chain reported tiny totals, stop early.
++    let totals = Object.values(totalsByTld);
++    if (totals.length && totals.every(t => t <= pageLimit)) {
++      break;
++    }
++  }
++
++  // Dedupe, drop recently probed, shuffle, take `want`.
+   let seen = new Set();
+-  for (let row of res.rows || []) {
+-    let host = String(row.host || "").toLowerCase();
+-    if (!host || seen.has(host)) continue;
+-    // Skip bare TLD-only if any slip through.
+-    if (!host.includes(".")) continue;
++  let eligible = [];
++  for (let host of pool) {
++    host = host.toLowerCase();
++    if (seen.has(host)) {
++      continue;
++    }
+     seen.add(host);
+-    hosts.push(host);
+-    if (hosts.length >= limit) break;
++    if (hostProbedRecently(cache, host)) {
++      continue;
++    }
++    eligible.push(host);
++  }
++  for (let i = eligible.length - 1; i > 0; i--) {
++    let j = Math.floor(Math.random() * (i + 1));
++    [eligible[i], eligible[j]] = [eligible[j], eligible[i]];
+   }
+-  return hosts.map(host => ({
++  return eligible.slice(0, want).map(host => ({
+     host,
+     url: "https://" + host + "/",
+     title: host,
+@@ -133,12 +323,13 @@ export async function listCandidates(limit = prefInt(PREF_CANDIDATE_LIMIT, DEFAU
+ }
+ 
+ /**
+- * Probe one HTTPS URL through Dane's normal stack. Resolves with
+- * {ok, status, host, url, title} — ok only when TLS+HTTP completed without
+- * throw and status is 2xx/3xx/4xx (server answered). 5xx and network/TLS
+- * failures are not ok (hidden from the row).
++ * Probe one HTTPS URL through Dane's normal stack. ok when TLS+HTTP completed
++ * and status is 2xx/3xx/4xx (server answered). Network/TLS/5xx = not ok.
+  */
+-export async function probeHttps(url, timeoutMs = prefInt(PREF_PROBE_TIMEOUT, DEFAULT_PROBE_TIMEOUT_MS)) {
++export async function probeHttps(
++  url,
++  timeoutMs = prefInt(PREF_PROBE_TIMEOUT, DEFAULT_PROBE_TIMEOUT_MS)
++) {
+   let host;
+   try {
+     host = Services.io.newURI(url).host.toLowerCase();
+@@ -157,92 +348,126 @@ export async function probeHttps(url, timeoutMs = prefInt(PREF_PROBE_TIMEOUT, DE
+       cache: "no-store",
+       credentials: "omit",
+       signal: ctrl.signal,
+-      // System principal fetch does not record Places visits.
+     });
+     let status = resp.status || 0;
+-    // Consuming a little body avoids some keep-alive edge cases; ignore errors.
+     try {
+       await resp.arrayBuffer();
+     } catch (e) {}
+     let ok = status >= 200 && status < 500;
+     return { ok, status, host, url: "https://" + host + "/", title: host };
+   } catch (e) {
+-    return { ok: false, status: 0, host, url: "https://" + host + "/", title: host };
++    return {
++      ok: false,
++      status: 0,
++      host,
++      url: "https://" + host + "/",
++      title: host,
++    };
+   } finally {
+     lazy.clearTimeout(timer);
+   }
+ }
+ 
+ /**
+- * Refresh cache: candidate list from loopback directory, then HTTPS probes
+- * until maxTiles successes or candidates exhausted. Always rewrites checkedAt
+- * so a total failure still backs off for TTL (empty row, not tight retry loop).
++ * One sparse sample round. Respects global budget + per-site gap.
++ * Does NOT keep probing until maxTiles is full.
+  */
+-export async function refreshCache({
+-  maxTiles = prefInt(PREF_MAX, DEFAULT_MAX_TILES),
+-  candidateLimit = prefInt(PREF_CANDIDATE_LIMIT, DEFAULT_CANDIDATE_LIMIT),
+-  ttlSeconds = prefInt(PREF_TTL, DEFAULT_TTL_SECONDS),
+-} = {}) {
++export async function refreshCache() {
++  let now = Date.now();
++  let cache = await readCache();
+   if (!prefBool(PREF_ENABLED, true)) {
+-    return writeCache({ checkedAt: Date.now(), ttlSeconds, live: [] });
++    cache.live = [];
++    cache.checkedAt = now;
++    return writeCache(cache);
++  }
++  if (!canStartSampleRound(cache, now)) {
++    return cache;
+   }
+-  let candidates = await listCandidates(candidateLimit);
+-  let live = [];
++
++  let budget = globalBudgetRemaining(cache, now);
++  let sampleSize = Math.min(
++    budget,
++    Math.max(0, prefInt(PREF_SAMPLE_SIZE, DEFAULT_SAMPLE_SIZE))
++  );
++  cache.lastSampleAt = now;
++  if (sampleSize <= 0) {
++    cache.checkedAt = now;
++    return writeCache(cache);
++  }
++
++  let candidates = await sampleCandidates(cache, sampleSize);
++  // Cap again in case sample returned more somehow.
++  candidates = candidates.slice(0, sampleSize);
++
++  let liveByHost = new Map(
++    (cache.live || []).filter(validLiveRow).map(r => [r.host, r])
++  );
++
+   for (let c of candidates) {
+-    if (live.length >= maxTiles) break;
++    // Re-check budget each probe (persistent across crash mid-round via writes).
++    if (globalBudgetRemaining(cache, Date.now()) <= 0) {
++      break;
++    }
++    if (hostProbedRecently(cache, c.host, Date.now())) {
++      continue;
++    }
+     let result = await probeHttps(c.url);
++    cache.probeLog = cache.probeLog || [];
++    cache.probeLog.push({
++      host: result.host || c.host,
++      at: Date.now(),
++      ok: !!result.ok,
++      status: result.status || 0,
++    });
+     if (result.ok) {
+-      live.push({
++      liveByHost.set(result.host, {
+         host: result.host,
+         url: result.url,
+         title: result.title,
+         status: result.status,
++        checkedAt: Date.now(),
+       });
++    } else if (result.host) {
++      // Failed this check: drop any prior success for this host.
++      liveByHost.delete(result.host);
+     }
+   }
+-  return writeCache({ checkedAt: Date.now(), ttlSeconds, live });
+-}
+ 
+-/** Cache rows shaped for Activity Stream section cards. No Places fields. */
+-export function rowsFromCache(cache) {
+-  return (cache?.live || []).filter(validLiveRow).map((row, i) => ({
+-    url: row.url,
+-    hostname: row.host,
+-    title: row.title || row.host,
+-    type: "history",
+-    // Fake guid so Card keys are stable; not a Places guid.
+-    guid: "dane-explore-" + row.host,
+-    hasImage: false,
+-    // Tip for UI: not Places / not sponsored.
+-    description: ".doge / .pepe",
+-  }));
++  cache.live = [...liveByHost.values()];
++  cache.checkedAt = Date.now();
++  return writeCache(cache);
+ }
+ 
+ let _refreshInFlight = null;
+ let _scheduled = null;
+ 
+-/** Return live rows from cache; optionally kick a background refresh if stale. */
+ export async function getExploreRows({ allowRefresh = true } = {}) {
+   if (!prefBool(PREF_ENABLED, true)) {
+     return [];
+   }
+   let cache = await readCache();
+-  if (allowRefresh && !isFresh(cache)) {
++  if (allowRefresh && canStartSampleRound(cache)) {
+     scheduleRefresh();
+   }
+   return rowsFromCache(cache);
+ }
+ 
+-export function scheduleRefresh(delayMs = 0) {
+-  if (!prefBool(PREF_ENABLED, true)) return;
+-  if (_refreshInFlight) return;
++export function scheduleRefresh(delayMs = 2500) {
++  if (!prefBool(PREF_ENABLED, true)) {
++    return;
++  }
++  if (_refreshInFlight) {
++    return;
++  }
+   if (_scheduled) {
+     lazy.clearTimeout(_scheduled);
+     _scheduled = null;
+   }
+   _scheduled = lazy.setTimeout(() => {
+     _scheduled = null;
+-    if (_refreshInFlight) return;
++    if (_refreshInFlight) {
++      return;
++    }
+     _refreshInFlight = refreshCache()
+       .catch(e => console.warn("GreatDANE Explore: refresh failed", e))
+       .finally(() => {
+@@ -257,17 +482,27 @@ export function exploreEnabled() {
+ 
+ export const GreatDANEExplore = {
+   PREF_ENABLED,
+-  PREF_TTL,
+-  PREF_MAX,
++  PREF_PER_SITE_INTERVAL,
++  PREF_GLOBAL_BUDGET,
++  PREF_SAMPLE_SIZE,
++  PREF_MAX_TILES,
++  PREF_DISPLAY_TTL,
++  PREF_MIN_ROUND_GAP,
+   PREF_PROBE_TIMEOUT,
+-  PREF_CANDIDATE_LIMIT,
+   CACHE_FILENAME,
+-  DEFAULT_TTL_SECONDS,
++  DEFAULT_PER_SITE_INTERVAL,
++  DEFAULT_GLOBAL_BUDGET,
++  DEFAULT_SAMPLE_SIZE,
+   DEFAULT_MAX_TILES,
++  DEFAULT_DISPLAY_TTL,
++  DEFAULT_MIN_ROUND_GAP,
+   readCache,
+   writeCache,
+-  isFresh,
+-  listCandidates,
++  probesInWindow,
++  globalBudgetRemaining,
++  hostProbedRecently,
++  canStartSampleRound,
++  sampleCandidates,
+   probeHttps,
+   refreshCache,
+   rowsFromCache,
+diff --git a/browser/components/greatdane/test/unit/test_GreatDANEExplore.js b/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
+index 931a88ecf8..4ae8461daa 100644
+--- a/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
++++ b/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
+@@ -1,37 +1,92 @@
+-/* GreatDANE Explore: pure helpers (freshness + row shaping). */
++/* GreatDANE Explore: cadence, budget, display TTL (no network). */
+ "use strict";
+ 
+-const { isFresh, rowsFromCache, DEFAULT_TTL_SECONDS } = ChromeUtils.importESModule(
+-  "resource:///modules/GreatDANEExplore.sys.mjs"
+-);
++const {
++  canStartSampleRound,
++  globalBudgetRemaining,
++  hostProbedRecently,
++  rowsFromCache,
++  DEFAULT_PER_SITE_INTERVAL,
++  DEFAULT_GLOBAL_BUDGET,
++  DEFAULT_DISPLAY_TTL,
++} = ChromeUtils.importESModule("resource:///modules/GreatDANEExplore.sys.mjs");
+ 
+-add_task(function test_isFresh_ttl() {
++add_task(function test_defaults_are_sparse() {
++  Assert.equal(DEFAULT_PER_SITE_INTERVAL, 7 * 24 * 60 * 60);
++  Assert.equal(DEFAULT_GLOBAL_BUDGET, 8);
++  Assert.equal(DEFAULT_DISPLAY_TTL, 14 * 24 * 60 * 60);
++});
++
++add_task(function test_global_budget() {
++  let now = 1_700_000_000_000;
++  let cache = {
++    probeLog: [
++      { host: "a.doge", at: now - 1000, ok: true },
++      { host: "b.doge", at: now - 2000, ok: false },
++      { host: "c.doge", at: now - 8 * 24 * 60 * 60 * 1000, ok: true }, // outside week
++    ],
++  };
++  // Prefs may not be set in xpcshell; budget uses DEFAULT_GLOBAL_BUDGET via getIntPref fallback.
++  let left = globalBudgetRemaining(cache, now);
++  Assert.equal(left, DEFAULT_GLOBAL_BUDGET - 2);
++});
++
++add_task(function test_per_site_gap() {
++  let now = 1_700_000_000_000;
++  let cache = {
++    probeLog: [{ host: "a.doge", at: now - 1000, ok: true }],
++  };
++  Assert.ok(hostProbedRecently(cache, "a.doge", now));
++  Assert.ok(!hostProbedRecently(cache, "b.doge", now));
++});
++
++add_task(function test_can_start_round_gap_and_budget() {
+   let now = 1_700_000_000_000;
+-  Assert.ok(!isFresh({ checkedAt: 0, ttlSeconds: 100 }, now));
+   Assert.ok(
+-    isFresh({ checkedAt: now - 1000, ttlSeconds: 10 }, now),
+-    "within TTL"
++    canStartSampleRound({ lastSampleAt: 0, probeLog: [] }, now),
++    "first round"
+   );
+   Assert.ok(
+-    !isFresh({ checkedAt: now - 11_000, ttlSeconds: 10 }, now),
+-    "past TTL"
++    !canStartSampleRound(
++      { lastSampleAt: now - 1000, probeLog: [] },
++      now
++    ),
++    "too soon after lastSampleAt"
+   );
+-  Assert.equal(DEFAULT_TTL_SECONDS, 6 * 60 * 60);
++  let exhausted = {
++    lastSampleAt: 0,
++    probeLog: Array.from({ length: DEFAULT_GLOBAL_BUDGET }, (_, i) => ({
++      host: `h${i}.doge`,
++      at: now - 1000,
++      ok: true,
++    })),
++  };
++  Assert.ok(!canStartSampleRound(exhausted, now), "budget exhausted");
+ });
+ 
+-add_task(function test_rowsFromCache_filters_and_shapes() {
+-  let rows = rowsFromCache({
+-    live: [
+-      { host: "alpha.doge", url: "https://alpha.doge/", title: "alpha.doge", status: 200 },
+-      { host: "bad", url: "http://nope/", title: "x" }, // not https
+-      null,
+-      { host: "beta.pepe", url: "https://beta.pepe/", title: "beta.pepe", status: 301 },
+-    ],
+-  });
+-  Assert.equal(rows.length, 2);
+-  Assert.equal(rows[0].url, "https://alpha.doge/");
+-  Assert.equal(rows[0].guid, "dane-explore-alpha.doge");
+-  Assert.equal(rows[0].type, "history");
+-  Assert.ok(!rows[0].bookmarkGuid);
+-  Assert.equal(rows[1].hostname, "beta.pepe");
++add_task(function test_display_ttl_hides_expired_without_needing_probe() {
++  let now = 1_700_000_000_000;
++  let rows = rowsFromCache(
++    {
++      live: [
++        {
++          host: "fresh.doge",
++          url: "https://fresh.doge/",
++          title: "fresh.doge",
++          status: 200,
++          checkedAt: now - 1000,
++        },
++        {
++          host: "stale.doge",
++          url: "https://stale.doge/",
++          title: "stale.doge",
++          status: 200,
++          checkedAt: now - (DEFAULT_DISPLAY_TTL + 10) * 1000,
++        },
++      ],
++    },
++    now
++  );
++  Assert.equal(rows.length, 1);
++  Assert.equal(rows[0].hostname, "fresh.doge");
+ });
+diff --git a/browser/extensions/newtab/lib/SectionsManager.sys.mjs b/browser/extensions/newtab/lib/SectionsManager.sys.mjs
+index cbd5cf2f34..c43f751d77 100644
+--- a/browser/extensions/newtab/lib/SectionsManager.sys.mjs
++++ b/browser/extensions/newtab/lib/SectionsManager.sys.mjs
+@@ -141,7 +141,7 @@ const BUILT_IN_SECTIONS = () => ({
+     pref: {
+       titleString: "Explore .doge & .pepe",
+       descString:
+-        "HTTPS-checked .doge/.pepe sites (Dane TLS/TLSA). Refresh contacts those sites from this browser — not IP-private. Cached; new tabs do not re-probe.",
++        "Sampled HTTPS-checked .doge/.pepe sites (Dane TLS/TLSA). Sparse checks (≤1/site/week, small weekly budget). Refresh contacts sampled sites from this browser — not IP-private. New tabs read cache only.",
+     },
+     shouldHidePref: false,
+     eventSource: "DANE_EXPLORE",
+@@ -158,7 +158,7 @@ const BUILT_IN_SECTIONS = () => ({
+     ],
+     emptyState: {
+       message:
+-        "No HTTPS-live .doge/.pepe sites in cache yet. Dane checks in the background (not on every new tab).",
++        "No HTTPS-live .doge/.pepe sites in cache yet. Dane samples a few names infrequently in the background — never on every new tab.",
+       icon: "chrome://branding/content/icon32.png",
+     },
+     shouldSendImpressionStats: false,
