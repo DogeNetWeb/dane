@@ -1,0 +1,606 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Thu, 5 Nov 2026 18:11:28 -0600
+Subject: [PATCH 081/144] GreatDANE: Explore .doge & .pepe new-tab row (HTTPS
+ cache, no Places)
+
+Add a separate Activity Stream section distinct from recent visits. Candidates
+come from loopback /gd/names; inclusion requires HTTPS through Dane's normal
+proxy + DANE-EE TLSA path. Results live in profile cache (default TTL 6h);
+about:newtab paints cache only and never probes on open. Prefs under
+greatdane.explore.*; privacy note that refresh probes are not IP-private.
+---
+ .../greatdane/pref/firefox-branding.js        |  12 +
+ .../greatdane/GreatDANEExplore.sys.mjs        | 277 ++++++++++++++++++
+ browser/components/greatdane/moz.build        |   1 +
+ .../test/unit/test_GreatDANEExplore.js        |  37 +++
+ .../greatdane/test/unit/xpcshell.toml         |   2 +
+ .../newtab/lib/ActivityStream.sys.mjs         |  17 +-
+ .../newtab/lib/GreatDANEExploreFeed.sys.mjs   | 120 ++++++++
+ .../newtab/lib/SectionsManager.sys.mjs        |  27 ++
+ 8 files changed, 492 insertions(+), 1 deletion(-)
+ create mode 100644 browser/components/greatdane/GreatDANEExplore.sys.mjs
+ create mode 100644 browser/components/greatdane/test/unit/test_GreatDANEExplore.js
+ create mode 100644 browser/extensions/newtab/lib/GreatDANEExploreFeed.sys.mjs
+
+diff --git a/browser/branding/greatdane/pref/firefox-branding.js b/browser/branding/greatdane/pref/firefox-branding.js
+index 8aeae5325e..22b55efedc 100644
+--- a/browser/branding/greatdane/pref/firefox-branding.js
++++ b/browser/branding/greatdane/pref/firefox-branding.js
+@@ -58,3 +58,15 @@ pref("browser.crashReports.unsubmittedCheck.autoSubmit2", false);
+ pref("services.sync.prefs.sync.browser.crashReports.unsubmittedCheck.autoSubmit2", false);
+ pref("browser.tabs.crashReporting.sendReport", false);
+ pref("browser.tabs.crashReporting.includeURL", false);
++
++// GreatDANE: Explore .doge & .pepe on the new-tab page (separate from recent
++// visits). Inclusion requires HTTPS through Dane TLS/TLSA; results are cached.
++// Refresh probes are not IP-private (browser contacts those sites via the node).
++pref("greatdane.explore.enabled", true);
++pref("greatdane.explore.ttlSeconds", 21600);
++pref("greatdane.explore.maxTiles", 8);
++pref("greatdane.explore.probeTimeoutMs", 8000);
++pref("greatdane.explore.candidateLimit", 40);
++pref("browser.newtabpage.activity-stream.feeds.section.daneexplore", true);
++pref("browser.newtabpage.activity-stream.section.daneexplore.rows", 1);
++pref("browser.newtabpage.activity-stream.sectionOrder", "topsites,daneexplore,highlights,topstories");
+diff --git a/browser/components/greatdane/GreatDANEExplore.sys.mjs b/browser/components/greatdane/GreatDANEExplore.sys.mjs
+new file mode 100644
+index 0000000000..fd1ee0bb58
+--- /dev/null
++++ b/browser/components/greatdane/GreatDANEExplore.sys.mjs
+@@ -0,0 +1,277 @@
++/* GreatDANE: Explore .doge & .pepe — HTTPS-live name cache for the new-tab
++ * "Explore .doge & .pepe" row. Candidates come from each node's loopback
++ * /gd/names (same as about:dane-discover). Inclusion requires a real HTTPS
++ * fetch through Dane's normal proxy + DANE-EE TLSA/pin path (no bypass, no
++ * loopback-"likely live" substitution). Results are cached on disk; callers
++ * must never trigger a probe merely because about:newtab opened.
++ *
++ * Privacy: a refresh contacts the probed sites from this browser's network
++ * path (node proxy to the site). That is not IP-private. Prefer a future
++ * session-external curated list if product wants zero per-browser probes.
++ */
++
++const lazy = {};
++ChromeUtils.defineESModuleGetters(lazy, {
++  GreatDANE: "resource:///modules/GreatDANE.sys.mjs",
++  lookup: "resource:///modules/GreatDANEDiscover.sys.mjs",
++  parseQuery: "resource:///modules/GreatDANEDiscover.sys.mjs",
++  setTimeout: "resource://gre/modules/Timer.sys.mjs",
++  clearTimeout: "resource://gre/modules/Timer.sys.mjs",
++});
++
++export const PREF_ENABLED = "greatdane.explore.enabled";
++export const PREF_TTL = "greatdane.explore.ttlSeconds";
++export const PREF_MAX = "greatdane.explore.maxTiles";
++export const PREF_PROBE_TIMEOUT = "greatdane.explore.probeTimeoutMs";
++export const PREF_CANDIDATE_LIMIT = "greatdane.explore.candidateLimit";
++export const CACHE_FILENAME = "greatdane-explore-cache.json";
++
++export const DEFAULT_TTL_SECONDS = 6 * 60 * 60; // 6h
++export const DEFAULT_MAX_TILES = 8;
++export const DEFAULT_PROBE_TIMEOUT_MS = 8000;
++export const DEFAULT_CANDIDATE_LIMIT = 40;
++
++const LABEL = /^[a-z0-9-]{1,63}$/;
++
++function prefBool(name, fallback) {
++  try {
++    return Services.prefs.getBoolPref(name, fallback);
++  } catch (e) {
++    return fallback;
++  }
++}
++function prefInt(name, fallback) {
++  try {
++    return Services.prefs.getIntPref(name, fallback);
++  } catch (e) {
++    return fallback;
++  }
++}
++
++function cachePath() {
++  return PathUtils.join(PathUtils.localProfileDir, CACHE_FILENAME);
++}
++
++/** @returns {Promise<{checkedAt:number, ttlSeconds:number, live:Array<{host:string,url:string,title:string,status:number}>}>} */
++export async function readCache() {
++  try {
++    let data = await IOUtils.readJSON(cachePath());
++    if (!data || typeof data != "object") {
++      return emptyCache();
++    }
++    let live = Array.isArray(data.live) ? data.live.filter(validLiveRow) : [];
++    return {
++      checkedAt: Number.isFinite(data.checkedAt) ? data.checkedAt : 0,
++      ttlSeconds: Number.isFinite(data.ttlSeconds) ? data.ttlSeconds : DEFAULT_TTL_SECONDS,
++      live,
++    };
++  } catch (e) {
++    if (!(e instanceof DOMException) || e.name !== "NotFoundError") {
++      console.warn("GreatDANE Explore: cache read failed", e);
++    }
++    return emptyCache();
++  }
++}
++
++function emptyCache() {
++  return { checkedAt: 0, ttlSeconds: DEFAULT_TTL_SECONDS, live: [] };
++}
++
++function validLiveRow(row) {
++  return (
++    row &&
++    typeof row == "object" &&
++    typeof row.host == "string" &&
++    LABEL.test(row.host.split(".")[0]) &&
++    typeof row.url == "string" &&
++    row.url.startsWith("https://")
++  );
++}
++
++export async function writeCache(cache) {
++  let payload = {
++    checkedAt: cache.checkedAt || Date.now(),
++    ttlSeconds: cache.ttlSeconds || prefInt(PREF_TTL, DEFAULT_TTL_SECONDS),
++    live: (cache.live || []).filter(validLiveRow),
++    // Explicit privacy note for anyone reading the file on disk.
++    privacy:
++      "Refresh probes contact listed hosts from this browser (via Dane node proxy). Not IP-private.",
++  };
++  await IOUtils.writeJSON(cachePath(), payload, { tmpPath: cachePath() + ".tmp" });
++  return payload;
++}
++
++export function isFresh(cache, now = Date.now()) {
++  let ttl = Math.max(
++    60,
++    Number(cache?.ttlSeconds) || prefInt(PREF_TTL, DEFAULT_TTL_SECONDS)
++  );
++  let at = Number(cache?.checkedAt) || 0;
++  return at > 0 && now - at < ttl * 1000;
++}
++
++/** List candidate https://host/ URLs from loopback /gd/names (not a liveness claim). */
++export async function listCandidates(limit = prefInt(PREF_CANDIDATE_LIMIT, DEFAULT_CANDIDATE_LIMIT)) {
++  let pq = lazy.parseQuery("");
++  let res = await lazy.lookup(pq);
++  let hosts = [];
++  let seen = new Set();
++  for (let row of res.rows || []) {
++    let host = String(row.host || "").toLowerCase();
++    if (!host || seen.has(host)) continue;
++    // Skip bare TLD-only if any slip through.
++    if (!host.includes(".")) continue;
++    seen.add(host);
++    hosts.push(host);
++    if (hosts.length >= limit) break;
++  }
++  return hosts.map(host => ({
++    host,
++    url: "https://" + host + "/",
++    title: host,
++  }));
++}
++
++/**
++ * Probe one HTTPS URL through Dane's normal stack. Resolves with
++ * {ok, status, host, url, title} — ok only when TLS+HTTP completed without
++ * throw and status is 2xx/3xx/4xx (server answered). 5xx and network/TLS
++ * failures are not ok (hidden from the row).
++ */
++export async function probeHttps(url, timeoutMs = prefInt(PREF_PROBE_TIMEOUT, DEFAULT_PROBE_TIMEOUT_MS)) {
++  let host;
++  try {
++    host = Services.io.newURI(url).host.toLowerCase();
++  } catch (e) {
++    return { ok: false, status: 0, host: "", url, title: "" };
++  }
++  if (!lazy.GreatDANE._chainFor(host)) {
++    return { ok: false, status: 0, host, url, title: host };
++  }
++  let ctrl = new AbortController();
++  let timer = lazy.setTimeout(() => ctrl.abort(), Math.max(500, timeoutMs));
++  try {
++    let resp = await fetch(url, {
++      method: "GET",
++      redirect: "follow",
++      cache: "no-store",
++      credentials: "omit",
++      signal: ctrl.signal,
++      // System principal fetch does not record Places visits.
++    });
++    let status = resp.status || 0;
++    // Consuming a little body avoids some keep-alive edge cases; ignore errors.
++    try {
++      await resp.arrayBuffer();
++    } catch (e) {}
++    let ok = status >= 200 && status < 500;
++    return { ok, status, host, url: "https://" + host + "/", title: host };
++  } catch (e) {
++    return { ok: false, status: 0, host, url: "https://" + host + "/", title: host };
++  } finally {
++    lazy.clearTimeout(timer);
++  }
++}
++
++/**
++ * Refresh cache: candidate list from loopback directory, then HTTPS probes
++ * until maxTiles successes or candidates exhausted. Always rewrites checkedAt
++ * so a total failure still backs off for TTL (empty row, not tight retry loop).
++ */
++export async function refreshCache({
++  maxTiles = prefInt(PREF_MAX, DEFAULT_MAX_TILES),
++  candidateLimit = prefInt(PREF_CANDIDATE_LIMIT, DEFAULT_CANDIDATE_LIMIT),
++  ttlSeconds = prefInt(PREF_TTL, DEFAULT_TTL_SECONDS),
++} = {}) {
++  if (!prefBool(PREF_ENABLED, true)) {
++    return writeCache({ checkedAt: Date.now(), ttlSeconds, live: [] });
++  }
++  let candidates = await listCandidates(candidateLimit);
++  let live = [];
++  for (let c of candidates) {
++    if (live.length >= maxTiles) break;
++    let result = await probeHttps(c.url);
++    if (result.ok) {
++      live.push({
++        host: result.host,
++        url: result.url,
++        title: result.title,
++        status: result.status,
++      });
++    }
++  }
++  return writeCache({ checkedAt: Date.now(), ttlSeconds, live });
++}
++
++/** Cache rows shaped for Activity Stream section cards. No Places fields. */
++export function rowsFromCache(cache) {
++  return (cache?.live || []).filter(validLiveRow).map((row, i) => ({
++    url: row.url,
++    hostname: row.host,
++    title: row.title || row.host,
++    type: "history",
++    // Fake guid so Card keys are stable; not a Places guid.
++    guid: "dane-explore-" + row.host,
++    hasImage: false,
++    // Tip for UI: not Places / not sponsored.
++    description: ".doge / .pepe",
++  }));
++}
++
++let _refreshInFlight = null;
++let _scheduled = null;
++
++/** Return live rows from cache; optionally kick a background refresh if stale. */
++export async function getExploreRows({ allowRefresh = true } = {}) {
++  if (!prefBool(PREF_ENABLED, true)) {
++    return [];
++  }
++  let cache = await readCache();
++  if (allowRefresh && !isFresh(cache)) {
++    scheduleRefresh();
++  }
++  return rowsFromCache(cache);
++}
++
++export function scheduleRefresh(delayMs = 0) {
++  if (!prefBool(PREF_ENABLED, true)) return;
++  if (_refreshInFlight) return;
++  if (_scheduled) {
++    lazy.clearTimeout(_scheduled);
++    _scheduled = null;
++  }
++  _scheduled = lazy.setTimeout(() => {
++    _scheduled = null;
++    if (_refreshInFlight) return;
++    _refreshInFlight = refreshCache()
++      .catch(e => console.warn("GreatDANE Explore: refresh failed", e))
++      .finally(() => {
++        _refreshInFlight = null;
++      });
++  }, Math.max(0, delayMs));
++}
++
++export function exploreEnabled() {
++  return prefBool(PREF_ENABLED, true);
++}
++
++export const GreatDANEExplore = {
++  PREF_ENABLED,
++  PREF_TTL,
++  PREF_MAX,
++  PREF_PROBE_TIMEOUT,
++  PREF_CANDIDATE_LIMIT,
++  CACHE_FILENAME,
++  DEFAULT_TTL_SECONDS,
++  DEFAULT_MAX_TILES,
++  readCache,
++  writeCache,
++  isFresh,
++  listCandidates,
++  probeHttps,
++  refreshCache,
++  rowsFromCache,
++  getExploreRows,
++  scheduleRefresh,
++  exploreEnabled,
++};
+diff --git a/browser/components/greatdane/moz.build b/browser/components/greatdane/moz.build
+index 1095bac593..4ebdbe8c0a 100644
+--- a/browser/components/greatdane/moz.build
++++ b/browser/components/greatdane/moz.build
+@@ -7,6 +7,7 @@ EXTRA_JS_MODULES += [
+     "GreatDANE.sys.mjs",
+     "GreatDANEAbout.sys.mjs",
+     "GreatDANEDiscover.sys.mjs",
++    "GreatDANEExplore.sys.mjs",
+     "GreatDANELegacy.sys.mjs",
+     "MozillaFirefoxProfileMigrator.sys.mjs",
+ ]
+diff --git a/browser/components/greatdane/test/unit/test_GreatDANEExplore.js b/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
+new file mode 100644
+index 0000000000..931a88ecf8
+--- /dev/null
++++ b/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
+@@ -0,0 +1,37 @@
++/* GreatDANE Explore: pure helpers (freshness + row shaping). */
++"use strict";
++
++const { isFresh, rowsFromCache, DEFAULT_TTL_SECONDS } = ChromeUtils.importESModule(
++  "resource:///modules/GreatDANEExplore.sys.mjs"
++);
++
++add_task(function test_isFresh_ttl() {
++  let now = 1_700_000_000_000;
++  Assert.ok(!isFresh({ checkedAt: 0, ttlSeconds: 100 }, now));
++  Assert.ok(
++    isFresh({ checkedAt: now - 1000, ttlSeconds: 10 }, now),
++    "within TTL"
++  );
++  Assert.ok(
++    !isFresh({ checkedAt: now - 11_000, ttlSeconds: 10 }, now),
++    "past TTL"
++  );
++  Assert.equal(DEFAULT_TTL_SECONDS, 6 * 60 * 60);
++});
++
++add_task(function test_rowsFromCache_filters_and_shapes() {
++  let rows = rowsFromCache({
++    live: [
++      { host: "alpha.doge", url: "https://alpha.doge/", title: "alpha.doge", status: 200 },
++      { host: "bad", url: "http://nope/", title: "x" }, // not https
++      null,
++      { host: "beta.pepe", url: "https://beta.pepe/", title: "beta.pepe", status: 301 },
++    ],
++  });
++  Assert.equal(rows.length, 2);
++  Assert.equal(rows[0].url, "https://alpha.doge/");
++  Assert.equal(rows[0].guid, "dane-explore-alpha.doge");
++  Assert.equal(rows[0].type, "history");
++  Assert.ok(!rows[0].bookmarkGuid);
++  Assert.equal(rows[1].hostname, "beta.pepe");
++});
+diff --git a/browser/components/greatdane/test/unit/xpcshell.toml b/browser/components/greatdane/test/unit/xpcshell.toml
+index d3523e53fa..90919a3279 100644
+--- a/browser/components/greatdane/test/unit/xpcshell.toml
++++ b/browser/components/greatdane/test/unit/xpcshell.toml
+@@ -3,3 +3,5 @@ head = ""
+ firefox-appdir = "browser"
+ 
+ ["test_greatdane_failclosed.js"]
++
++["test_GreatDANEExplore.js"]
+diff --git a/browser/extensions/newtab/lib/ActivityStream.sys.mjs b/browser/extensions/newtab/lib/ActivityStream.sys.mjs
+index 571bb78def..59ebe5dda8 100644
+--- a/browser/extensions/newtab/lib/ActivityStream.sys.mjs
++++ b/browser/extensions/newtab/lib/ActivityStream.sys.mjs
+@@ -34,6 +34,7 @@ ChromeUtils.defineESModuleGetters(lazy, {
+     "resource://newtab/lib/ExternalComponentsFeed.sys.mjs",
+   FaviconFeed: "resource://newtab/lib/FaviconFeed.sys.mjs",
+   HighlightsFeed: "resource://newtab/lib/HighlightsFeed.sys.mjs",
++  GreatDANEExploreFeed: "resource://newtab/lib/GreatDANEExploreFeed.sys.mjs",
+   ListsFeed: "resource://newtab/lib/Widgets/ListsFeed.sys.mjs",
+   NewTabAttributionFeed: "resource://newtab/lib/NewTabAttributionFeed.sys.mjs",
+   NewTabActorRegistry: "resource://newtab/lib/NewTabActorRegistry.sys.mjs",
+@@ -736,6 +737,13 @@ export const PREFS_CONFIG = new Map([
+       value: 1,
+     },
+   ],
++  [
++    "section.daneexplore.rows",
++    {
++      title: "Number of rows of Explore .doge & .pepe to display",
++      value: 1,
++    },
++  ],
+   [
+     "feeds.section.topstories",
+     {
+@@ -754,7 +762,7 @@ export const PREFS_CONFIG = new Map([
+     "sectionOrder",
+     {
+       title: "The rendering order for the sections",
+-      value: "topsites,topstories,highlights",
++      value: "topsites,daneexplore,highlights,topstories",
+     },
+   ],
+   [
+@@ -1884,6 +1892,13 @@ const FEEDS_DATA = [
+     title: "Fetches content recommendations from places db",
+     value: false,
+   },
++  {
++    name: "section.daneexplore",
++    factory: () => new lazy.GreatDANEExploreFeed(),
++    title:
++      "Explore .doge & .pepe: cached HTTPS-live chain sites (GreatDANEExplore)",
++    value: true,
++  },
+   {
+     name: "system.topstories",
+     factory: () =>
+diff --git a/browser/extensions/newtab/lib/GreatDANEExploreFeed.sys.mjs b/browser/extensions/newtab/lib/GreatDANEExploreFeed.sys.mjs
+new file mode 100644
+index 0000000000..4676cce2ef
+--- /dev/null
++++ b/browser/extensions/newtab/lib/GreatDANEExploreFeed.sys.mjs
+@@ -0,0 +1,120 @@
++/* GreatDANE: Activity Stream feed for the Explore .doge & .pepe section.
++ * Displays HTTPS-validated chain sites from GreatDANEExplore's disk cache.
++ * Never probes on about:newtab open; stale caches schedule a background
++ * refresh. Does not read or write Places. */
++
++const lazy = {};
++ChromeUtils.defineESModuleGetters(lazy, {
++  SectionsManager: "resource://newtab/lib/SectionsManager.sys.mjs",
++  GreatDANEExplore: "resource:///modules/GreatDANEExplore.sys.mjs",
++});
++
++import { actionTypes as at } from "resource://newtab/common/Actions.mjs";
++
++export const SECTION_ID = "daneexplore";
++
++export class GreatDANEExploreFeed {
++  constructor() {
++    this._observing = false;
++  }
++
++  init() {
++    lazy.SectionsManager.onceInitialized(this.postInit.bind(this));
++  }
++
++  postInit() {
++    this._ensurePrefObserver();
++    if (!lazy.GreatDANEExplore.exploreEnabled()) {
++      lazy.SectionsManager.disableSection(SECTION_ID);
++      return;
++    }
++    lazy.SectionsManager.enableSection(SECTION_ID, true /* isStartup */);
++    this.publishRows({ broadcast: true, isStartup: true, allowRefresh: true });
++  }
++
++  uninit() {
++    if (this._observing) {
++      try {
++        Services.prefs.removeObserver(
++          lazy.GreatDANEExplore.PREF_ENABLED,
++          this
++        );
++      } catch (e) {}
++      this._observing = false;
++    }
++    lazy.SectionsManager.disableSection(SECTION_ID);
++  }
++
++  _ensurePrefObserver() {
++    if (this._observing) return;
++    try {
++      Services.prefs.addObserver(lazy.GreatDANEExplore.PREF_ENABLED, this);
++      this._observing = true;
++    } catch (e) {
++      console.warn("GreatDANE Explore feed: pref observer failed", e);
++    }
++  }
++
++  observe(subject, topic, data) {
++    if (topic !== "nsPref:changed") return;
++    if (data === lazy.GreatDANEExplore.PREF_ENABLED) {
++      this._onEnabledChanged();
++    }
++  }
++
++  _onEnabledChanged() {
++    if (lazy.GreatDANEExplore.exploreEnabled()) {
++      lazy.SectionsManager.enableSection(SECTION_ID);
++      this.publishRows({ broadcast: true, allowRefresh: true });
++    } else {
++      lazy.SectionsManager.disableSection(SECTION_ID);
++    }
++  }
++
++  async publishRows({
++    broadcast = false,
++    isStartup = false,
++    allowRefresh = false,
++  } = {}) {
++    if (!lazy.GreatDANEExplore.exploreEnabled()) {
++      lazy.SectionsManager.updateSection(
++        SECTION_ID,
++        { rows: [] },
++        true,
++        isStartup
++      );
++      return;
++    }
++    let rows = await lazy.GreatDANEExplore.getExploreRows({ allowRefresh });
++    const section = this.store
++      .getState()
++      .Sections.find(s => s.id === SECTION_ID);
++    const initialized = section && section.initialized;
++    const shouldBroadcast = broadcast || !initialized;
++    lazy.SectionsManager.updateSection(
++      SECTION_ID,
++      { rows },
++      shouldBroadcast,
++      isStartup
++    );
++  }
++
++  onAction(action) {
++    switch (action.type) {
++      case at.INIT:
++        this.init();
++        break;
++      case at.UNINIT:
++        this.uninit();
++        break;
++      case at.SYSTEM_TICK:
++        // May schedule a background refresh if cache is stale; paint is cache-only.
++        this.publishRows({ allowRefresh: true });
++        break;
++      case at.NEW_TAB_LOAD:
++        // Cache only — never probe because a new tab opened.
++        this.publishRows({ allowRefresh: false });
++        break;
++    }
++  }
++}
+diff --git a/browser/extensions/newtab/lib/SectionsManager.sys.mjs b/browser/extensions/newtab/lib/SectionsManager.sys.mjs
+index 36dbeb3d4d..cbd5cf2f34 100644
+--- a/browser/extensions/newtab/lib/SectionsManager.sys.mjs
++++ b/browser/extensions/newtab/lib/SectionsManager.sys.mjs
+@@ -136,6 +136,33 @@ const BUILT_IN_SECTIONS = () => ({
+     },
+     shouldSendImpressionStats: false,
+   }),
++  "feeds.section.daneexplore": () => ({
++    id: "daneexplore",
++    pref: {
++      titleString: "Explore .doge & .pepe",
++      descString:
++        "HTTPS-checked .doge/.pepe sites (Dane TLS/TLSA). Refresh contacts those sites from this browser — not IP-private. Cached; new tabs do not re-probe.",
++    },
++    shouldHidePref: false,
++    eventSource: "DANE_EXPLORE",
++    icon: "chrome://branding/content/icon32.png",
++    title: "Explore .doge & .pepe",
++    compactCards: true,
++    rowsPref: "section.daneexplore.rows",
++    maxRows: 2,
++    availableLinkMenuOptions: [
++      "OpenInNewWindow",
++      "OpenInPrivateWindow",
++      "Separator",
++      "BlockUrl",
++    ],
++    emptyState: {
++      message:
++        "No HTTPS-live .doge/.pepe sites in cache yet. Dane checks in the background (not on every new tab).",
++      icon: "chrome://branding/content/icon32.png",
++    },
++    shouldSendImpressionStats: false,
++  }),
+ });
+ 
+ export const SectionsManager = {
