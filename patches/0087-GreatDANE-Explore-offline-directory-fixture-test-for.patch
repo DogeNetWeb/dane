@@ -1,0 +1,106 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Thu, 5 Nov 2026 20:59:03 -0600
+Subject: [PATCH 087/144] GreatDANE Explore: offline directory fixture test for
+ both namespaces; testing pref for deferred-retry interval; retry/ceiling logs
+
+---
+ .../greatdane/GreatDANEExplore.sys.mjs        | 11 +++-
+ .../test/unit/test_GreatDANEExplore.js        | 56 +++++++++++++++++++
+ 2 files changed, 66 insertions(+), 1 deletion(-)
+
+diff --git a/browser/components/greatdane/GreatDANEExplore.sys.mjs b/browser/components/greatdane/GreatDANEExplore.sys.mjs
+index 15a8a960d9..976c32317d 100644
+--- a/browser/components/greatdane/GreatDANEExplore.sys.mjs
++++ b/browser/components/greatdane/GreatDANEExplore.sys.mjs
+@@ -571,6 +571,12 @@ let _deferredNotReady = false;
+ let _notReadyRetries = 0;
+ export const NOT_READY_RETRY_MS = 60 * 1000;
+ export const NOT_READY_MAX_RETRIES = 30; // ~30 min after launch, then SYSTEM_TICK only
++// Hidden test pref (ms, floor 1000) so the ceiling can be exercised on a
++// packaged build; retry count ceiling is fixed and cannot be raised by pref.
++const PREF_NOT_READY_RETRY_MS = "greatdane.explore.testing.notReadyRetryMs";
++function notReadyRetryMs() {
++  return Math.max(1000, prefInt(PREF_NOT_READY_RETRY_MS, NOT_READY_RETRY_MS));
++}
+ 
+ export async function getExploreRows({ allowRefresh = true } = {}) {
+   if (!prefBool(PREF_ENABLED, true)) {
+@@ -606,9 +612,12 @@ export function scheduleRefresh(delayMs = 2500) {
+         _refreshInFlight = null;
+         if (_deferredNotReady && _notReadyRetries < NOT_READY_MAX_RETRIES) {
+           _notReadyRetries++;
+-          scheduleRefresh(NOT_READY_RETRY_MS);
++          console.log("GreatDANE Explore: deferred retry", _notReadyRetries, "of", NOT_READY_MAX_RETRIES);
++          scheduleRefresh(notReadyRetryMs());
+         } else if (!_deferredNotReady) {
+           _notReadyRetries = 0;
++        } else {
++          console.log("GreatDANE Explore: deferred retry ceiling reached; waiting for SYSTEM_TICK");
+         }
+       });
+   }, Math.max(0, delayMs));
+diff --git a/browser/components/greatdane/test/unit/test_GreatDANEExplore.js b/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
+index 57a48cb86a..e35c5cb3f0 100644
+--- a/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
++++ b/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
+@@ -269,3 +269,59 @@ add_task(async function test_round_not_stamped_before_node_sync() {
+     for (let [k, v] of saved) GreatDANE._chains.set(k, v);
+   }
+ });
++
++// Deterministic offline directory fixture: bounded sampling reaches both
++// namespaces with sparse pages and never more than `want` candidates.
++add_task(async function test_sampler_reaches_both_namespaces_fixture() {
++  do_get_profile();
++  const { sampleCandidates, DEFAULT_DIR_PAGES_PER_ROUND } =
++    ChromeUtils.importESModule("resource:///modules/GreatDANEExplore.sys.mjs");
++  const { GreatDANE } = ChromeUtils.importESModule(
++    "resource:///modules/GreatDANE.sys.mjs"
++  );
++  function dirServer(tld, names) {
++    let srv = new HttpServer();
++    srv.hits = 0;
++    srv.registerPathHandler("/gd/names", (req, resp) => {
++      srv.hits++;
++      let q = new URLSearchParams(req.queryString);
++      let off = Number(q.get("offset")) || 0;
++      let lim = Number(q.get("limit")) || 10;
++      let page = names.slice(off, off + lim).map(name => ({ name }));
++      resp.setHeader("Content-Type", "application/json");
++      resp.write(JSON.stringify({ tld, status: "ok", names: page, total: names.length }));
++    });
++    srv.start(-1);
++    return srv;
++  }
++  let pepeNames = Array.from({ length: 66 }, (_, i) => "p" + i);
++  let saved = new Map(GreatDANE._chains);
++  for (let [label, dogeNames] of [
++    ["live-shape doge=1", ["greatdane"]],
++    ["balanced doge=66", Array.from({ length: 66 }, (_, i) => "d" + i)],
++  ]) {
++    let ds = dirServer("doge", dogeNames);
++    let ps = dirServer("pepe", pepeNames);
++    GreatDANE._chains.clear();
++    GreatDANE._chains.set("doge", { tld: "doge", ports: { pac: ds.identity.primaryPort } });
++    GreatDANE._chains.set("pepe", { tld: "pepe", ports: { pac: ps.identity.primaryPort } });
++    let seen = { doge: 0, pepe: 0 };
++    try {
++      for (let i = 0; i < 100; i++) {
++        let before = ds.hits + ps.hits;
++        let c = await sampleCandidates({ probeLog: [] }, 8);
++        Assert.lessOrEqual(c.length, 8, label + ": <= want");
++        Assert.lessOrEqual(ds.hits + ps.hits - before, DEFAULT_DIR_PAGES_PER_ROUND, label + ": sparse pages");
++        for (let x of c) seen[x.host.split(".").pop()]++;
++      }
++      info(label + " " + JSON.stringify(seen));
++      Assert.greater(seen.doge, 0, label + ": .doge reachable");
++      Assert.greater(seen.pepe, 0, label + ": .pepe reachable");
++    } finally {
++      await new Promise(r => ds.stop(r));
++      await new Promise(r => ps.stop(r));
++    }
++  }
++  GreatDANE._chains.clear();
++  for (let [k, v] of saved) GreatDANE._chains.set(k, v);
++});
