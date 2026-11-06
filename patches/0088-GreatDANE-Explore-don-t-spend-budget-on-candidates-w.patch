@@ -1,0 +1,97 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Thu, 5 Nov 2026 21:22:20 -0600
+Subject: [PATCH 088/144] GreatDANE Explore: don't spend budget on candidates
+ without local TLSA (sync-idle node before records fold)
+
+---
+ .../greatdane/GreatDANEExplore.sys.mjs        | 13 ++++++
+ .../test/unit/test_GreatDANEExplore.js        | 40 +++++++++++++++++++
+ 2 files changed, 53 insertions(+)
+
+diff --git a/browser/components/greatdane/GreatDANEExplore.sys.mjs b/browser/components/greatdane/GreatDANEExplore.sys.mjs
+index 976c32317d..8269cf19a0 100644
+--- a/browser/components/greatdane/GreatDANEExplore.sys.mjs
++++ b/browser/components/greatdane/GreatDANEExplore.sys.mjs
+@@ -499,6 +499,7 @@ export async function refreshCache() {
+   candidates = candidates.slice(0, sampleSize);
+ 
+   let attempted = 0;
++  let noRecord = 0;
+   let liveByHost = new Map(
+     (cache.live || []).filter(validLiveRow).map(r => [r.host, r])
+   );
+@@ -511,6 +512,15 @@ export async function refreshCache() {
+     if (hostProbedRecently(cache, c.host, Date.now())) {
+       continue;
+     }
++    // Local loopback check (same /gd/tlsa the TLS verifier uses): a host
++    // whose resolver has no usable TLSA yet would fail closed with no
++    // network to the site. A node can report sync-idle at tip before its
++    // records are folded, so don't spend weekly budget on these.
++    let ts = await lazy.GreatDANE.tlsaStatus(c.host);
++    if (ts !== "ok") {
++      noRecord++;
++      continue;
++    }
+     let result = await probeHttps(c.url);
+     if (result.skipped) {
+       // Node not usable: no network happened; keep prior rows, no budget.
+@@ -544,6 +554,9 @@ export async function refreshCache() {
+   if (attempted > 0 || !candidates.length) {
+     cache.lastSampleAt = now;
+   }
++  if (noRecord) {
++    console.log("GreatDANE Explore: skipped", noRecord, "candidate(s) without local TLSA (no budget)");
++  }
+   cache.live = [...liveByHost.values()];
+   cache.checkedAt = Date.now();
+   return writeCache(cache);
+diff --git a/browser/components/greatdane/test/unit/test_GreatDANEExplore.js b/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
+index e35c5cb3f0..a52820b57e 100644
+--- a/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
++++ b/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
+@@ -325,3 +325,43 @@ add_task(async function test_sampler_reaches_both_namespaces_fixture() {
+   GreatDANE._chains.clear();
+   for (let [k, v] of saved) GreatDANE._chains.set(k, v);
+ });
++
++// Sync-idle node whose resolver has no TLSA yet: no probes, no budget, round
++// gap left open (cold-start budget waste guard).
++add_task(async function test_no_budget_on_hosts_without_local_tlsa() {
++  do_get_profile();
++  const { refreshCache, writeCache, canStartSampleRound } =
++    ChromeUtils.importESModule("resource:///modules/GreatDANEExplore.sys.mjs");
++  const { GreatDANE } = ChromeUtils.importESModule(
++    "resource:///modules/GreatDANE.sys.mjs"
++  );
++  let srv = new HttpServer();
++  srv.registerPathHandler("/gd/names", (req, resp) => {
++    resp.setHeader("Content-Type", "application/json");
++    resp.write(JSON.stringify({ tld: "pepe", status: "ok", total: 3,
++      names: [{ name: "century" }, { name: "ai" }, { name: "ribbit" }] }));
++  });
++  srv.start(-1);
++  let saved = new Map(GreatDANE._chains);
++  let savedTs = GreatDANE.tlsaStatus;
++  let asked = [];
++  GreatDANE.tlsaStatus = async h => (asked.push(h), "no_tlsa");
++  GreatDANE._chains.clear();
++  GreatDANE._chains.set("pepe", { tld: "pepe", state: "ready",
++    ports: { pac: srv.identity.primaryPort },
++    status: { height: 100, activation: 1, peer_height: 100, passes: 1 } });
++  try {
++    Assert.ok(!GreatDANE.blockReason(GreatDANE._chains.get("pepe")), "sync-idle ready");
++    await writeCache({ live: [], probeLog: [], lastSampleAt: 0 });
++    let c = await refreshCache();
++    Assert.equal(asked.length, 3, "asked local resolver for each candidate");
++    Assert.equal((c.probeLog || []).length, 0, "no budget spent on no_tlsa hosts");
++    Assert.equal(Number(c.lastSampleAt) || 0, 0, "round gap stays open");
++    Assert.ok(canStartSampleRound(c));
++  } finally {
++    GreatDANE.tlsaStatus = savedTs;
++    GreatDANE._chains.clear();
++    for (let [k, v] of saved) GreatDANE._chains.set(k, v);
++    await new Promise(r => srv.stop(r));
++  }
++});
