@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Self-test for greatdane/tools/sign_dane_macos.py. Runs anywhere (Linux or macOS), with no real codesign.
+"""Self-test for greatdane/tools/sign_dane_macos.py (team ID read from greatdane/macos/signing.conf). Runs anywhere (Linux or macOS), with no real codesign.
 
 Builds fake Dane.app layouts in a temp dir and puts a MOCK `codesign` first on PATH. Nothing is ever really
 signed; the mock only records calls and returns canned `codesign -d` output.
@@ -13,6 +13,8 @@ TREE = os.path.abspath(os.path.join(HERE, "..", ".."))
 TOOL = os.path.join(TREE, "greatdane", "tools", "sign_dane_macos.py")
 ENTDIR = os.path.join(TREE, "security", "mac", "hardenedruntime", "production")
 VERBOSE = "-v" in sys.argv
+CONF = os.path.join(TREE, "greatdane", "macos", "signing.conf")
+TEAM = re.search(r"^TEAM_ID=(\S+)", open(CONF).read(), re.M).group(1)  # single source of truth (L3)
 MOCK = r'''#!/usr/bin/env python3
 import os, sys
 a = sys.argv[1:]; p = a[-1] if a else ""
@@ -32,10 +34,17 @@ if a[:2] == ["-d", "--entitlements"]:
         sys.stdout.buffer.write(open(os.path.join(D, e), "rb").read())
 elif a[:1] == ["-dvv"]:
     flags = "0x10000(runtime)" if not os.environ.get("MOCK_NO_RUNTIME") else "0x0(none)"
+    only = os.environ.get("MOCK_ADHOC_ONLY")
+    adhoc = os.environ.get("MOCK_ADHOC") or (only and base == only)
+    if adhoc:
+        flags = flags.replace("0x10000(runtime)", "0x10002(adhoc,runtime)")
     sys.stderr.write("CodeDirectory v=20500 size=1 flags=%s hashes=1\n" % flags)
-    sys.stderr.write("TeamIdentifier=%s\n" % os.environ.get("MOCK_TEAM", "MNL79V994R"))
-    if not os.environ.get("MOCK_NO_TS"):
-        sys.stderr.write("Timestamp=Nov 10, 2026 at 4:00:00 PM\n")
+    if adhoc:
+        sys.stderr.write("Signature=adhoc\nTeamIdentifier=not set\n")
+    else:
+        sys.stderr.write("TeamIdentifier=%s\n" % os.environ["MOCK_TEAM"])
+        if not os.environ.get("MOCK_NO_TS"):
+            sys.stderr.write("Timestamp=Nov 10, 2026 at 4:00:00 PM\n")
 elif a[:1] == ["--verify"]:
     sys.stderr.write(p + ": valid on disk\n")
 elif "--sign" in a:
@@ -117,14 +126,14 @@ def main():
         cs = os.path.join(bindir, "codesign")
         open(cs, "w").write(MOCK)
         os.chmod(cs, 0o755)
-        mock = {"PATH": bindir + os.pathsep + os.environ["PATH"], "MOCK_ENTDIR": ENTDIR}
+        mock = {"PATH": bindir + os.pathsep + os.environ["PATH"], "MOCK_ENTDIR": ENTDIR, "MOCK_TEAM": TEAM}
         good = fake_app(os.path.join(tmp, "good"))
 
         # --- positive ---
         run("P1 plan OK (framework symlinks, symlinked Mach-O ignored)", ["plan", good], 0, [r"PLAN OK"],
             [r"XUL-link", r"PROBLEM"])
         run("P2 sign --dry-run OK", ["sign", good, "--dry-run"], 0, [r"DRY RUN: nothing signed",
-            r"<identity redacted; team MNL79V994R>"], [r"--deep"])
+            r"<identity redacted; team %s>" % TEAM], [r"--deep"])
         run("P3 check PASS with mock codesign", ["check", good], 0, [r"CHECK PASS"], env=mock)
         jpath = os.path.join(tmp, "ent.json")
         run("P4 check --json writes report", ["check", good, "--json", jpath], 0, [r"CHECK PASS"], env=mock)
@@ -132,7 +141,7 @@ def main():
         run("P5 no-DLV main-app variant plan OK", ["plan", good], 0, [r"dane.browser.no-dlv.xml", r"PLAN OK"],
             env={"DANE_BROWSER_ENTITLEMENTS": "dane.browser.no-dlv.xml"})
         logf = os.path.join(tmp, "cs.log")
-        ident = "Developer ID Application: Example Person (MNL79V994R)"
+        ident = "Developer ID Application: Example Person (%s)" % TEAM
         run("P6 mock sign: identity never printed", ["sign", good], 0, [r"CHECK PASS"],
             [r"Example Person"], env=dict(mock, DANE_SIGN_IDENTITY=ident, MOCK_LOG=logf))
         calls = open(logf).read()
@@ -192,7 +201,7 @@ def main():
         run("G12 allowlisted /Volumes dir passes guard", ["plan", "/Volumes/Other/w/Dane.app", "--allow-volume",
             "/Volumes/Other"], 2, [r"not an app bundle"], [r"need --allow-volume"])
         run("G13 allowlist via env passes guard", ["plan", "/Volumes/Other/w/Dane.app"], 2, [r"not an app bundle"],
-            env={"DANE_SIGN_ALLOW_VOLUMES": "/tmp/nothing:/Volumes/Other"})
+            env={"DANE_SIGN_ALLOW_VOLUMES": "/Volumes/Scratch:/Volumes/Other"})
         run("G14 allowlisting the owner volume is refused", ["plan", "/Volumes/Other/Dane.app", "--allow-volume",
             "/Volumes/Dane"], 2, [r"allowlist entry is itself off-limits"])
         run("G15 owner path refused even if allowlisted", ["plan", "/Volumes/Dane 1/Dane.app", "--allow-volume",
@@ -200,10 +209,102 @@ def main():
         run("G16 '/Volumes/Danes' prefix is NOT the owner volume (needs allowlist)",
             ["plan", "/Volumes/Danes/Dane.app"], 2, [r"need --allow-volume"], [r"off-limits"])
 
+        # --- round 3: more guard rules ---
+        run("G17 /Applications/Dane.app refused", ["check", "/Applications/Dane.app"], 2,
+            [r"off-limits \(installed app location"], env=mock)
+        run("G18 ~/Applications/Dane.app refused", ["plan", "/Users/someone/Applications/Dane.app"], 2,
+            [r"off-limits \(installed app location"])
+        run("G19 dangling --allow-volume outside /Volumes refused", ["plan", good, "--allow-volume",
+            os.path.join(tmp, "nope")], 2, [r"allowlist entry must be a directory under /Volumes"])
+        run("G20 DANE_SIGN_ALLOW_VOLUMES entry outside /Volumes refused", ["plan", good], 2,
+            [r"allowlist entry must be a directory under /Volumes"], env={"DANE_SIGN_ALLOW_VOLUMES": "/tmp"})
+        run("G21 bare /Volumes as allowlist refused", ["plan", good, "--allow-volume", "/Volumes"], 2,
+            [r"allowlist entry must be a directory under /Volumes"])
+        # owner bundle IDs outside the tree / work dirs
+        for i, bid in enumerate(["surf.dogecoin.dane", "org.mozilla.surf.pepecoin.greatdane"]):
+            root = os.path.join(tmp, "bid%d" % i); shutil.copytree(os.path.join(tmp, "good"), root, symlinks=True)
+            ipl = os.path.join(root, "Dane.app", "Contents", "Info.plist")
+            d = plistlib.load(open(ipl, "rb")); d["CFBundleIdentifier"] = bid; plistlib.dump(d, open(ipl, "wb"))
+            run("G%d owner bundle ID %s outside work dirs refused" % (22 + 2 * i, bid),
+                ["plan", os.path.join(root, "Dane.app")], 2, [r"looks like an installed or downloaded owner copy"])
+            run("G%d same app inside --work-dir passes" % (23 + 2 * i),
+                ["plan", os.path.join(root, "Dane.app"), "--work-dir", root], 0, [r"PLAN OK"])
+        run("G26 --work-dir that is itself off-limits refused", ["plan", good, "--work-dir", "/Applications"], 2,
+            [r"work-dir entry is itself off-limits"])
+        # owner dmg attached at a custom mount point (mock hdiutil)
+        mnt = os.path.join(tmp, "custom-mount")
+        shutil.copytree(os.path.join(tmp, "good"), mnt, symlinks=True)
+        hb = os.path.join(tmp, "hbin"); os.makedirs(hb)
+        info = plistlib.dumps({"images": [{"image-path": "/Users/someone/Downloads/Dane-153.7.0esr-mac-universal.dmg",
+                                           "system-entities": [{"mount-point": mnt}]},
+                                          {"image-path": "/tmp/other.dmg", "system-entities": [{}]}]})
+        open(os.path.join(hb, "hdiutil"), "w").write("#!/bin/sh\ncat %s\n" % os.path.join(tmp, "info.plist"))
+        open(os.path.join(tmp, "info.plist"), "wb").write(info)
+        os.chmod(os.path.join(hb, "hdiutil"), 0o755)
+        hpath = {"PATH": hb + os.pathsep + bindir + os.pathsep + os.environ["PATH"]}
+        run("G27 Dane.app inside an attached Dane dmg (custom mount point) refused",
+            ["check", os.path.join(mnt, "Dane.app")], 2, [r"inside attached disk image Dane-153"], env=dict(mock, **hpath))
+        open(os.path.join(tmp, "info.plist"), "wb").write(plistlib.dumps(
+            {"images": [{"image-path": "/x/scratch.dmg", "system-entities": [{"mount-point": mnt}]}]}))
+        run("G28 same app, image without 'dane' in name but Dane.app at mount root refused",
+            ["plan", os.path.join(mnt, "Dane.app")], 2, [r"inside attached disk image scratch.dmg"], env=hpath)
+        run("G29 unrelated attached image does not block the work app", ["plan", good], 0, [r"PLAN OK"], env=hpath)
+        run("G30 guard-path refuses owner source paths", ["guard-path", "/Volumes/Dane 2/Dane.app",
+            "/Applications/Dane.app", os.path.join(tmp, "a", "DaneNotarized", "x")], 2,
+            [r"Dane 2", r"/Applications/Dane.app", r"DaneNotarized"])
+        run("G31 guard-path accepts a work path", ["guard-path", good, os.path.join(tmp, "out")], 0)
+
+        # --- round 3: symlink escape, framework versions ---
+        root = os.path.join(tmp, "s1"); shutil.copytree(os.path.join(tmp, "good"), root, symlinks=True)
+        mk(os.path.join(tmp, "outside", "evil.dylib"))
+        os.symlink(os.path.join(tmp, "outside", "evil.dylib"), os.path.join(root, "Dane.app", "Contents", "MacOS", "evil.dylib"))
+        run("S1 file symlink resolving outside the bundle refused", ["plan", os.path.join(root, "Dane.app")], 2,
+            [r"symlink escapes the bundle: Contents/MacOS/evil.dylib"])
+        root = os.path.join(tmp, "s2"); shutil.copytree(os.path.join(tmp, "good"), root, symlinks=True)
+        os.symlink(os.path.join(tmp, "outside"), os.path.join(root, "Dane.app", "Contents", "Resources", "ext"))
+        run("S2 directory symlink resolving outside the bundle refused", ["plan", os.path.join(root, "Dane.app")], 2,
+            [r"symlink escapes the bundle: Contents/Resources/ext"])
+        root = os.path.join(tmp, "s3"); shutil.copytree(os.path.join(tmp, "good"), root, symlinks=True)
+        os.symlink("../../../../outside/evil.dylib", os.path.join(root, "Dane.app", "Contents", "Frameworks", "rel.dylib"))
+        run("S3 relative ../ symlink escaping the bundle refused", ["plan", os.path.join(root, "Dane.app")], 2,
+            [r"symlink escapes the bundle: Contents/Frameworks/rel.dylib"])
+        fw = "Contents/Frameworks/ChannelPrefs.framework"
+        a = variant("f1", fw + "/Versions/B/ChannelPrefs")
+        run("F1 second real framework version (Versions/B) refused", ["plan", a], 2,
+            [r"not covered by the map: .*ChannelPrefs.framework/Versions/B/ChannelPrefs"])
+        a = variant("f2", fw + "/Versions/B/ChannelPrefs")
+        cl = os.path.join(a, fw, "Versions", "Current"); os.remove(cl); os.symlink("B", cl)
+        run("F2 Current -> B: the old Versions/A binary is refused", ["plan", a], 2,
+            [r"not covered by the map: .*ChannelPrefs.framework/Versions/A/ChannelPrefs"])
+
+        # --- round 3: ad-hoc throwaway runs ---
+        logf2 = os.path.join(tmp, "cs-adhoc.log")
+        run("A1 ad-hoc sign (identity '-') -> CHECK PASS (AD-HOC)", ["sign", good], 0,
+            [r"CHECK PASS \(AD-HOC: expected-not-Developer-ID", r"ad-hoc: expected, not Developer ID"],
+            [r"CHECK FAIL"], env=dict(mock, DANE_SIGN_IDENTITY="-", MOCK_ADHOC="1", MOCK_LOG=logf2))
+        sl = [l.split() for l in open(logf2).read().splitlines() if "--sign" in l]
+        ok = bool(sl) and all("--timestamp" not in l and "--deep" not in l and l[l.index("--sign") + 1] == "-"
+                              and "runtime" in l for l in sl) and any(
+            "--entitlements" in l and l[-1].endswith("media-plugin-helper.app") for l in sl)
+        results.append(("A2 ad-hoc calls: '-', runtime, entitlements kept, no --timestamp/--deep", ok, 0, 0))
+        print("%s %-62s" % ("PASS" if ok else "FAIL", "A2 ad-hoc calls: '-', runtime, entitlements kept, no --timestamp/--deep"))
+        run("A3 ad-hoc + check --strict FAILS", ["check", good, "--strict"], 1,
+            [r"ad-hoc signature \(strict: Developer ID required\)", r"CHECK FAIL"], env=dict(mock, MOCK_ADHOC="1"))
+        run("A4 ad-hoc + DANE_SIGN_STRICT=1 FAILS", ["check", good], 1, [r"CHECK FAIL"],
+            env=dict(mock, MOCK_ADHOC="1", DANE_SIGN_STRICT="1"))
+        run("A5 ad-hoc still requires hardened runtime", ["check", good], 1, [r"no hardened runtime", r"CHECK FAIL"],
+            env=dict(mock, MOCK_ADHOC="1", MOCK_NO_RUNTIME="1"))
+        run("A6 ad-hoc still requires the mapped entitlements", ["check", good], 1,
+            [r"FAIL Contents/MacOS/gpu-helper.app"], env=dict(mock, MOCK_ADHOC="1", MOCK_BAD_GPU="1"))
+        run("A7 mixed ad-hoc / Developer ID fails", ["check", good], 1, [r"mixed ad-hoc and Developer ID"],
+            env=dict(mock, MOCK_ADHOC_ONLY="gpu-helper.app"))
+        run("A8 Developer ID check --strict still PASSES", ["check", good, "--strict"], 0, [r"(?m)^CHECK PASS$"],
+            [r"AD-HOC"], env=mock)
+
         # --- L5: failing mocks for check ---
         run("C1 check FAIL: no hardened runtime", ["check", good], 1, [r"no hardened runtime", r"CHECK FAIL"],
             env=dict(mock, MOCK_NO_RUNTIME="1"))
-        run("C2 check FAIL: wrong team", ["check", good], 1, [r"team ABCDE12345 != MNL79V994R", r"CHECK FAIL"],
+        run("C2 check FAIL: wrong team", ["check", good], 1, [r"team ABCDE12345 != " + TEAM, r"CHECK FAIL"],
             env=dict(mock, MOCK_TEAM="ABCDE12345"))
         run("C3 check FAIL: no secure timestamp", ["check", good], 1, [r"no secure timestamp", r"CHECK FAIL"],
             env=dict(mock, MOCK_NO_TS="1"))
@@ -211,16 +312,17 @@ def main():
             [r"FAIL Contents/MacOS/gpu-helper.app"], env=dict(mock, MOCK_BAD_GPU="1"))
 
         # --- L3: team ID from one config file ---
+        other = "ABCDE12345" if TEAM != "ABCDE12345" else "ZYXWV98765"
         conf = os.path.join(tmp, "signing-mismatch.conf")
-        open(conf, "w").write("TEAM_ID=ABCDE12345\n")
+        open(conf, "w").write("TEAM_ID=%s\n" % other)
         run("T1 signing.conf team mismatch fails check", ["check", good], 1,
-            [r"team MNL79V994R != ABCDE12345", r"CHECK FAIL"], env=dict(mock, DANE_SIGNING_CONF=conf))
+            [r"team %s != %s" % (TEAM, other), r"CHECK FAIL"], env=dict(mock, DANE_SIGNING_CONF=conf))
         bad = os.path.join(tmp, "signing-bad.conf")
         open(bad, "w").write("TEAM_ID=nope\n")
         run("T2 malformed signing.conf refused", ["plan", good], 2, [r"TEAM_ID .* must be"],
             env={"DANE_SIGNING_CONF": bad})
         cfg = os.path.join(TREE, "build", "moz.configure", "update-programs.configure")
-        team = re.search(r"^TEAM_ID=(\S+)", open(os.path.join(TREE, "greatdane", "macos", "signing.conf")).read(), re.M).group(1)
+        team = TEAM
         if os.path.isfile(cfg):
             ous = re.findall(r'subject\.OU\]\s*=\s*\\?"([A-Z0-9]{10})', open(cfg).read())
             ok = bool(ous) and all(o == team for o in ous)
