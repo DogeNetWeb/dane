@@ -21,6 +21,8 @@
 #                       the dmg is named ...-ADHOC.dmg and its volume "Dane-ADHOC". Never distribute or notarize
 #                       an ad-hoc build (notarize.next-round4 refuses *-ADHOC.dmg and non-Developer-ID signatures).
 #   DANE_DRY_RUN=1      stage + plan + print the codesign commands only; no signing, no dmg.
+# Not carried over (L-g, on purpose): the legacy $G/updates/check-update-certs.sh preflight. It's out of tree and
+# unreviewed; the updater pin is checked by sign_dane_macos_selftest.py T3 (configure OU == signing.conf TEAM_ID).
 set -euo pipefail
 TREE=$(cd "$(dirname "$0")/../.." && pwd -P)
 G=$(cd "$TREE/.." && pwd -P)

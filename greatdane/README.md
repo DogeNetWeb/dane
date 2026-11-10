@@ -70,6 +70,21 @@ Decision: per the coordinator's record of its Oct 27 2026 conversation with nowo
   - **Ad-hoc throwaway check run:** `DANE_SIGN_IDENTITY=-`. There's no keychain and no timestamp; hardened
     runtime and entitlements are kept. check reports "expected, not Developer ID" (`--strict` makes it fail),
     and the output is `...-ADHOC.dmg`. Never distribute or notarize it. Developer ID runs use `check --strict`.
+  - Round 4 (2026-11-10):
+    - The `/System/Volumes/Data` firmlink prefix is stripped before every owner-path rule (L-b).
+    - `--work-dir` / `DANE_SIGN_WORK_DIRS` refuse /, /Users, $HOME, /Users/<name> and /Volumes (L-c).
+    - sign-only.sh deletes a stage dir only if it has its `.dane-sign-only-stage` marker; the marker is kept
+      out of the dmg (L-d).
+    - The ad-hoc dmg volume is `Dane-ADHOC` (L-e).
+    - `check` rejects ad-hoc unless `--allow-adhoc` is given, and sign-only.sh passes it only in ad-hoc mode
+      (L-f).
+  - **Update-cert preflight dropped on purpose (L-g).** The legacy Mac `notarize.sh` ran
+    `$G/updates/check-update-certs.sh` before re-signing.
+    - That script is outside this tree: it is not in `firefox-esr153`, and its content is not on the box. So
+      there is nothing reviewable to carry over, and sign-only.sh does not call an unreviewed out-of-tree script.
+    - The in-tree check that covers the updater's signing pin is `sign_dane_macos_selftest.py` T3. It fails if
+      the `update-programs.configure` subject OU differs from `TEAM_ID` in `greatdane/macos/signing.conf`.
+    - To restore a cert preflight, import the script into `greatdane/tools/` as a reviewed patch first.
   - `greatdane/tests/no_legacy_deep_sign_check.py` keeps any `--deep` signing path out of the tree. `check` is read-only and compares `codesign -d --entitlements -`
   for each row against the map, then runs `codesign --verify --deep --strict`.
 - Entitlements by binary (Mozilla production config: taskcluster/config.yml mac-signing):

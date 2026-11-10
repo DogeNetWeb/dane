@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 16:57:31 -0600
+Subject: [PATCH 111/144] GreatDANE: document that the update-cert preflight
+ was dropped on purpose (round 4, L-g)
+
+The legacy Mac notarize.sh ran /Volumes/Storage/build/greatdane/updates/check-update-certs.sh before re-signing.
+That script isn't in this tree (no updates/check-update-certs.sh in firefox-esr153) and its content isn't on
+the box, so it can't be carried over as a reviewed preflight. The in-tree sign-only.sh doesn't call unreviewed
+out-of-tree scripts.
+
+- greatdane/README.md and the sign-only.sh header record the drop and the reason.
+- They name the in-tree check that covers the updater signing pin: sign_dane_macos_selftest.py T3, which compares
+  the update-programs.configure OU with TEAM_ID in signing.conf.
+- They say how to bring a preflight back: import the script as a reviewed patch first.
+- The README also lists the round-4 signer and sign-only changes (L-b to L-f).
+No code change.
+---
+ greatdane/README.md          | 15 +++++++++++++++
+ greatdane/tools/sign-only.sh |  2 ++
+ 2 files changed, 17 insertions(+)
+
+diff --git a/greatdane/README.md b/greatdane/README.md
+index 8aa816a8ac..2e25a2bc3f 100644
+--- a/greatdane/README.md
++++ b/greatdane/README.md
+@@ -70,6 +70,21 @@ Decision: per the coordinator's record of its Oct 27 2026 conversation with nowo
+   - **Ad-hoc throwaway check run:** `DANE_SIGN_IDENTITY=-`. There's no keychain and no timestamp; hardened
+     runtime and entitlements are kept. check reports "expected, not Developer ID" (`--strict` makes it fail),
+     and the output is `...-ADHOC.dmg`. Never distribute or notarize it. Developer ID runs use `check --strict`.
++  - Round 4 (2026-11-10):
++    - The `/System/Volumes/Data` firmlink prefix is stripped before every owner-path rule (L-b).
++    - `--work-dir` / `DANE_SIGN_WORK_DIRS` refuse /, /Users, $HOME, /Users/<name> and /Volumes (L-c).
++    - sign-only.sh deletes a stage dir only if it has its `.dane-sign-only-stage` marker; the marker is kept
++      out of the dmg (L-d).
++    - The ad-hoc dmg volume is `Dane-ADHOC` (L-e).
++    - `check` rejects ad-hoc unless `--allow-adhoc` is given, and sign-only.sh passes it only in ad-hoc mode
++      (L-f).
++  - **Update-cert preflight dropped on purpose (L-g).** The legacy Mac `notarize.sh` ran
++    `$G/updates/check-update-certs.sh` before re-signing.
++    - That script is outside this tree: it is not in `firefox-esr153`, and its content is not on the box. So
++      there is nothing reviewable to carry over, and sign-only.sh does not call an unreviewed out-of-tree script.
++    - The in-tree check that covers the updater's signing pin is `sign_dane_macos_selftest.py` T3. It fails if
++      the `update-programs.configure` subject OU differs from `TEAM_ID` in `greatdane/macos/signing.conf`.
++    - To restore a cert preflight, import the script into `greatdane/tools/` as a reviewed patch first.
+   - `greatdane/tests/no_legacy_deep_sign_check.py` keeps any `--deep` signing path out of the tree. `check` is read-only and compares `codesign -d --entitlements -`
+   for each row against the map, then runs `codesign --verify --deep --strict`.
+ - Entitlements by binary (Mozilla production config: taskcluster/config.yml mac-signing):
+diff --git a/greatdane/tools/sign-only.sh b/greatdane/tools/sign-only.sh
+index 7c40102a40..79a632bbda 100755
+--- a/greatdane/tools/sign-only.sh
++++ b/greatdane/tools/sign-only.sh
+@@ -21,6 +21,8 @@
+ #                       the dmg is named ...-ADHOC.dmg and its volume "Dane-ADHOC". Never distribute or notarize
+ #                       an ad-hoc build (notarize.next-round4 refuses *-ADHOC.dmg and non-Developer-ID signatures).
+ #   DANE_DRY_RUN=1      stage + plan + print the codesign commands only; no signing, no dmg.
++# Not carried over (L-g, on purpose): the legacy $G/updates/check-update-certs.sh preflight. It's out of tree and
++# unreviewed; the updater pin is checked by sign_dane_macos_selftest.py T3 (configure OU == signing.conf TEAM_ID).
+ set -euo pipefail
+ TREE=$(cd "$(dirname "$0")/../.." && pwd -P)
+ G=$(cd "$TREE/.." && pwd -P)
