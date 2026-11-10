@@ -90,3 +90,4 @@
 0090-GreatDANE-ship-PrivacyInfo.xcprivacy-in-Contents-Res.patch
 0091-GreatDANE-per-binary-macOS-entitlements-no-browser-e.patch
 0092-GreatDANE-updater.ini-maintenance-service-descriptio.patch
+0093-GreatDANE-harden-sign_dane_macos.py-NGD-round-2-M1-M.patch

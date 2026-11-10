@@ -1,10 +1,14 @@
-# Dane per-binary signing map (production, Developer ID, team MNL79V994R).
+# Dane per-binary signing map (production, Developer ID; team ID: TEAM_ID in greatdane/macos/signing.conf).
 # Consumed by greatdane/tools/sign_dane_macos.py. Rows are signed TOP TO BOTTOM, inside-out, the app last.
 # Columns (TAB-separated):
 #   glob         path inside Dane.app ("." = the app itself); fnmatch-style, no "**"
 #   entitlements leaf name in security/mac/hardenedruntime/production/, or "-" for none (hardened runtime only)
 #   need         required = at least one match must exist; optional = may be absent
-# Every Mach-O under Contents/ must match exactly one row, or the tool refuses to sign.
+# Every regular (non-symlink) Mach-O file and nested bundle under Contents/ must match exactly one row.
+# The only exception is a bundle's own main executable: the file named by CFBundleExecutable in the
+# Info.plist of the app itself, or of the mapped bundle that directly encloses it (it's signed with that
+# bundle). Any other Mach-O, including extra executables or dylibs inside a mapped .app/.framework, is
+# refused until it gets its own row.
 # Mozilla source of truth: taskcluster/config.yml mac-signing.hardened-sign-config.production.
 #
 # --- no entitlements: hardened runtime with defaults (same as Mozilla production) ---

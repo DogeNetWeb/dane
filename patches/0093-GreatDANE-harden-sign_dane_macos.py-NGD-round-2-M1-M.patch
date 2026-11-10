@@ -1,0 +1,662 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 16:02:55 -0600
+Subject: [PATCH 093/144] GreatDANE: harden sign_dane_macos.py (NGD round 2:
+ M1, M2, L2, L3, L5, L7)
+
+- M1: inside a mapped bundle, only the main executable named by that bundle's own CFBundleExecutable
+  (.app Contents/Info.plist; .framework [Versions/*/]Resources/Info.plist) is signed with the bundle.
+  Every other Mach-O or nested bundle is refused until it gets its own row. sign-map.tsv header now
+  says this, which corrects the old "every Mach-O must match a row" claim.
+- M2: the path guard works on the realpath, case-insensitively, with the /System/Volumes/Data alias
+  folded. It always refuses /Volumes/Dane and its " N"/"-N" variants, any component containing
+  "danenotarized", and Application Support/GreatDANE. Anything else under /Volumes needs
+  --allow-volume DIR or DANE_SIGN_ALLOW_VOLUMES.
+- L2: the signing identity is never printed (the log shows "<identity redacted; team ...>", and it's
+  scrubbed from codesign stderr).
+- L3: the team ID comes from greatdane/macos/signing.conf (TEAM_ID). sign-map.tsv and the
+  dane.browser.xml header refer to it. A malformed config is refused, and a mismatch fails check.
+- L7: --json without a value is refused cleanly (it used to raise IndexError).
+- check reports why each row failed (entitlements / runtime / team / timestamp).
+- greatdane/tests/sign_dane_macos_selftest.py: 39 cases, Linux-runnable, mock codesign, no real signing.
+
+Prepared only. Not built, signed, notarized or published.
+---
+ greatdane/macos/sign-map.tsv                  |   8 +-
+ greatdane/macos/signing.conf                  |   7 +
+ greatdane/tests/README.md                     |   2 +
+ greatdane/tests/sign_dane_macos_selftest.py   | 239 ++++++++++++++++++
+ greatdane/tools/sign_dane_macos.py            | 210 +++++++++++----
+ .../production/dane.browser.xml               |   2 +-
+ 6 files changed, 417 insertions(+), 51 deletions(-)
+ create mode 100644 greatdane/macos/signing.conf
+ create mode 100644 greatdane/tests/sign_dane_macos_selftest.py
+
+diff --git a/greatdane/macos/sign-map.tsv b/greatdane/macos/sign-map.tsv
+index 813aa420b6..3348c70d6f 100644
+--- a/greatdane/macos/sign-map.tsv
++++ b/greatdane/macos/sign-map.tsv
+@@ -1,10 +1,14 @@
+-# Dane per-binary signing map (production, Developer ID, team MNL79V994R).
++# Dane per-binary signing map (production, Developer ID; team ID: TEAM_ID in greatdane/macos/signing.conf).
+ # Consumed by greatdane/tools/sign_dane_macos.py. Rows are signed TOP TO BOTTOM, inside-out, the app last.
+ # Columns (TAB-separated):
+ #   glob         path inside Dane.app ("." = the app itself); fnmatch-style, no "**"
+ #   entitlements leaf name in security/mac/hardenedruntime/production/, or "-" for none (hardened runtime only)
+ #   need         required = at least one match must exist; optional = may be absent
+-# Every Mach-O under Contents/ must match exactly one row, or the tool refuses to sign.
++# Every regular (non-symlink) Mach-O file and nested bundle under Contents/ must match exactly one row.
++# The only exception is a bundle's own main executable: the file named by CFBundleExecutable in the
++# Info.plist of the app itself, or of the mapped bundle that directly encloses it (it's signed with that
++# bundle). Any other Mach-O, including extra executables or dylibs inside a mapped .app/.framework, is
++# refused until it gets its own row.
+ # Mozilla source of truth: taskcluster/config.yml mac-signing.hardened-sign-config.production.
+ #
+ # --- no entitlements: hardened runtime with defaults (same as Mozilla production) ---
+diff --git a/greatdane/macos/signing.conf b/greatdane/macos/signing.conf
+new file mode 100644
+index 0000000000..30031fdd19
+--- /dev/null
++++ b/greatdane/macos/signing.conf
+@@ -0,0 +1,7 @@
++# Dane macOS signing config: the single source of truth for the Apple Developer team ID.
++# Read by greatdane/tools/sign_dane_macos.py (plan/sign/check) and greatdane/tools/sign-only.sh.
++# sign-map.tsv and the entitlement plist headers refer to this file instead of repeating the ID.
++# Build-time copy that has to stay equal (checked by greatdane/tests/sign_dane_macos_selftest.py when present):
++#   build/moz.configure/update-programs.configure  certificate leaf[subject.OU]
++TEAM_ID=MNL79V994R
++BUNDLE_ID=surf.dogecoin.dane
+diff --git a/greatdane/tests/README.md b/greatdane/tests/README.md
+index 5f2584c4e3..ba6afe320b 100644
+--- a/greatdane/tests/README.md
++++ b/greatdane/tests/README.md
+@@ -14,3 +14,5 @@ run_gd_prefs.py: `run_gd_prefs.py <greatdane> [arm64|x86_64] [/abs/screens_dir]`
+ guard_negative_test.py: proves gd_guard rejects out-of-root dataDir and safe() paths and stray dirs in the source tree. Launches no browser.
+ gd_guard now requires every profile and node data path to be inside this run's mkdtemp roots. At exit, it fails with code 96 if a profile's dataDir is outside them, or if new dirs appeared in greatdane/, the cwd, or $HOME.
+ passkey_check.py: `passkey_check.py <Dane.app> <arm64|x86_64> [--static-only]`. Passkey READINESS check (PASSKEYS-PLAN.md §5). A pass is not proof that passkeys work: it only shows there are no stray restricted entitlements, the pref is on and the generic WebAuthn API exists. Static: with no Contents/embedded.provisionprofile, no Mach-O may carry com.apple.developer.web-browser.public-key-credential or com.apple.application-identifier. With a profile, only the main app may carry both (MNL79V994R.surf.dogecoin.dane), and the profile must grant them. Runtime (gd_guard throwaway profile, ABI gate; marionette.port=0 with the port read from <profile>/MarionetteActivePort and the profile path verified over Marionette; browser launched in its own session and its process group killed if it does not quit in 30s): security.webauthn.enable_macos_passkeys is true and PublicKeyCredential exists. Any non-zero browser exit, Marionette error, or process left on the throwaway profile is a FAIL (script exits 1). Test hook: GD_PASSKEY_TEST_FORCE_KILL=1 SIGKILLs the browser to prove that path fails. The runtime part makes one network request, to https://example.com/ (needed for a secure context), plus stock Firefox background traffic. Read-only on the bundle; changes no signing inputs.
++
++sign_dane_macos_selftest.py: `python3 greatdane/tests/sign_dane_macos_selftest.py [-v]`. A self-test of greatdane/tools/sign_dane_macos.py that runs on Linux or macOS and never really signs anything. It builds fake Dane.app layouts in a temp dir, including real-style framework symlinks, and puts a MOCK `codesign` first on PATH. Cases: plan, dry-run and mock sign (the identity is never printed, `--deep` is never used, the app is signed last); refusal of non-main Mach-O inside mapped bundles (minidump-analyzer in crashreporter.app, evil.dylib in plugin-container.app, framework helpers, nested bundles); restricted entitlements without a profile; the path guard (/Volumes/Dane, " N" and "-N" variants, case variants, the /System/Volumes/Data alias, danenotarized, the GreatDANE profile dir, the /Volumes allowlist); and `check` failing on a missing hardened runtime, a wrong team, a missing timestamp, wrong helper entitlements, or a team in signing.conf that doesn't match. When build/moz.configure/update-programs.configure is present, it also checks that the configure OU equals TEAM_ID in greatdane/macos/signing.conf.
+diff --git a/greatdane/tests/sign_dane_macos_selftest.py b/greatdane/tests/sign_dane_macos_selftest.py
+new file mode 100644
+index 0000000000..9953d32ec8
+--- /dev/null
++++ b/greatdane/tests/sign_dane_macos_selftest.py
+@@ -0,0 +1,239 @@
++#!/usr/bin/env python3
++"""Self-test for greatdane/tools/sign_dane_macos.py. Runs anywhere (Linux or macOS), with no real codesign.
++
++Builds fake Dane.app layouts in a temp dir and puts a MOCK `codesign` first on PATH. Nothing is ever really
++signed; the mock only records calls and returns canned `codesign -d` output.
++    python3 greatdane/tests/sign_dane_macos_selftest.py [-v]
++Exit 0 only if every case behaves as expected.
++"""
++import os, plistlib, re, shutil, subprocess, sys, tempfile
++
++HERE = os.path.dirname(os.path.abspath(__file__))
++TREE = os.path.abspath(os.path.join(HERE, "..", ".."))
++TOOL = os.path.join(TREE, "greatdane", "tools", "sign_dane_macos.py")
++ENTDIR = os.path.join(TREE, "security", "mac", "hardenedruntime", "production")
++VERBOSE = "-v" in sys.argv
++MOCK = r'''#!/usr/bin/env python3
++import os, sys
++a = sys.argv[1:]; p = a[-1] if a else ""
++log = os.environ.get("MOCK_LOG")
++if log:
++    open(log, "a").write(" ".join(a) + "\n")
++ents = {"plugin-container.app": "plugin-container.xml", "media-plugin-helper.app": "media-plugin-helper.xml"}
++D = os.environ["MOCK_ENTDIR"]
++base = os.path.basename(p.rstrip("/"))
++if a[:2] == ["-d", "--entitlements"]:
++    e = ents.get(base)
++    if base == os.environ.get("MOCK_TOP", "Dane.app"):
++        e = os.environ.get("MOCK_TOP_ENT", "dane.browser.xml")
++    if os.environ.get("MOCK_BAD_GPU") and base == "gpu-helper.app":
++        e = "dane.browser.xml"
++    if e:
++        sys.stdout.buffer.write(open(os.path.join(D, e), "rb").read())
++elif a[:1] == ["-dvv"]:
++    flags = "0x10000(runtime)" if not os.environ.get("MOCK_NO_RUNTIME") else "0x0(none)"
++    sys.stderr.write("CodeDirectory v=20500 size=1 flags=%s hashes=1\n" % flags)
++    sys.stderr.write("TeamIdentifier=%s\n" % os.environ.get("MOCK_TEAM", "MNL79V994R"))
++    if not os.environ.get("MOCK_NO_TS"):
++        sys.stderr.write("Timestamp=Nov 10, 2026 at 4:00:00 PM\n")
++elif a[:1] == ["--verify"]:
++    sys.stderr.write(p + ": valid on disk\n")
++elif "--sign" in a:
++    pass  # pretend to sign
++'''
++
++
++def mk(path, data=b"\xcf\xfa\xed\xfe fake-macho"):
++    os.makedirs(os.path.dirname(path), exist_ok=True)
++    with open(path, "wb") as f:
++        f.write(data)
++
++
++def mkapp(path, exe):
++    os.makedirs(os.path.join(path, "Contents", "MacOS"), exist_ok=True)
++    with open(os.path.join(path, "Contents", "Info.plist"), "wb") as f:
++        plistlib.dump({"CFBundleExecutable": exe}, f)
++    mk(os.path.join(path, "Contents", "MacOS", exe))
++
++
++def mkframework(path, name):
++    """Real-style framework: Versions/A + Current symlink + top-level symlinks."""
++    va = os.path.join(path, "Versions", "A")
++    mk(os.path.join(va, name))
++    os.makedirs(os.path.join(va, "Resources"), exist_ok=True)
++    with open(os.path.join(va, "Resources", "Info.plist"), "wb") as f:
++        plistlib.dump({"CFBundleExecutable": name}, f)
++    os.symlink("A", os.path.join(path, "Versions", "Current"))
++    os.symlink("Versions/Current/" + name, os.path.join(path, name))
++    os.symlink("Versions/Current/Resources", os.path.join(path, "Resources"))
++
++
++def fake_app(root):
++    A = os.path.join(root, "Dane.app")
++    M = os.path.join(A, "Contents", "MacOS")
++    mkapp(A, "greatdane")
++    for f in ["XUL", "libmozglue.dylib", "libnss3.dylib", "libfreebl3.dylib", "libsoftokn3.dylib",
++              "liblgpllibs.dylib", "libosclientcerts.dylib", "greatdane-node", "pingsender", "nmhproxy",
++              "crashhelper"]:
++        mk(os.path.join(M, f))
++    mkapp(os.path.join(M, "crashreporter.app"), "crashreporter")
++    mkapp(os.path.join(M, "plugin-container.app"), "plugin-container")
++    mkapp(os.path.join(M, "media-plugin-helper.app"), "Dane Media Plugin Helper")
++    mkapp(os.path.join(M, "gpu-helper.app"), "Dane GPU Helper")
++    mkapp(os.path.join(M, "updater.app"), "surf.dogecoin.dane.updater")
++    mkframework(os.path.join(M, "updater.app", "Contents", "Frameworks", "UpdateSettings.framework"), "UpdateSettings")
++    mk(os.path.join(A, "Contents", "Library", "LaunchServices", "surf.dogecoin.dane.updater"))
++    mk(os.path.join(A, "Contents", "Library", "LaunchServices", "surf.dogecoin.dane.dmgInstallHelper"))
++    mkframework(os.path.join(A, "Contents", "Frameworks", "ChannelPrefs.framework"), "ChannelPrefs")
++    mk(os.path.join(A, "Contents", "Resources", "gmp-clearkey", "0.1", "libclearkey.dylib"))
++    mk(os.path.join(A, "Contents", "Resources", "omni.ja"), b"PK not macho")
++    # symlink to a Mach-O must be ignored (only regular files are units)
++    os.symlink("../MacOS/XUL", os.path.join(A, "Contents", "Resources", "XUL-link"))
++    return A
++
++
++results = []
++
++
++def run(name, args, expect_rc, must=(), mustnot=(), env=None, cwd=None):
++    e = dict(os.environ)
++    e.update(env or {})
++    p = subprocess.run([sys.executable, "-B", TOOL] + args, capture_output=True, text=True, env=e, cwd=cwd)
++    out = p.stdout + p.stderr
++    ok = p.returncode == expect_rc and all(re.search(m, out) for m in must) and not any(
++        re.search(m, out) for m in mustnot)
++    results.append((name, ok, p.returncode, expect_rc))
++    print("%s %-62s rc=%d (want %d)" % ("PASS" if ok else "FAIL", name, p.returncode, expect_rc))
++    if VERBOSE or not ok:
++        print("    " + out.strip().replace("\n", "\n    "))
++    return out
++
++
++def main():
++    tmp = tempfile.mkdtemp(prefix="dane-signtest-")
++    try:
++        bindir = os.path.join(tmp, "bin")
++        os.makedirs(bindir)
++        cs = os.path.join(bindir, "codesign")
++        open(cs, "w").write(MOCK)
++        os.chmod(cs, 0o755)
++        mock = {"PATH": bindir + os.pathsep + os.environ["PATH"], "MOCK_ENTDIR": ENTDIR}
++        good = fake_app(os.path.join(tmp, "good"))
++
++        # --- positive ---
++        run("P1 plan OK (framework symlinks, symlinked Mach-O ignored)", ["plan", good], 0, [r"PLAN OK"],
++            [r"XUL-link", r"PROBLEM"])
++        run("P2 sign --dry-run OK", ["sign", good, "--dry-run"], 0, [r"DRY RUN: nothing signed",
++            r"<identity redacted; team MNL79V994R>"], [r"--deep"])
++        run("P3 check PASS with mock codesign", ["check", good], 0, [r"CHECK PASS"], env=mock)
++        jpath = os.path.join(tmp, "ent.json")
++        run("P4 check --json writes report", ["check", good, "--json", jpath], 0, [r"CHECK PASS"], env=mock)
++        assert os.path.isfile(jpath)
++        run("P5 no-DLV main-app variant plan OK", ["plan", good], 0, [r"dane.browser.no-dlv.xml", r"PLAN OK"],
++            env={"DANE_BROWSER_ENTITLEMENTS": "dane.browser.no-dlv.xml"})
++        logf = os.path.join(tmp, "cs.log")
++        ident = "Developer ID Application: Example Person (MNL79V994R)"
++        run("P6 mock sign: identity never printed", ["sign", good], 0, [r"CHECK PASS"],
++            [r"Example Person"], env=dict(mock, DANE_SIGN_IDENTITY=ident, MOCK_LOG=logf))
++        calls = open(logf).read()
++        signs = [l for l in calls.splitlines() if "--sign" in l]
++        okdeep = all("--deep" not in l for l in signs) and signs and "Dane.app" in signs[-1].split()[-1]
++        results.append(("P7 sign calls: no --deep, app signed last", bool(okdeep), 0, 0))
++        print("%s %-62s" % ("PASS" if okdeep else "FAIL", "P7 sign calls: no --deep, app signed last"))
++
++        # --- M1: nested non-main Mach-O inside mapped bundles ---
++        def variant(tag, rel, data=b"\xcf\xfa\xed\xfe"):
++            root = os.path.join(tmp, tag)
++            shutil.copytree(os.path.join(tmp, "good"), root, symlinks=True)
++            mk(os.path.join(root, "Dane.app", rel), data)
++            return os.path.join(root, "Dane.app")
++        a = variant("m1a", "Contents/MacOS/crashreporter.app/Contents/MacOS/minidump-analyzer")
++        run("N1 crashreporter.app/Contents/MacOS/minidump-analyzer refused", ["plan", a], 2,
++            [r"not covered by the map: Contents/MacOS/crashreporter.app/Contents/MacOS/minidump-analyzer"])
++        a = variant("m1b", "Contents/MacOS/plugin-container.app/Contents/Resources/evil.dylib")
++        run("N2 plugin-container.app/Contents/Resources/evil.dylib refused", ["plan", a], 2,
++            [r"not covered by the map: .*plugin-container.app/Contents/Resources/evil.dylib"])
++        a = variant("m1c", "Contents/Frameworks/ChannelPrefs.framework/Versions/A/Helpers/tool")
++        run("N3 non-main Mach-O inside framework refused", ["plan", a], 2,
++            [r"not covered by the map: .*ChannelPrefs.framework/Versions/A/Helpers/tool"])
++        a = variant("m1d", "Contents/MacOS/gpu-helper.app/Contents/MacOS/second-exe")
++        run("N4 second executable in mapped .app refused", ["plan", a], 2, [r"second-exe"])
++        a = variant("m1e", "Contents/Resources/stray-tool")
++        run("N5 stray top-level Mach-O refused", ["plan", a], 2, [r"stray-tool"])
++        root = os.path.join(tmp, "m1f"); shutil.copytree(os.path.join(tmp, "good"), root, symlinks=True)
++        mkapp(os.path.join(root, "Dane.app", "Contents", "MacOS", "plugin-container.app", "Contents", "Helpers",
++                           "nested.app"), "nested")
++        run("N6 unmapped nested bundle inside mapped bundle refused", ["plan", os.path.join(root, "Dane.app")], 2,
++            [r"nested.app"])
++        root = os.path.join(tmp, "m1g"); shutil.copytree(os.path.join(tmp, "good"), root, symlinks=True)
++        shutil.rmtree(os.path.join(root, "Dane.app", "Contents", "MacOS", "media-plugin-helper.app"))
++        run("N7 required helper missing refused", ["plan", os.path.join(root, "Dane.app")], 2,
++            [r"required row has no match: Contents/MacOS/media-plugin-helper.app"])
++
++        # --- entitlement policy ---
++        run("N8 restricted entitlements without profile refused", ["sign", good, "--dry-run"], 2,
++            [r"restricted entitlements .* without Contents/embedded.provisionprofile"],
++            env={"DANE_BROWSER_ENTITLEMENTS": "firefox.browser.xml"})
++        run("N9 sign without identity refused", ["sign", good], 2, [r"set DANE_SIGN_IDENTITY"])
++        run("N10 --json without a value refused (no traceback)", ["check", good, "--json"], 2,
++            [r"--json needs a value"], [r"Traceback"], env=mock)
++
++        # --- M2: path guard ---
++        for i, pth in enumerate(["/Volumes/Dane/Dane.app", "/Volumes/Dane 1/Dane.app", "/Volumes/Dane-1/Dane.app",
++                                 "/volumes/dane/Dane.app", "/Volumes/DANE/Dane.app", "/Volumes/Dane 12/x/Dane.app",
++                                 "/System/Volumes/Data/Volumes/Dane/Dane.app",
++                                 os.path.join(tmp, "x", "danenotarized", "Dane.app"),
++                                 os.path.join(tmp, "DaneNotarized.app"),
++                                 os.path.join(tmp, "Library", "Application Support", "GreatDANE", "x.app")]):
++            run("G%d owner path refused: %s" % (i + 1, pth.replace(tmp, "<tmp>")), ["plan", pth], 2,
++                [r"REFUSE: off-limits"])
++        run("G11 other /Volumes path refused without allowlist", ["plan", "/Volumes/Other/Dane.app"], 2,
++            [r"need --allow-volume"])
++        run("G12 allowlisted /Volumes dir passes guard", ["plan", "/Volumes/Other/w/Dane.app", "--allow-volume",
++            "/Volumes/Other"], 2, [r"not an app bundle"], [r"need --allow-volume"])
++        run("G13 allowlist via env passes guard", ["plan", "/Volumes/Other/w/Dane.app"], 2, [r"not an app bundle"],
++            env={"DANE_SIGN_ALLOW_VOLUMES": "/tmp/nothing:/Volumes/Other"})
++        run("G14 allowlisting the owner volume is refused", ["plan", "/Volumes/Other/Dane.app", "--allow-volume",
++            "/Volumes/Dane"], 2, [r"allowlist entry is itself off-limits"])
++        run("G15 owner path refused even if allowlisted", ["plan", "/Volumes/Dane 1/Dane.app", "--allow-volume",
++            "/Volumes/Dane 1"], 2, [r"off-limits"])
++        run("G16 '/Volumes/Danes' prefix is NOT the owner volume (needs allowlist)",
++            ["plan", "/Volumes/Danes/Dane.app"], 2, [r"need --allow-volume"], [r"off-limits"])
++
++        # --- L5: failing mocks for check ---
++        run("C1 check FAIL: no hardened runtime", ["check", good], 1, [r"no hardened runtime", r"CHECK FAIL"],
++            env=dict(mock, MOCK_NO_RUNTIME="1"))
++        run("C2 check FAIL: wrong team", ["check", good], 1, [r"team ABCDE12345 != MNL79V994R", r"CHECK FAIL"],
++            env=dict(mock, MOCK_TEAM="ABCDE12345"))
++        run("C3 check FAIL: no secure timestamp", ["check", good], 1, [r"no secure timestamp", r"CHECK FAIL"],
++            env=dict(mock, MOCK_NO_TS="1"))
++        run("C4 check FAIL: helper with browser entitlements", ["check", good], 1,
++            [r"FAIL Contents/MacOS/gpu-helper.app"], env=dict(mock, MOCK_BAD_GPU="1"))
++
++        # --- L3: team ID from one config file ---
++        conf = os.path.join(tmp, "signing-mismatch.conf")
++        open(conf, "w").write("TEAM_ID=ABCDE12345\n")
++        run("T1 signing.conf team mismatch fails check", ["check", good], 1,
++            [r"team MNL79V994R != ABCDE12345", r"CHECK FAIL"], env=dict(mock, DANE_SIGNING_CONF=conf))
++        bad = os.path.join(tmp, "signing-bad.conf")
++        open(bad, "w").write("TEAM_ID=nope\n")
++        run("T2 malformed signing.conf refused", ["plan", good], 2, [r"TEAM_ID .* must be"],
++            env={"DANE_SIGNING_CONF": bad})
++        cfg = os.path.join(TREE, "build", "moz.configure", "update-programs.configure")
++        team = re.search(r"^TEAM_ID=(\S+)", open(os.path.join(TREE, "greatdane", "macos", "signing.conf")).read(), re.M).group(1)
++        if os.path.isfile(cfg):
++            ous = re.findall(r'subject\.OU\]\s*=\s*\\?"([A-Z0-9]{10})', open(cfg).read())
++            ok = bool(ous) and all(o == team for o in ous)
++            results.append(("T3 update-programs.configure OU == signing.conf", ok, 0, 0))
++            print("%s %-62s %s" % ("PASS" if ok else "FAIL", "T3 update-programs.configure OU == signing.conf", ous))
++        else:
++            print("SKIP T3 update-programs.configure not in this tree")
++    finally:
++        shutil.rmtree(tmp, ignore_errors=True)
++    failed = [r for r in results if not r[1]]
++    print("\n%d cases, %d passed, %d failed" % (len(results), len(results) - len(failed), len(failed)))
++    sys.exit(1 if failed else 0)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/greatdane/tools/sign_dane_macos.py b/greatdane/tools/sign_dane_macos.py
+index 980cdb1205..b61098c769 100755
+--- a/greatdane/tools/sign_dane_macos.py
++++ b/greatdane/tools/sign_dane_macos.py
+@@ -1,21 +1,30 @@
+ #!/usr/bin/env python3
+ """Per-binary Developer ID signing and entitlement check for Dane.app.
+ 
+-    sign_dane_macos.py plan  <Dane.app>                 # print the plan; runs anywhere, no codesign
+-    sign_dane_macos.py sign  <Dane.app> [--dry-run]     # codesign inside-out (macOS); needs DANE_SIGN_IDENTITY
+-    sign_dane_macos.py check <Dane.app> [--json OUT]    # read-only: per row, entitlements == map, hardened
+-                                                        # runtime flag, TeamIdentifier MNL79V994R, secure
+-                                                        # timestamp; then codesign --verify --deep --strict
++    sign_dane_macos.py plan  <Dane.app> [--allow-volume DIR]...            # print the plan; no codesign needed
++    sign_dane_macos.py sign  <Dane.app> [--dry-run] [--allow-volume DIR]... # codesign inside-out (macOS);
++                                                                            # needs DANE_SIGN_IDENTITY
++    sign_dane_macos.py check <Dane.app> [--json OUT] [--allow-volume DIR]...
++        read-only: for each row, entitlements == map, hardened-runtime flag, TeamIdentifier == TEAM_ID from
++        greatdane/macos/signing.conf, secure timestamp; then codesign --verify --deep --strict
+ 
+ Map: greatdane/macos/sign-map.tsv. Entitlements: security/mac/hardenedruntime/production/.
++Team ID: greatdane/macos/signing.conf (TEAM_ID=...); env DANE_SIGNING_CONF overrides the path (tests).
+ Never uses `codesign --deep` to SIGN (only to verify), so no helper inherits the browser's entitlements.
+-Never notarizes. Refuses the owner's installed app (/Volumes/Dane/...) and any DaneNotarized path.
++Never notarizes. The signing identity is never printed.
++
++Path guard (case-insensitive, on the realpath):
++  - always refused: /Volumes/Dane, plus " N" / "-N" variants (the owner's installed app); any path component
++    containing "danenotarized"; anything under "Application Support/GreatDANE".
++  - anything else under /Volumes is refused unless it is under a directory given with --allow-volume DIR or in
++    env DANE_SIGN_ALLOW_VOLUMES (colon-separated). The owner rules above still apply inside an allowed dir.
+ Optional env: DANE_BROWSER_ENTITLEMENTS=dane.browser.no-dlv.xml selects the stricter main-app alternative.
+ """
+-import fnmatch, json, os, plistlib, subprocess, sys
++import fnmatch, json, os, plistlib, re, subprocess, sys
+ 
+ TREE = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+ MAP = os.path.join(TREE, "greatdane", "macos", "sign-map.tsv")
++CONF = os.environ.get("DANE_SIGNING_CONF") or os.path.join(TREE, "greatdane", "macos", "signing.conf")
+ ENTDIR = os.path.join(TREE, "security", "mac", "hardenedruntime", "production")
+ RESTRICTED = {"com.apple.application-identifier",
+               "com.apple.developer.web-browser.public-key-credential",
+@@ -25,8 +34,9 @@ FORBIDDEN = {"com.apple.security.get-task-allow",
+              "com.apple.security.cs.allow-unsigned-executable-memory",
+              "com.apple.security.cs.disable-executable-page-protection"}
+ MACHO = {b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",
+-         b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce"}
+-TEAM = "MNL79V994R"
++         b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca", b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce"}
++BUNDLE_EXT = (".app", ".framework", ".xpc", ".appex", ".bundle", ".plugin")
++OWNER_VOLUME = re.compile(r"^dane([ -]\d+)?$")
+ 
+ 
+ def die(msg):
+@@ -34,10 +44,69 @@ def die(msg):
+     sys.exit(2)
+ 
+ 
++def load_conf():
++    conf = {}
++    if not os.path.isfile(CONF):
++        die("missing signing config " + CONF)
++    for line in open(CONF, encoding="utf-8"):
++        line = line.strip()
++        if line and not line.startswith("#") and "=" in line:
++            k, v = line.split("=", 1)
++            conf[k.strip()] = v.strip()
++    if not re.fullmatch(r"[A-Z0-9]{10}", conf.get("TEAM_ID", "")):
++        die("TEAM_ID in %s must be a 10-character Apple team ID" % CONF)
++    return conf
++
++
++TEAM = load_conf()["TEAM_ID"]
++
++
++def arg_values(flag):
++    out, a = [], sys.argv
++    for i, x in enumerate(a):
++        if x == flag:
++            if i + 1 >= len(a) or a[i + 1].startswith("--"):
++                die(flag + " needs a value")
++            out.append(a[i + 1])
++    return out
++
++
++def norm(p):
++    p = os.path.realpath(p)
++    low = p.lower()
++    # macOS firmlink alias of /Volumes
++    if low.startswith("/system/volumes/data/volumes/"):
++        p = p[len("/System/Volumes/Data"):]
++    return p
++
++
++def owner_reason(real):
++    low = real.lower().rstrip("/")
++    parts = low.split("/")
++    if len(parts) >= 3 and parts[1] == "volumes" and OWNER_VOLUME.match(parts[2]):
++        return "owner's Dane volume (/Volumes/Dane and variants)"
++    if any("danenotarized" in c for c in parts):
++        return "DaneNotarized path"
++    if "/application support/greatdane" in low:
++        return "owner's GreatDANE profile/data"
++    return None
++
++
+ def guard(app):
+-    real = os.path.realpath(app)
+-    if real.startswith("/Volumes/Dane/") or real == "/Volumes/Dane" or "DaneNotarized" in real:
+-        die("owner's installed/notarized app is off-limits: " + real)
++    real = norm(app)
++    why = owner_reason(real)
++    if why:
++        die("off-limits (%s): %s" % (why, real))
++    low = real.lower()
++    if low == "/volumes" or low.startswith("/volumes/"):
++        allowed = [norm(x) for x in arg_values("--allow-volume")]
++        allowed += [norm(x) for x in os.environ.get("DANE_SIGN_ALLOW_VOLUMES", "").split(":") if x]
++        for a in allowed:
++            if owner_reason(a):
++                die("allowlist entry is itself off-limits: " + a)
++        ok = any(low == a.lower().rstrip("/") or low.startswith(a.lower().rstrip("/") + "/") for a in allowed)
++        if not ok:
++            die("paths under /Volumes need --allow-volume DIR or DANE_SIGN_ALLOW_VOLUMES: " + real)
+     if not os.path.isfile(os.path.join(real, "Contents", "Info.plist")):
+         die("not an app bundle: " + real)
+     return real
+@@ -83,37 +152,64 @@ def is_macho(p):
+         return False
+ 
+ 
+-def owner_bundle(app, rel):
+-    """Return the deepest enclosing .app/.framework (relative), or rel itself for a bare file."""
++def enclosing_bundle(rel):
++    """Deepest enclosing bundle directory of rel (relative to the app), or None."""
+     parts = rel.split("/")
+     best = None
+     for i in range(1, len(parts)):
+-        if parts[i - 1].endswith((".app", ".framework")):
++        if parts[i - 1].endswith(BUNDLE_EXT):
+             best = "/".join(parts[:i])
+-    return best or rel
++    return best
++
++
++def bundle_main_executables(app, bundle_rel):
++    """Main executable path(s) (relative) of a bundle, from its own Info.plist CFBundleExecutable.
++
++    .app: Contents/Info.plist -> Contents/MacOS/<exe>.
++    .framework: Versions/*/Resources/Info.plist (or Resources/Info.plist) -> Versions/*/<exe>.
++    Falls back to the framework name only for .framework bundles with no Info.plist.
++    """
++    b = os.path.join(app, bundle_rel)
++    out = set()
++    if bundle_rel.endswith(".framework"):
++        name = None
++        for cand in [os.path.join(b, "Resources", "Info.plist")] + [
++                os.path.join(b, "Versions", v, "Resources", "Info.plist")
++                for v in (os.listdir(os.path.join(b, "Versions")) if os.path.isdir(os.path.join(b, "Versions")) else [])]:
++            if os.path.isfile(cand) and not os.path.islink(cand):
++                name = plistlib.load(open(cand, "rb")).get("CFBundleExecutable") or name
++        name = name or os.path.basename(bundle_rel)[: -len(".framework")]
++        vdir = os.path.join(b, "Versions")
++        if os.path.isdir(vdir):
++            for v in os.listdir(vdir):
++                if not os.path.islink(os.path.join(vdir, v)):
++                    out.add("%s/Versions/%s/%s" % (bundle_rel, v, name))
++        out.add("%s/%s" % (bundle_rel, name))
++    else:
++        ip = os.path.join(b, "Contents", "Info.plist")
++        if os.path.isfile(ip):
++            exe = plistlib.load(open(ip, "rb")).get("CFBundleExecutable")
++            if exe:
++                out.add("%s/Contents/MacOS/%s" % (bundle_rel, exe))
++    return out
+ 
+ 
+ def plan(app):
+     rows = load_map()
+     contents = os.path.join(app, "Contents")
+     for r in rows:
+-        if r["glob"] == ".":
+-            r["matches"] = ["."]
+-        else:
+-            r["matches"] = []
+-    # Candidate signable units: bundles (.app/.framework, not the top app) and bare Mach-O files.
++        r["matches"] = ["."] if r["glob"] == "." else []
++    # Signable units: nested bundles and every regular (non-symlink) Mach-O file.
+     units = set()
+     for dp, dns, fns in os.walk(contents):
+         for d in dns:
+-            if d.endswith((".app", ".framework")):
+-                units.add(os.path.relpath(os.path.join(dp, d), app))
++            full = os.path.join(dp, d)
++            if d.endswith(BUNDLE_EXT) and not os.path.islink(full):
++                units.add(os.path.relpath(full, app))
+         for fn in fns:
+             fp = os.path.join(dp, fn)
+             if not os.path.islink(fp) and is_macho(fp):
+-                rel = os.path.relpath(fp, app)
+-                units.add(rel)
+-    # Bare Mach-O that live inside a nested bundle are covered by that bundle's signature
+-    # (its main executable) unless a row names them explicitly.
++                units.add(os.path.relpath(fp, app))
+     claimed = {}
+     for r in rows:
+         if r["glob"] == ".":
+@@ -124,23 +220,28 @@ def plan(app):
+                     die("%s matches two rows: %s and %s" % (u, claimed[u], r["glob"]))
+                 claimed[u] = r["glob"]
+                 r["matches"].append(u)
+-    main_exe = plistlib.load(open(os.path.join(contents, "Info.plist"), "rb")).get("CFBundleExecutable")
+-    if main_exe:
+-        claimed["Contents/MacOS/" + main_exe] = "."  # signed as part of the app (last row)
++    # Allowed without a row: ONLY the main executable named by the CFBundleExecutable of the app itself, or of
++    # the mapped bundle that directly encloses the file. Every other Mach-O must have its own row.
++    main_ok = set()
++    top = plistlib.load(open(os.path.join(contents, "Info.plist"), "rb")).get("CFBundleExecutable")
++    if top:
++        main_ok.add("Contents/MacOS/" + top)
++    for u in list(claimed):
++        if u.endswith(BUNDLE_EXT):
++            main_ok |= bundle_main_executables(app, u)
+     unclaimed = []
+     for u in sorted(units):
+         if u in claimed:
+             continue
+-        enc = owner_bundle(app, u)
+-        if enc != u and (enc in claimed):
+-            continue  # inside a bundle that is signed as a unit
++        enc = enclosing_bundle(u)
++        if u in main_ok and (enc is None or enc in claimed):
++            continue
+         unclaimed.append(u)
+     problems = []
+     for r in rows:
+         if r["need"] == "required" and not r["matches"]:
+             problems.append("required row has no match: " + r["glob"])
+-    if unclaimed:
+-        problems += ["Mach-O/bundle not covered by the map: " + u for u in unclaimed]
++    problems += ["Mach-O/bundle not covered by the map: " + u for u in unclaimed]
+     has_profile = os.path.isfile(os.path.join(contents, "embedded.provisionprofile"))
+     for r in rows:
+         e = ent_dict(r["ent"])
+@@ -174,7 +275,7 @@ def codesign_info(path):
+     """(hardened_runtime, team_id, timestamped) from `codesign -dvv`."""
+     err = subprocess.run(["codesign", "-dvv", path], capture_output=True, text=True).stderr
+     runtime = any(l.startswith("CodeDirectory") and "(runtime)" in l for l in err.splitlines())
+-    team = next((l.split("=", 1)[1] for l in err.splitlines() if l.startswith("TeamIdentifier=")), None)
++    team = next((l.split("=", 1)[1].strip() for l in err.splitlines() if l.startswith("TeamIdentifier=")), None)
+     stamped = any(l.startswith("Timestamp=") for l in err.splitlines())
+     return runtime, team, stamped
+ 
+@@ -185,9 +286,12 @@ def main():
+         sys.exit(2)
+     mode, app = sys.argv[1], guard(sys.argv[2])
+     dry = "--dry-run" in sys.argv
++    json_out = arg_values("--json")
++    json_out = json_out[-1] if json_out else None
+     rows, problems = plan(app)
+     print("tree:", TREE)
+     print("app: ", app)
++    print("team:", TEAM, "(from %s)" % os.path.relpath(CONF, TREE) if CONF.startswith(TREE) else CONF)
+     print_plan(rows)
+     if problems:
+         for p in problems:
+@@ -201,15 +305,20 @@ def main():
+         ident = os.environ.get("DANE_SIGN_IDENTITY", "")
+         if not dry and ("(%s)" % TEAM) not in ident:
+             die("set DANE_SIGN_IDENTITY to the Developer ID Application identity for team " + TEAM)
++        shown = "<identity redacted; team %s>" % TEAM
+         for r in rows:
+             for m in r["matches"]:
+-                cmd = ["codesign", "--force", "--timestamp", "--options", "runtime", "--sign", ident or "<identity>"]
++                tail = []
+                 if r["ent"]:
+-                    cmd += ["--entitlements", os.path.join(ENTDIR, r["ent"])]
+-                cmd.append(app if m == "." else os.path.join(app, m))
+-                print("$", " ".join(cmd))
++                    tail += ["--entitlements", os.path.join(ENTDIR, r["ent"])]
++                tail.append(app if m == "." else os.path.join(app, m))
++                base = ["codesign", "--force", "--timestamp", "--options", "runtime", "--sign"]
++                print("$", " ".join(base + [shown] + tail))
+                 if not dry:
+-                    subprocess.run(cmd, check=True)
++                    r2 = subprocess.run(base + [ident] + tail, capture_output=True, text=True)
++                    if r2.returncode != 0:
++                        print((r2.stderr or "").replace(ident, shown), file=sys.stderr)
++                        die("codesign failed (rc %d) on %s" % (r2.returncode, m))
+         if dry:
+             print("DRY RUN: nothing signed")
+             return
+@@ -221,11 +330,15 @@ def main():
+             p = app if m == "." else os.path.join(app, m)
+             got = codesign_ent(p)
+             runtime, team, stamped = codesign_info(p)
+-            ok = got == want and runtime and team == TEAM and stamped
+-            report.append({"path": m, "expected": r["ent"], "ok": ok, "got": sorted(got),
++            why = [w for w, bad in (("entitlements", got != want), ("no hardened runtime", not runtime),
++                                    ("team %s != %s" % (team, TEAM), team != TEAM),
++                                    ("no secure timestamp", not stamped)) if bad]
++            ok = not why
++            report.append({"path": m, "expected": r["ent"], "ok": ok, "why": why, "got": sorted(got),
+                            "runtime": runtime, "team": team, "timestamp": stamped})
+-            print("%s %-70s runtime=%s team=%s ts=%s got=%s" % ("OK  " if ok else "FAIL", m, runtime, team,
+-                                                             stamped, sorted(got)))
++            print("%s %-70s runtime=%s team=%s ts=%s got=%s%s" % (
++                "OK  " if ok else "FAIL", m, runtime, team, stamped, sorted(got),
++                "" if ok else "  <- " + "; ".join(why)))
+             if not ok:
+                 fails.append(m)
+     v = subprocess.run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", app],
+@@ -233,9 +346,10 @@ def main():
+     print(v.stderr.strip())
+     if v.returncode != 0:
+         fails.append("codesign --verify --deep --strict")
+-    if "--json" in sys.argv:
+-        json.dump({"app": app, "rows": report, "verify_rc": v.returncode, "problems": problems},
+-                  open(sys.argv[sys.argv.index("--json") + 1], "w"), indent=1)
++    if json_out:
++        with open(json_out, "w") as f:
++            json.dump({"app": app, "team": TEAM, "rows": report, "verify_rc": v.returncode,
++                       "problems": problems}, f, indent=1)
+     if fails or problems:
+         print("CHECK FAIL:", fails + problems)
+         sys.exit(1)
+diff --git a/security/mac/hardenedruntime/production/dane.browser.xml b/security/mac/hardenedruntime/production/dane.browser.xml
+index e762067480..a2b90955c7 100644
+--- a/security/mac/hardenedruntime/production/dane.browser.xml
++++ b/security/mac/hardenedruntime/production/dane.browser.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+ <!--
+-     Dane (surf.dogecoin.dane, team MNL79V994R): entitlements for the main browser
++     Dane (surf.dogecoin.dane; team ID: TEAM_ID in greatdane/macos/signing.conf): entitlements for the main browser
+      executable (Dane.app) in production signing. Derived from firefox.browser.xml.
+ 
+      REMOVED until Apple grants them and a Developer ID provisioning profile is
