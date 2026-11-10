@@ -30,8 +30,9 @@ taskcluster/config.yml. Binary files are skipped.
 - Shell rules apply to *.sh, files with a shell shebang, and other text files.
 - In Markdown, only fenced code blocks are checked; prose may name the legacy scripts.
 - Shell comments are ignored.
-A line may opt out with a trailing `nolegacy: <reason>` comment. Opted-out lines are always listed in the
-output, so reviewers see them. Exit 1 on any hit.
+There is no opt-out (round 4c L1): the old `nolegacy:` waiver comment is gone, and a line carrying one is
+checked like any other. Code that has to name a flag (the selftest's must-not-match regex) builds it at
+runtime. Exit 1 on any hit.
 """
 import ast, os, re, shlex, sys
 
@@ -45,15 +46,11 @@ V = "-" * 2 + "verify"
 SO, BU, NO = "".join(["sign-", "only.sh"]), "".join(["build-", "universal.sh"]), "".join(["notar", "ize"])
 BEP = ".".join(["browser", "entitlements", "plist"])
 NOTE = "legacy %s.sh mode (no --submit-existing)" % NO
-PRAGMA = re.compile(r"#.*\bnolegacy:\s*\S")
-hits, waived = [], []
+hits = []
 
 
 def hit(path, n, msg, line=""):
-    if PRAGMA.search(line):
-        waived.append("%s:%d: %s" % (os.path.relpath(path, ROOT), n, msg))
-    else:
-        hits.append("%s:%d: %s" % (os.path.relpath(path, ROOT), n, msg))
+    hits.append("%s:%d: %s" % (os.path.relpath(path, ROOT), n, msg))
 
 
 def legacy_name(tok):
@@ -283,14 +280,12 @@ def main():
         files.append(cfg)
     for f in sorted(files):
         check_file(f)
-    for w in waived:
-        print("WAIVED (nolegacy) " + w)
     for h in hits:
         print("FAIL " + h)
     if VERBOSE:
         print("scanned %d files under %s" % (len(files), ROOT))
-    print("legacy-signing check: %s (%d hit%s, %d waived, %d files)" % (
-        "FAIL" if hits else "PASS", len(hits), "" if len(hits) == 1 else "s", len(waived), len(files)))
+    print("legacy-signing check: %s (%d hit%s, %d files)" % (
+        "FAIL" if hits else "PASS", len(hits), "" if len(hits) == 1 else "s", len(files)))
     sys.exit(1 if hits else 0)
 
 

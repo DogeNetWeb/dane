@@ -15,6 +15,9 @@ ENTDIR = os.path.join(TREE, "security", "mac", "hardenedruntime", "production")
 VERBOSE = "-v" in sys.argv
 CONF = os.path.join(TREE, "greatdane", "macos", "signing.conf")
 TEAM = re.search(r"^TEAM_ID=(\S+)", open(CONF).read(), re.M).group(1)  # single source of truth (L3)
+# Round 4c L1: flag text the tests must NOT see in the signer's output, built at runtime (no literal in this file,
+# so the legacy-signing guard needs no waiver for it).
+DEEP_FLAG = "".join(["-", "-", "de", "ep"])
 MOCK = r'''#!/usr/bin/env python3
 import os, sys
 a = sys.argv[1:]; p = a[-1] if a else ""
@@ -120,7 +123,7 @@ def run(name, args, expect_rc, must=(), mustnot=(), env=None, cwd=None):
 GUARD = os.path.join(TREE, "greatdane", "tests", "no_legacy_deep_sign_check.py")
 # Fixture text uses placeholders that are substituted at runtime, so these lines never look like commands to the
 # guard when it scans greatdane/tests itself.
-PH = {"@D@": "-" * 2 + "deep", "@V@": "-" * 2 + "verify", "@SO@": "".join(["sign-", "only.sh"]),
+PH = {"@D@": DEEP_FLAG, "@V@": "-" * 2 + "verify", "@SO@": "".join(["sign-", "only.sh"]),
       "@BU@": "".join(["build-", "universal.sh"]), "@NO@": "".join(["notar", "ize.sh"]),
       "@BEP@": ".".join(["browser", "entitlements", "plist"])}
 
@@ -151,7 +154,9 @@ def run_guard(name, root, expect_rc, must=(), mustnot=()):
 
 
 def legacy_guard_cases(tmp):
-    run_guard("L0 guard PASSES on this tree", TREE, 0, [r"legacy-signing check: PASS"])
+    # L0 (round 4c L1): the tree passes with no hits, and the waiver mechanism is gone entirely.
+    run_guard("L0 guard PASSES on this tree, 0 hits, no waivers", TREE, 0,
+              [r"legacy-signing check: PASS \(0 hits, \d+ files\)"], [r"WAIVED", r"nolegacy", r"waived"])
     bad = [
         ("L1 sh line continuation", "greatdane/tools/a.sh", "codesign --force --sign - \\\n    @D@ a.app\n", r"a\.sh:1: codesign"),
         ("L2 sh wrapper variable $CS @D@", "greatdane/tools/a.sh", 'CS="codesign --force --sign -"\n$CS @D@ a.app\n', r"a\.sh:2: codesign"),
@@ -188,8 +193,10 @@ def legacy_guard_cases(tmp):
     run_guard("L20 allowed forms (verify, comments, docstring, prose, tools path) PASS", good, 0,
               [r"legacy-signing check: PASS \(0 hits"])
     waive = guard_tree(os.path.join(tmp, "lg-waive"), {
-        "greatdane/tools/w.sh": "codesign --force @D@ --sign - a  # nolegacy: fixture\n"})
-    run_guard("L21 nolegacy waiver passes but is listed", waive, 0, [r"WAIVED \(nolegacy\) greatdane/tools/w\.sh:1"])
+        "greatdane/tools/w.sh": "codesign --force @D@ --sign - a  # nolegacy: fixture\n",
+        "greatdane/tools/w.py": 'import subprocess\nsubprocess.run(["codesign", "@D@", "-s", "-", "a"])  # nolegacy: x\n'})
+    run_guard("L21 a nolegacy comment no longer waives anything", waive, 1,
+              [r"w\.sh:1: codesign", r"w\.py:2: --deep", r"legacy-signing check: FAIL \(2 hits"], [r"WAIVED"])
 
 
 def main():
@@ -207,7 +214,7 @@ def main():
         run("P1 plan OK (framework symlinks, symlinked Mach-O ignored)", ["plan", good], 0, [r"PLAN OK"],
             [r"XUL-link", r"PROBLEM"])
         run("P2 sign --dry-run OK", ["sign", good, "--dry-run"], 0, [r"DRY RUN: nothing signed",
-            r"<identity redacted; team %s>" % TEAM], [r"--deep"])  # nolegacy: regex that must NOT match the output
+            r"<identity redacted; team %s>" % TEAM], [re.escape(DEEP_FLAG)])
         run("P3 check PASS with mock codesign", ["check", good], 0, [r"CHECK PASS"], env=mock)
         jpath = os.path.join(tmp, "ent.json")
         run("P4 check --json writes report", ["check", good, "--json", jpath], 0, [r"CHECK PASS"], env=mock)

@@ -1,0 +1,143 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 17:23:44 -0600
+Subject: [PATCH 114/144] GreatDANE: remove the legacy-guard waiver; build the
+ selftest regex at runtime (round 4c L1)
+
+This is NGD's preferred option. sign_dane_macos_selftest.py:210 had a literal --deep must-not-match regex,
+which needed a trailing nolegacy waiver. The regex is now re.escape(DEEP_FLAG), where DEEP_FLAG is built
+at runtime with "".join(...). The fixture placeholder @D@ uses the same value. With no literal left,
+nothing needs a waiver.
+
+no_legacy_deep_sign_check.py drops the waiver mechanism entirely: the PRAGMA, the waived list and the
+WAIVED output are gone, and the summary is now "PASS|FAIL (N hits, M files)". A line with a nolegacy
+comment is checked like any other.
+
+Selftest:
+- L0 asserts that the tree passes with "0 hits" and that no WAIVED/nolegacy/waived text appears.
+- L21 now asserts that nolegacy comments in a .sh and a .py fixture are both flagged (rc 1, 2 hits).
+
+tests/README.md is updated to match.
+---
+ greatdane/tests/README.md                    |  2 +-
+ greatdane/tests/no_legacy_deep_sign_check.py | 19 +++++++------------
+ greatdane/tests/sign_dane_macos_selftest.py  | 17 ++++++++++++-----
+ 3 files changed, 20 insertions(+), 18 deletions(-)
+
+diff --git a/greatdane/tests/README.md b/greatdane/tests/README.md
+index 5a1d2223bf..ae4fc5b50b 100644
+--- a/greatdane/tests/README.md
++++ b/greatdane/tests/README.md
+@@ -19,4 +19,4 @@ sign_dane_macos_selftest.py: `python3 greatdane/tests/sign_dane_macos_selftest.p
+ 
+ - `tippytop_default_sites_check.py`: every default.sites host has a bundled tippytop icon (run from tree root).
+ - `sign_only_selftest.py`: sign-only.sh with stub tools + mock codesign (DANE_ARCH allowlist, dmg refusal, realpath owner guards, ad-hoc and Developer ID runs). No real signing.
+-- `no_legacy_deep_sign_check.py [--root DIR] [-v]`: round 4 (L-a). Scans every text file under greatdane/ (tests and non-.sh/.py files too; Markdown fenced blocks only) plus taskcluster/config.yml. It flags any `--deep` outside a `--verify` command (line continuations, `$CS --deep`, `DEEP=`/`$DEEP` flag variables, verify+sign on one line, Python `+`/implicit string concatenation), browser.entitlements.plist, legacy script names outside greatdane/tools/ (sign-only.sh via $G or any other path, build-universal.sh, notarize.sh without --submit-existing), and YAML `deep: true` (PyYAML if installed, else a line parser). A trailing `nolegacy: <reason>` comment waives one line; waived lines are always printed. sign_dane_macos_selftest.py runs it on this tree (L0) and on fixtures (L1-L21).
++- `no_legacy_deep_sign_check.py [--root DIR] [-v]`: round 4 (L-a). Scans every text file under greatdane/ (tests and non-.sh/.py files too; Markdown fenced blocks only) plus taskcluster/config.yml. It flags any `--deep` outside a `--verify` command (line continuations, `$CS --deep`, `DEEP=`/`$DEEP` flag variables, verify+sign on one line, Python `+`/implicit string concatenation), browser.entitlements.plist, legacy script names outside greatdane/tools/ (sign-only.sh via $G or any other path, build-universal.sh, notarize.sh without --submit-existing), and YAML `deep: true` (PyYAML if installed, else a line parser). There is no waiver (round 4c L1): the `nolegacy:` comment mechanism is removed, and the selftest builds its must-not-match regex at runtime instead. sign_dane_macos_selftest.py runs it on this tree (L0: PASS with 0 hits and no waivers) and on fixtures (L1-L21; L21 checks that a `nolegacy:` comment no longer waives anything).
+diff --git a/greatdane/tests/no_legacy_deep_sign_check.py b/greatdane/tests/no_legacy_deep_sign_check.py
+index 26f4a712d0..cd1ee2fcf9 100644
+--- a/greatdane/tests/no_legacy_deep_sign_check.py
++++ b/greatdane/tests/no_legacy_deep_sign_check.py
+@@ -30,8 +30,9 @@ taskcluster/config.yml. Binary files are skipped.
+ - Shell rules apply to *.sh, files with a shell shebang, and other text files.
+ - In Markdown, only fenced code blocks are checked; prose may name the legacy scripts.
+ - Shell comments are ignored.
+-A line may opt out with a trailing `nolegacy: <reason>` comment. Opted-out lines are always listed in the
+-output, so reviewers see them. Exit 1 on any hit.
++There is no opt-out (round 4c L1): the old `nolegacy:` waiver comment is gone, and a line carrying one is
++checked like any other. Code that has to name a flag (the selftest's must-not-match regex) builds it at
++runtime. Exit 1 on any hit.
+ """
+ import ast, os, re, shlex, sys
+ 
+@@ -45,15 +46,11 @@ V = "-" * 2 + "verify"
+ SO, BU, NO = "".join(["sign-", "only.sh"]), "".join(["build-", "universal.sh"]), "".join(["notar", "ize"])
+ BEP = ".".join(["browser", "entitlements", "plist"])
+ NOTE = "legacy %s.sh mode (no --submit-existing)" % NO
+-PRAGMA = re.compile(r"#.*\bnolegacy:\s*\S")
+-hits, waived = [], []
++hits = []
+ 
+ 
+ def hit(path, n, msg, line=""):
+-    if PRAGMA.search(line):
+-        waived.append("%s:%d: %s" % (os.path.relpath(path, ROOT), n, msg))
+-    else:
+-        hits.append("%s:%d: %s" % (os.path.relpath(path, ROOT), n, msg))
++    hits.append("%s:%d: %s" % (os.path.relpath(path, ROOT), n, msg))
+ 
+ 
+ def legacy_name(tok):
+@@ -283,14 +280,12 @@ def main():
+         files.append(cfg)
+     for f in sorted(files):
+         check_file(f)
+-    for w in waived:
+-        print("WAIVED (nolegacy) " + w)
+     for h in hits:
+         print("FAIL " + h)
+     if VERBOSE:
+         print("scanned %d files under %s" % (len(files), ROOT))
+-    print("legacy-signing check: %s (%d hit%s, %d waived, %d files)" % (
+-        "FAIL" if hits else "PASS", len(hits), "" if len(hits) == 1 else "s", len(waived), len(files)))
++    print("legacy-signing check: %s (%d hit%s, %d files)" % (
++        "FAIL" if hits else "PASS", len(hits), "" if len(hits) == 1 else "s", len(files)))
+     sys.exit(1 if hits else 0)
+ 
+ 
+diff --git a/greatdane/tests/sign_dane_macos_selftest.py b/greatdane/tests/sign_dane_macos_selftest.py
+index a04ab6d3d0..d521617ed6 100644
+--- a/greatdane/tests/sign_dane_macos_selftest.py
++++ b/greatdane/tests/sign_dane_macos_selftest.py
+@@ -15,6 +15,9 @@ ENTDIR = os.path.join(TREE, "security", "mac", "hardenedruntime", "production")
+ VERBOSE = "-v" in sys.argv
+ CONF = os.path.join(TREE, "greatdane", "macos", "signing.conf")
+ TEAM = re.search(r"^TEAM_ID=(\S+)", open(CONF).read(), re.M).group(1)  # single source of truth (L3)
++# Round 4c L1: flag text the tests must NOT see in the signer's output, built at runtime (no literal in this file,
++# so the legacy-signing guard needs no waiver for it).
++DEEP_FLAG = "".join(["-", "-", "de", "ep"])
+ MOCK = r'''#!/usr/bin/env python3
+ import os, sys
+ a = sys.argv[1:]; p = a[-1] if a else ""
+@@ -120,7 +123,7 @@ def run(name, args, expect_rc, must=(), mustnot=(), env=None, cwd=None):
+ GUARD = os.path.join(TREE, "greatdane", "tests", "no_legacy_deep_sign_check.py")
+ # Fixture text uses placeholders that are substituted at runtime, so these lines never look like commands to the
+ # guard when it scans greatdane/tests itself.
+-PH = {"@D@": "-" * 2 + "deep", "@V@": "-" * 2 + "verify", "@SO@": "".join(["sign-", "only.sh"]),
++PH = {"@D@": DEEP_FLAG, "@V@": "-" * 2 + "verify", "@SO@": "".join(["sign-", "only.sh"]),
+       "@BU@": "".join(["build-", "universal.sh"]), "@NO@": "".join(["notar", "ize.sh"]),
+       "@BEP@": ".".join(["browser", "entitlements", "plist"])}
+ 
+@@ -151,7 +154,9 @@ def run_guard(name, root, expect_rc, must=(), mustnot=()):
+ 
+ 
+ def legacy_guard_cases(tmp):
+-    run_guard("L0 guard PASSES on this tree", TREE, 0, [r"legacy-signing check: PASS"])
++    # L0 (round 4c L1): the tree passes with no hits, and the waiver mechanism is gone entirely.
++    run_guard("L0 guard PASSES on this tree, 0 hits, no waivers", TREE, 0,
++              [r"legacy-signing check: PASS \(0 hits, \d+ files\)"], [r"WAIVED", r"nolegacy", r"waived"])
+     bad = [
+         ("L1 sh line continuation", "greatdane/tools/a.sh", "codesign --force --sign - \\\n    @D@ a.app\n", r"a\.sh:1: codesign"),
+         ("L2 sh wrapper variable $CS @D@", "greatdane/tools/a.sh", 'CS="codesign --force --sign -"\n$CS @D@ a.app\n', r"a\.sh:2: codesign"),
+@@ -188,8 +193,10 @@ def legacy_guard_cases(tmp):
+     run_guard("L20 allowed forms (verify, comments, docstring, prose, tools path) PASS", good, 0,
+               [r"legacy-signing check: PASS \(0 hits"])
+     waive = guard_tree(os.path.join(tmp, "lg-waive"), {
+-        "greatdane/tools/w.sh": "codesign --force @D@ --sign - a  # nolegacy: fixture\n"})
+-    run_guard("L21 nolegacy waiver passes but is listed", waive, 0, [r"WAIVED \(nolegacy\) greatdane/tools/w\.sh:1"])
++        "greatdane/tools/w.sh": "codesign --force @D@ --sign - a  # nolegacy: fixture\n",
++        "greatdane/tools/w.py": 'import subprocess\nsubprocess.run(["codesign", "@D@", "-s", "-", "a"])  # nolegacy: x\n'})
++    run_guard("L21 a nolegacy comment no longer waives anything", waive, 1,
++              [r"w\.sh:1: codesign", r"w\.py:2: --deep", r"legacy-signing check: FAIL \(2 hits"], [r"WAIVED"])
+ 
+ 
+ def main():
+@@ -207,7 +214,7 @@ def main():
+         run("P1 plan OK (framework symlinks, symlinked Mach-O ignored)", ["plan", good], 0, [r"PLAN OK"],
+             [r"XUL-link", r"PROBLEM"])
+         run("P2 sign --dry-run OK", ["sign", good, "--dry-run"], 0, [r"DRY RUN: nothing signed",
+-            r"<identity redacted; team %s>" % TEAM], [r"--deep"])  # nolegacy: regex that must NOT match the output
++            r"<identity redacted; team %s>" % TEAM], [re.escape(DEEP_FLAG)])
+         run("P3 check PASS with mock codesign", ["check", good], 0, [r"CHECK PASS"], env=mock)
+         jpath = os.path.join(tmp, "ent.json")
+         run("P4 check --json writes report", ["check", good, "--json", jpath], 0, [r"CHECK PASS"], env=mock)
