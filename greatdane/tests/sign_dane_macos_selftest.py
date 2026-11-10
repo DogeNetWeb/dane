@@ -327,6 +327,15 @@ def main():
             "/Applications/Dane.app", os.path.join(tmp, "a", "DaneNotarized", "x")], 2,
             [r"Dane 2", r"/Applications/Dane.app", r"DaneNotarized"])
         run("G31 guard-path accepts a work path", ["guard-path", good, os.path.join(tmp, "out")], 0)
+        # --- round 4 L-b: /System/Volumes/Data firmlink prefix stripped for every rule ---
+        run("G32 /System/Volumes/Data/Applications/Dane.app refused", ["plan", "/System/Volumes/Data/Applications/Dane.app"],
+            2, [r"off-limits \(installed app location"])
+        run("G33 /System/Volumes/Data/Users/x/Applications/Dane.app refused",
+            ["plan", "/System/Volumes/Data/Users/x/Applications/Dane.app"], 2, [r"off-limits \(installed app location"])
+        run("G34 guard-path: firmlinked GreatDANE profile refused", ["guard-path",
+            "/System/Volumes/Data/Users/x/Library/Application Support/GreatDANE/p"], 2, [r"GreatDANE profile"])
+        run("G35 /System/Volumes/Data/Volumes/Other needs the allowlist", ["plan",
+            "/System/Volumes/Data/Volumes/Other/Dane.app"], 2, [r"need --allow-volume.*: /Volumes/Other/Dane.app"])
 
         # --- round 3: symlink escape, framework versions ---
         root = os.path.join(tmp, "s1"); shutil.copytree(os.path.join(tmp, "good"), root, symlinks=True)

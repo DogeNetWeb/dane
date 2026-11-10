@@ -36,9 +36,11 @@ VER=$(cat "$TREE/browser/config/version_display.txt")
 [[ "$VER" =~ ^[0-9][0-9A-Za-z.]*$ ]] || refuse "unexpected version string in browser/config/version_display.txt: '$VER'"
 realp() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
-SRC=$(realp "${DANE_APP_SRC:?set DANE_APP_SRC}")
-NODE=$(realp "${DANE_NODE:?set DANE_NODE}")
-OUT=$(realp "${DANE_OUT:-$TREE/obj-gd/dist/gd-release}")
+# L-b: /System/Volumes/Data/<x> is the firmlinked /<x>; strip it before the /Applications, /Users, /Volumes rules.
+fl() { case "$(lower "$1")" in /system/volumes/data|/system/volumes/data/) echo / ;; /system/volumes/data/*) echo "${1:20}" ;; *) echo "$1" ;; esac; }
+SRC=$(fl "$(realp "${DANE_APP_SRC:?set DANE_APP_SRC}")")
+NODE=$(fl "$(realp "${DANE_NODE:?set DANE_NODE}")")
+OUT=$(fl "$(realp "${DANE_OUT:-$TREE/obj-gd/dist/gd-release}")")
 ADHOC=0; [ "${DANE_SIGN_IDENTITY:-}" = "-" ] && ADHOC=1
 SUFFIX=""; [ $ADHOC = 1 ] && SUFFIX="-ADHOC"
 STAGE=$OUT/stage-$ARCH$SUFFIX
@@ -46,7 +48,7 @@ APP=$STAGE/Dane.app
 DMG=$OUT/Dane-$VER-mac-$ARCH$SUFFIX.dmg
 POL=""
 if [ "${DANE_NO_POLICIES:-0}" != 1 ]; then
-  POL=$(realp "${DANE_POLICIES:-$G/dane-policies.json}")
+  POL=$(fl "$(realp "${DANE_POLICIES:-$G/dane-policies.json}")")
   [ -f "$POL" ] || refuse "policies.json not found: $POL (set DANE_POLICIES or DANE_NO_POLICIES=1)"
 fi
 

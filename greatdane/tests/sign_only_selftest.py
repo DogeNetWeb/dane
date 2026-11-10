@@ -93,6 +93,13 @@ def main():
         run("O10 DANE_OUT symlink into DaneNotarized refused (realpath)", dict(env, DANE_OUT=link2), 2,
             [r"DaneNotarized"])
         run("O11 DANE_OUT=/ refused as too broad", dict(env, DANE_OUT="/"), 2, [r"DANE_OUT too broad"])
+        # round 4 L-b: the /System/Volumes/Data firmlink prefix is stripped before the checks
+        for i, o in enumerate(["/System/Volumes/Data", "/System/Volumes/Data/Users", "/System/Volumes/Data/users/x",
+                               "/System/Volumes/Data/Volumes"]):
+            run("O%d DANE_OUT=%s refused as too broad" % (19 + i, o), dict(env, DANE_OUT=o), 2,
+                [r"DANE_OUT too broad: /"])
+        run("O23 DANE_APP_SRC=/System/Volumes/Data/Applications/Dane.app refused",
+            dict(env, DANE_APP_SRC="/System/Volumes/Data/Applications/Dane.app"), 2, [r"installed app location"])
         run("O12 DANE_APP_SRC inside the stage dir refused", dict(env, DANE_OUT=os.path.join(tmp, "o12"),
             DANE_APP_SRC=os.path.join(tmp, "o12", "stage-universal", "Dane.app")), 2, [r"inside the stage dir"])
         e = dict(os.environ, **env)

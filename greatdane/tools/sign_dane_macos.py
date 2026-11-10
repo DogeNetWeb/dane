@@ -21,6 +21,7 @@ Never uses `codesign --deep` to SIGN (only to verify), so no helper inherits the
 Never notarizes. The signing identity is never printed.
 
 Path guard (case-insensitive, on the realpath):
+  - /System/Volumes/Data/<x> is treated as /<x> before every rule (firmlinks).
   - always refused: /Volumes/Dane, plus " N" / "-N" variants (the owner's installed app); any path component
     containing "danenotarized"; anything under "Application Support/GreatDANE"; anything under /Applications
     or ~/Applications (installed apps); anything inside an attached disk image (per `hdiutil info`) whose image
@@ -89,8 +90,11 @@ def arg_values(flag):
 def norm(p):
     p = os.path.realpath(p)
     low = p.lower()
-    # macOS firmlink alias of /Volumes
-    if low.startswith("/system/volumes/data/volumes/"):
+    # macOS firmlinks: /System/Volumes/Data/<x> is the same place as /<x> (/Volumes, /Applications, /Users, ...),
+    # so strip the prefix before any owner-path rule (round 4, L-b).
+    if low == "/system/volumes/data":
+        return "/"
+    if low.startswith("/system/volumes/data/"):
         p = p[len("/System/Volumes/Data"):]
     return p
 

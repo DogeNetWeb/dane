@@ -1,0 +1,115 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 16:54:19 -0600
+Subject: [PATCH 106/144] GreatDANE: strip the /System/Volumes/Data firmlink
+ prefix before every owner-path rule (round 4, L-b)
+
+- sign_dane_macos.py norm() (:89-95) stripped /System/Volumes/Data only before /Volumes/. It now strips it for
+  every path, so the /Applications, ~/Applications, /Users and GreatDANE-profile rules can't be bypassed with
+  the firmlinked spelling. /System/Volumes/Data itself maps to /.
+- sign-only.sh (:56): DANE_APP_SRC, DANE_NODE, DANE_OUT and DANE_POLICIES go through the same fl() step after
+  realpath. The DANE_OUT too-broad check, the stage/dmg paths and the guard-path call all see /<x>.
+- Tests:
+  - sign_dane_macos_selftest G32-G35: firmlinked /Applications, ~/Applications, the GreatDANE profile, and
+    /Volumes/Other still needing the allowlist.
+  - sign_only_selftest O19-O23: DANE_OUT=/System/Volumes/Data, .../Users, .../users/x and .../Volumes are too
+    broad; a firmlinked /Applications source is refused.
+---
+ greatdane/tests/sign_dane_macos_selftest.py |  9 +++++++++
+ greatdane/tests/sign_only_selftest.py       |  7 +++++++
+ greatdane/tools/sign-only.sh                | 10 ++++++----
+ greatdane/tools/sign_dane_macos.py          |  8 ++++++--
+ 4 files changed, 28 insertions(+), 6 deletions(-)
+
+diff --git a/greatdane/tests/sign_dane_macos_selftest.py b/greatdane/tests/sign_dane_macos_selftest.py
+index ce4631bb56..6c0733648f 100644
+--- a/greatdane/tests/sign_dane_macos_selftest.py
++++ b/greatdane/tests/sign_dane_macos_selftest.py
+@@ -327,6 +327,15 @@ def main():
+             "/Applications/Dane.app", os.path.join(tmp, "a", "DaneNotarized", "x")], 2,
+             [r"Dane 2", r"/Applications/Dane.app", r"DaneNotarized"])
+         run("G31 guard-path accepts a work path", ["guard-path", good, os.path.join(tmp, "out")], 0)
++        # --- round 4 L-b: /System/Volumes/Data firmlink prefix stripped for every rule ---
++        run("G32 /System/Volumes/Data/Applications/Dane.app refused", ["plan", "/System/Volumes/Data/Applications/Dane.app"],
++            2, [r"off-limits \(installed app location"])
++        run("G33 /System/Volumes/Data/Users/x/Applications/Dane.app refused",
++            ["plan", "/System/Volumes/Data/Users/x/Applications/Dane.app"], 2, [r"off-limits \(installed app location"])
++        run("G34 guard-path: firmlinked GreatDANE profile refused", ["guard-path",
++            "/System/Volumes/Data/Users/x/Library/Application Support/GreatDANE/p"], 2, [r"GreatDANE profile"])
++        run("G35 /System/Volumes/Data/Volumes/Other needs the allowlist", ["plan",
++            "/System/Volumes/Data/Volumes/Other/Dane.app"], 2, [r"need --allow-volume.*: /Volumes/Other/Dane.app"])
+ 
+         # --- round 3: symlink escape, framework versions ---
+         root = os.path.join(tmp, "s1"); shutil.copytree(os.path.join(tmp, "good"), root, symlinks=True)
+diff --git a/greatdane/tests/sign_only_selftest.py b/greatdane/tests/sign_only_selftest.py
+index f3c5096785..b44da52824 100644
+--- a/greatdane/tests/sign_only_selftest.py
++++ b/greatdane/tests/sign_only_selftest.py
+@@ -93,6 +93,13 @@ def main():
+         run("O10 DANE_OUT symlink into DaneNotarized refused (realpath)", dict(env, DANE_OUT=link2), 2,
+             [r"DaneNotarized"])
+         run("O11 DANE_OUT=/ refused as too broad", dict(env, DANE_OUT="/"), 2, [r"DANE_OUT too broad"])
++        # round 4 L-b: the /System/Volumes/Data firmlink prefix is stripped before the checks
++        for i, o in enumerate(["/System/Volumes/Data", "/System/Volumes/Data/Users", "/System/Volumes/Data/users/x",
++                               "/System/Volumes/Data/Volumes"]):
++            run("O%d DANE_OUT=%s refused as too broad" % (19 + i, o), dict(env, DANE_OUT=o), 2,
++                [r"DANE_OUT too broad: /"])
++        run("O23 DANE_APP_SRC=/System/Volumes/Data/Applications/Dane.app refused",
++            dict(env, DANE_APP_SRC="/System/Volumes/Data/Applications/Dane.app"), 2, [r"installed app location"])
+         run("O12 DANE_APP_SRC inside the stage dir refused", dict(env, DANE_OUT=os.path.join(tmp, "o12"),
+             DANE_APP_SRC=os.path.join(tmp, "o12", "stage-universal", "Dane.app")), 2, [r"inside the stage dir"])
+         e = dict(os.environ, **env)
+diff --git a/greatdane/tools/sign-only.sh b/greatdane/tools/sign-only.sh
+index 210ef724fb..2b179763e5 100755
+--- a/greatdane/tools/sign-only.sh
++++ b/greatdane/tools/sign-only.sh
+@@ -36,9 +36,11 @@ VER=$(cat "$TREE/browser/config/version_display.txt")
+ [[ "$VER" =~ ^[0-9][0-9A-Za-z.]*$ ]] || refuse "unexpected version string in browser/config/version_display.txt: '$VER'"
+ realp() { python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$1"; }
+ lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+-SRC=$(realp "${DANE_APP_SRC:?set DANE_APP_SRC}")
+-NODE=$(realp "${DANE_NODE:?set DANE_NODE}")
+-OUT=$(realp "${DANE_OUT:-$TREE/obj-gd/dist/gd-release}")
++# L-b: /System/Volumes/Data/<x> is the firmlinked /<x>; strip it before the /Applications, /Users, /Volumes rules.
++fl() { case "$(lower "$1")" in /system/volumes/data|/system/volumes/data/) echo / ;; /system/volumes/data/*) echo "${1:20}" ;; *) echo "$1" ;; esac; }
++SRC=$(fl "$(realp "${DANE_APP_SRC:?set DANE_APP_SRC}")")
++NODE=$(fl "$(realp "${DANE_NODE:?set DANE_NODE}")")
++OUT=$(fl "$(realp "${DANE_OUT:-$TREE/obj-gd/dist/gd-release}")")
+ ADHOC=0; [ "${DANE_SIGN_IDENTITY:-}" = "-" ] && ADHOC=1
+ SUFFIX=""; [ $ADHOC = 1 ] && SUFFIX="-ADHOC"
+ STAGE=$OUT/stage-$ARCH$SUFFIX
+@@ -46,7 +48,7 @@ APP=$STAGE/Dane.app
+ DMG=$OUT/Dane-$VER-mac-$ARCH$SUFFIX.dmg
+ POL=""
+ if [ "${DANE_NO_POLICIES:-0}" != 1 ]; then
+-  POL=$(realp "${DANE_POLICIES:-$G/dane-policies.json}")
++  POL=$(fl "$(realp "${DANE_POLICIES:-$G/dane-policies.json}")")
+   [ -f "$POL" ] || refuse "policies.json not found: $POL (set DANE_POLICIES or DANE_NO_POLICIES=1)"
+ fi
+ 
+diff --git a/greatdane/tools/sign_dane_macos.py b/greatdane/tools/sign_dane_macos.py
+index 7e03a19c69..1cdd2aa31e 100755
+--- a/greatdane/tools/sign_dane_macos.py
++++ b/greatdane/tools/sign_dane_macos.py
+@@ -21,6 +21,7 @@ Never uses `codesign --deep` to SIGN (only to verify), so no helper inherits the
+ Never notarizes. The signing identity is never printed.
+ 
+ Path guard (case-insensitive, on the realpath):
++  - /System/Volumes/Data/<x> is treated as /<x> before every rule (firmlinks).
+   - always refused: /Volumes/Dane, plus " N" / "-N" variants (the owner's installed app); any path component
+     containing "danenotarized"; anything under "Application Support/GreatDANE"; anything under /Applications
+     or ~/Applications (installed apps); anything inside an attached disk image (per `hdiutil info`) whose image
+@@ -89,8 +90,11 @@ def arg_values(flag):
+ def norm(p):
+     p = os.path.realpath(p)
+     low = p.lower()
+-    # macOS firmlink alias of /Volumes
+-    if low.startswith("/system/volumes/data/volumes/"):
++    # macOS firmlinks: /System/Volumes/Data/<x> is the same place as /<x> (/Volumes, /Applications, /Users, ...),
++    # so strip the prefix before any owner-path rule (round 4, L-b).
++    if low == "/system/volumes/data":
++        return "/"
++    if low.startswith("/system/volumes/data/"):
+         p = p[len("/System/Volumes/Data"):]
+     return p
+ 
