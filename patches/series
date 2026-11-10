@@ -107,3 +107,4 @@
 0107-GreatDANE-refuse-a-work-dir-of-Users-HOME-or-Volumes.patch
 0108-GreatDANE-sign-only.sh-deletes-a-stage-dir-only-if-i.patch
 0109-GreatDANE-name-the-ad-hoc-dmg-volume-Dane-ADHOC-roun.patch
+0110-GreatDANE-check-accepts-ad-hoc-only-with-an-explicit.patch

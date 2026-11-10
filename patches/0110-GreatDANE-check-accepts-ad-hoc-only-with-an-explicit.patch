@@ -1,0 +1,173 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 16:57:09 -0600
+Subject: [PATCH 110/144] GreatDANE: check accepts ad-hoc only with an explicit
+ --allow-adhoc (round 4, L-f)
+
+- sign_dane_macos.py:
+  - check rejects any ad-hoc signature by default: "ad-hoc signature (default rejects ad-hoc; --allow-adhoc
+    for a throwaway check run)".
+  - With --allow-adhoc it reports ad-hoc rows as expected-not-Developer-ID, as in round 3.
+  - --strict / DANE_SIGN_STRICT=1 still fails ad-hoc even with --allow-adhoc.
+  - sign with identity "-" is refused without --allow-adhoc, dry runs included.
+- sign-only.sh passes --allow-adhoc to sign, check and the dry-run sign only in ad-hoc mode
+  (DANE_SIGN_IDENTITY=-). Developer ID runs never pass it and keep check --strict.
+- Tests:
+  - sign_dane_macos_selftest: A1 and A3-A7 now pass --allow-adhoc. New A9 (check rejects ad-hoc by default),
+    A10 (sign '-' without the flag is refused) and A11 (the same for --dry-run).
+  - sign_only_selftest O17: a Developer ID run that yields ad-hoc now fails at the sign step's own check.
+---
+ greatdane/tests/sign_dane_macos_selftest.py | 19 +++++++++++------
+ greatdane/tests/sign_only_selftest.py       |  5 +++--
+ greatdane/tools/sign-only.sh                |  7 ++++---
+ greatdane/tools/sign_dane_macos.py          | 23 ++++++++++++++-------
+ 4 files changed, 35 insertions(+), 19 deletions(-)
+
+diff --git a/greatdane/tests/sign_dane_macos_selftest.py b/greatdane/tests/sign_dane_macos_selftest.py
+index fc6d696123..35241878ba 100644
+--- a/greatdane/tests/sign_dane_macos_selftest.py
++++ b/greatdane/tests/sign_dane_macos_selftest.py
+@@ -369,7 +369,7 @@ def main():
+ 
+         # --- round 3: ad-hoc throwaway runs ---
+         logf2 = os.path.join(tmp, "cs-adhoc.log")
+-        run("A1 ad-hoc sign (identity '-') -> CHECK PASS (AD-HOC)", ["sign", good], 0,
++        run("A1 ad-hoc sign (identity '-') -> CHECK PASS (AD-HOC)", ["sign", good, "--allow-adhoc"], 0,
+             [r"CHECK PASS \(AD-HOC: expected-not-Developer-ID", r"ad-hoc: expected, not Developer ID"],
+             [r"CHECK FAIL"], env=dict(mock, DANE_SIGN_IDENTITY="-", MOCK_ADHOC="1", MOCK_LOG=logf2))
+         sl = [l.split() for l in open(logf2).read().splitlines() if "--sign" in l]
+@@ -378,18 +378,25 @@ def main():
+             "--entitlements" in l and l[-1].endswith("media-plugin-helper.app") for l in sl)
+         results.append(("A2 ad-hoc calls: '-', runtime, entitlements kept, no --timestamp/--deep", ok, 0, 0))
+         print("%s %-62s" % ("PASS" if ok else "FAIL", "A2 ad-hoc calls: '-', runtime, entitlements kept, no --timestamp/--deep"))
+-        run("A3 ad-hoc + check --strict FAILS", ["check", good, "--strict"], 1,
++        run("A3 ad-hoc + check --strict FAILS (even with --allow-adhoc)", ["check", good, "--strict", "--allow-adhoc"], 1,
+             [r"ad-hoc signature \(strict: Developer ID required\)", r"CHECK FAIL"], env=dict(mock, MOCK_ADHOC="1"))
+-        run("A4 ad-hoc + DANE_SIGN_STRICT=1 FAILS", ["check", good], 1, [r"CHECK FAIL"],
++        run("A4 ad-hoc + DANE_SIGN_STRICT=1 FAILS", ["check", good, "--allow-adhoc"], 1, [r"CHECK FAIL"],
+             env=dict(mock, MOCK_ADHOC="1", DANE_SIGN_STRICT="1"))
+-        run("A5 ad-hoc still requires hardened runtime", ["check", good], 1, [r"no hardened runtime", r"CHECK FAIL"],
++        run("A5 ad-hoc still requires hardened runtime", ["check", good, "--allow-adhoc"], 1, [r"no hardened runtime", r"CHECK FAIL"],
+             env=dict(mock, MOCK_ADHOC="1", MOCK_NO_RUNTIME="1"))
+-        run("A6 ad-hoc still requires the mapped entitlements", ["check", good], 1,
++        run("A6 ad-hoc still requires the mapped entitlements", ["check", good, "--allow-adhoc"], 1,
+             [r"FAIL Contents/MacOS/gpu-helper.app"], env=dict(mock, MOCK_ADHOC="1", MOCK_BAD_GPU="1"))
+-        run("A7 mixed ad-hoc / Developer ID fails", ["check", good], 1, [r"mixed ad-hoc and Developer ID"],
++        run("A7 mixed ad-hoc / Developer ID fails", ["check", good, "--allow-adhoc"], 1, [r"mixed ad-hoc and Developer ID"],
+             env=dict(mock, MOCK_ADHOC_ONLY="gpu-helper.app"))
+         run("A8 Developer ID check --strict still PASSES", ["check", good, "--strict"], 0, [r"(?m)^CHECK PASS$"],
+             [r"AD-HOC"], env=mock)
++        # --- round 4 L-f: ad-hoc only with the explicit opt-in ---
++        run("A9 check rejects ad-hoc by default (no --allow-adhoc)", ["check", good], 1,
++            [r"default rejects ad-hoc", r"CHECK FAIL"], [r"CHECK PASS"], env=dict(mock, MOCK_ADHOC="1"))
++        run("A10 sign with identity '-' without --allow-adhoc refused", ["sign", good], 2,
++            [r"needs the explicit --allow-adhoc"], env=dict(mock, DANE_SIGN_IDENTITY="-", MOCK_ADHOC="1"))
++        run("A11 sign --dry-run with '-' without --allow-adhoc refused", ["sign", good, "--dry-run"], 2,
++            [r"needs the explicit --allow-adhoc"], env={"DANE_SIGN_IDENTITY": "-"})
+ 
+         # --- L5: failing mocks for check ---
+         run("C1 check FAIL: no hardened runtime", ["check", good], 1, [r"no hardened runtime", r"CHECK FAIL"],
+diff --git a/greatdane/tests/sign_only_selftest.py b/greatdane/tests/sign_only_selftest.py
+index d8ff6122fc..e94498c5af 100644
+--- a/greatdane/tests/sign_only_selftest.py
++++ b/greatdane/tests/sign_only_selftest.py
+@@ -147,8 +147,9 @@ def main():
+             print("%s %-66s" % ("PASS" if okv else "FAIL", nm))
+         os.remove(dmg)
+         shutil.rmtree(os.path.join(out, "stage-universal"))
+-        run("O17 Developer ID run where codesign produced ad-hoc FAILS (strict)", dict(env, MOCK_ADHOC="1"), 1,
+-            [r"strict: Developer ID required", r"CHECK FAIL"], post=lambda: not os.path.exists(dmg))
++        run("O17 Developer ID run where codesign produced ad-hoc FAILS", dict(env, MOCK_ADHOC="1"), 1,
++            [r"ad-hoc signature \((strict: Developer ID required|default rejects ad-hoc)", r"CHECK FAIL"],
++            post=lambda: not os.path.exists(dmg))
+     finally:
+         shutil.rmtree(tmp, ignore_errors=True)
+     failed = [r for r in results if not r[1]]
+diff --git a/greatdane/tools/sign-only.sh b/greatdane/tools/sign-only.sh
+index d5f474889d..7c40102a40 100755
+--- a/greatdane/tools/sign-only.sh
++++ b/greatdane/tools/sign-only.sh
+@@ -85,6 +85,7 @@ export DANE_SIGN_IDENTITY="${DANE_SIGN_IDENTITY:-}"
+ case "$(lower "$STAGE")" in /volumes/*) export DANE_SIGN_ALLOW_VOLUMES="$STAGE" ;; *) unset DANE_SIGN_ALLOW_VOLUMES ;; esac
+ export DANE_SIGN_WORK_DIRS="$STAGE"
+ STRICT=--strict; [ $ADHOC = 1 ] && STRICT=""
++AH=""; [ $ADHOC = 1 ] && AH=--allow-adhoc   # L-f: the signer rejects ad-hoc unless told explicitly
+ 
+ echo "== stage ($ARCH) -> $STAGE"
+ [ ! -e "$STAGE" ] || [ -f "$STAGE/$MARK" ] || refuse "stage marker vanished: $STAGE"
+@@ -102,12 +103,12 @@ ln -sfn /Applications "$STAGE/Applications"
+ echo "== plan"
+ python3 "$SIGNER" plan "$APP"
+ if [ "${DANE_DRY_RUN:-0}" = 1 ]; then
+-  python3 "$SIGNER" sign "$APP" --dry-run
++  python3 "$SIGNER" sign "$APP" --dry-run $AH
+   echo "DRY RUN: nothing signed, no dmg"; exit 0
+ fi
+ echo "== sign per binary (no --deep; identity redacted)"
+-python3 "$SIGNER" sign "$APP"
+-python3 "$SIGNER" check "$APP" $STRICT --json "$OUT/entitlements-check-$ARCH$SUFFIX.json"
++python3 "$SIGNER" sign "$APP" $AH
++python3 "$SIGNER" check "$APP" $STRICT $AH --json "$OUT/entitlements-check-$ARCH$SUFFIX.json"
+ 
+ echo "== dmg -> $DMG"
+ [ ! -e "$DMG" ] || refuse "dmg appeared during the run, not overwriting: $DMG"
+diff --git a/greatdane/tools/sign_dane_macos.py b/greatdane/tools/sign_dane_macos.py
+index 32eb693d71..7929b71c43 100755
+--- a/greatdane/tools/sign_dane_macos.py
++++ b/greatdane/tools/sign_dane_macos.py
+@@ -2,18 +2,20 @@
+ """Per-binary Developer ID signing and entitlement check for Dane.app.
+ 
+     sign_dane_macos.py plan  <Dane.app> [--allow-volume DIR]...            # print the plan; no codesign needed
+-    sign_dane_macos.py sign  <Dane.app> [--dry-run] [--allow-volume DIR]... # codesign inside-out (macOS);
+-                                                                            # needs DANE_SIGN_IDENTITY
+-    sign_dane_macos.py check <Dane.app> [--json OUT] [--strict] [--allow-volume DIR]...
++    sign_dane_macos.py sign  <Dane.app> [--dry-run] [--allow-adhoc] [--allow-volume DIR]... # codesign inside-out
++                                                                            # (macOS); needs DANE_SIGN_IDENTITY
++    sign_dane_macos.py check <Dane.app> [--json OUT] [--strict] [--allow-adhoc] [--allow-volume DIR]...
+         read-only: for each row, entitlements == map, hardened-runtime flag, TeamIdentifier == TEAM_ID from
+         greatdane/macos/signing.conf, secure timestamp; then codesign --verify --deep --strict
+     sign_dane_macos.py guard-path <path>...   # owner-path rules only (used by sign-only.sh); rc 2 if refused
+   Common options: --allow-volume DIR (must be under /Volumes), --work-dir DIR (see owner bundle-ID rule).
+ 
+-Ad-hoc (throwaway check runs only): DANE_SIGN_IDENTITY=- signs with "-" (no --timestamp, no keychain) but keeps
+---options runtime and the per-binary entitlements. `check` then reports ad-hoc rows as "expected, not Developer
+-ID" (team/timestamp not required) and prints CHECK PASS (AD-HOC ...). With --strict or DANE_SIGN_STRICT=1, an
+-ad-hoc signature FAILS check. A mix of ad-hoc and Developer ID rows always fails.
++Ad-hoc (throwaway check runs only, explicit opt-in --allow-adhoc; round 4, L-f): DANE_SIGN_IDENTITY=- with
++--allow-adhoc signs with "-" (no --timestamp, no keychain) but keeps --options runtime and the per-binary
++entitlements; without --allow-adhoc an ad-hoc identity is refused. `check --allow-adhoc` reports ad-hoc rows as
++"expected, not Developer ID" (team/timestamp not required) and prints CHECK PASS (AD-HOC ...). By default (no
++--allow-adhoc) an ad-hoc signature FAILS check, and with --strict or DANE_SIGN_STRICT=1 it fails even with
++--allow-adhoc. A mix of ad-hoc and Developer ID rows always fails.
+ 
+ Map: greatdane/macos/sign-map.tsv. Entitlements: security/mac/hardenedruntime/production/.
+ Team ID: greatdane/macos/signing.conf (TEAM_ID=...); env DANE_SIGNING_CONF overrides the path (tests).
+@@ -394,6 +396,7 @@ def main():
+     mode, app = sys.argv[1], guard(sys.argv[2])
+     strict = "--strict" in sys.argv or os.environ.get("DANE_SIGN_STRICT") == "1"
+     dry = "--dry-run" in sys.argv
++    allow_adhoc = "--allow-adhoc" in sys.argv
+     json_out = arg_values("--json")
+     json_out = json_out[-1] if json_out else None
+     rows, problems = plan(app)
+@@ -412,6 +415,8 @@ def main():
+     if mode == "sign":
+         ident = os.environ.get("DANE_SIGN_IDENTITY", "")
+         adhoc_sign = ident == "-"
++        if adhoc_sign and not allow_adhoc:
++            die("ad-hoc identity '-' needs the explicit --allow-adhoc flag (throwaway check runs only)")
+         if not dry and not adhoc_sign and ("(%s)" % TEAM) not in ident:
+             die("set DANE_SIGN_IDENTITY to the Developer ID Application identity for team " + TEAM
+                 + " (or '-' for an ad-hoc throwaway check run)")
+@@ -446,7 +451,9 @@ def main():
+             checks = [("entitlements", got != want), ("no hardened runtime", not runtime)]
+             if adhoc and strict:
+                 checks.append(("ad-hoc signature (strict: Developer ID required)", True))
+-            if not adhoc or strict:
++            elif adhoc and not allow_adhoc:
++                checks.append(("ad-hoc signature (default rejects ad-hoc; --allow-adhoc for a throwaway check run)", True))
++            if not adhoc or strict or not allow_adhoc:
+                 checks += [("team %s != %s" % (team, TEAM), team != TEAM), ("no secure timestamp", not stamped)]
+             why = [w for w, bad in checks if bad]
+             ok = not why

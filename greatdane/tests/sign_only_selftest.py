@@ -147,8 +147,9 @@ def main():
             print("%s %-66s" % ("PASS" if okv else "FAIL", nm))
         os.remove(dmg)
         shutil.rmtree(os.path.join(out, "stage-universal"))
-        run("O17 Developer ID run where codesign produced ad-hoc FAILS (strict)", dict(env, MOCK_ADHOC="1"), 1,
-            [r"strict: Developer ID required", r"CHECK FAIL"], post=lambda: not os.path.exists(dmg))
+        run("O17 Developer ID run where codesign produced ad-hoc FAILS", dict(env, MOCK_ADHOC="1"), 1,
+            [r"ad-hoc signature \((strict: Developer ID required|default rejects ad-hoc)", r"CHECK FAIL"],
+            post=lambda: not os.path.exists(dmg))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     failed = [r for r in results if not r[1]]

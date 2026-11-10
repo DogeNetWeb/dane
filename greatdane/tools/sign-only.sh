@@ -85,6 +85,7 @@ export DANE_SIGN_IDENTITY="${DANE_SIGN_IDENTITY:-}"
 case "$(lower "$STAGE")" in /volumes/*) export DANE_SIGN_ALLOW_VOLUMES="$STAGE" ;; *) unset DANE_SIGN_ALLOW_VOLUMES ;; esac
 export DANE_SIGN_WORK_DIRS="$STAGE"
 STRICT=--strict; [ $ADHOC = 1 ] && STRICT=""
+AH=""; [ $ADHOC = 1 ] && AH=--allow-adhoc   # L-f: the signer rejects ad-hoc unless told explicitly
 
 echo "== stage ($ARCH) -> $STAGE"
 [ ! -e "$STAGE" ] || [ -f "$STAGE/$MARK" ] || refuse "stage marker vanished: $STAGE"
@@ -102,12 +103,12 @@ ln -sfn /Applications "$STAGE/Applications"
 echo "== plan"
 python3 "$SIGNER" plan "$APP"
 if [ "${DANE_DRY_RUN:-0}" = 1 ]; then
-  python3 "$SIGNER" sign "$APP" --dry-run
+  python3 "$SIGNER" sign "$APP" --dry-run $AH
   echo "DRY RUN: nothing signed, no dmg"; exit 0
 fi
 echo "== sign per binary (no --deep; identity redacted)"
-python3 "$SIGNER" sign "$APP"
-python3 "$SIGNER" check "$APP" $STRICT --json "$OUT/entitlements-check-$ARCH$SUFFIX.json"
+python3 "$SIGNER" sign "$APP" $AH
+python3 "$SIGNER" check "$APP" $STRICT $AH --json "$OUT/entitlements-check-$ARCH$SUFFIX.json"
 
 echo "== dmg -> $DMG"
 [ ! -e "$DMG" ] || refuse "dmg appeared during the run, not overwriting: $DMG"

@@ -369,7 +369,7 @@ def main():
 
         # --- round 3: ad-hoc throwaway runs ---
         logf2 = os.path.join(tmp, "cs-adhoc.log")
-        run("A1 ad-hoc sign (identity '-') -> CHECK PASS (AD-HOC)", ["sign", good], 0,
+        run("A1 ad-hoc sign (identity '-') -> CHECK PASS (AD-HOC)", ["sign", good, "--allow-adhoc"], 0,
             [r"CHECK PASS \(AD-HOC: expected-not-Developer-ID", r"ad-hoc: expected, not Developer ID"],
             [r"CHECK FAIL"], env=dict(mock, DANE_SIGN_IDENTITY="-", MOCK_ADHOC="1", MOCK_LOG=logf2))
         sl = [l.split() for l in open(logf2).read().splitlines() if "--sign" in l]
@@ -378,18 +378,25 @@ def main():
             "--entitlements" in l and l[-1].endswith("media-plugin-helper.app") for l in sl)
         results.append(("A2 ad-hoc calls: '-', runtime, entitlements kept, no --timestamp/--deep", ok, 0, 0))
         print("%s %-62s" % ("PASS" if ok else "FAIL", "A2 ad-hoc calls: '-', runtime, entitlements kept, no --timestamp/--deep"))
-        run("A3 ad-hoc + check --strict FAILS", ["check", good, "--strict"], 1,
+        run("A3 ad-hoc + check --strict FAILS (even with --allow-adhoc)", ["check", good, "--strict", "--allow-adhoc"], 1,
             [r"ad-hoc signature \(strict: Developer ID required\)", r"CHECK FAIL"], env=dict(mock, MOCK_ADHOC="1"))
-        run("A4 ad-hoc + DANE_SIGN_STRICT=1 FAILS", ["check", good], 1, [r"CHECK FAIL"],
+        run("A4 ad-hoc + DANE_SIGN_STRICT=1 FAILS", ["check", good, "--allow-adhoc"], 1, [r"CHECK FAIL"],
             env=dict(mock, MOCK_ADHOC="1", DANE_SIGN_STRICT="1"))
-        run("A5 ad-hoc still requires hardened runtime", ["check", good], 1, [r"no hardened runtime", r"CHECK FAIL"],
+        run("A5 ad-hoc still requires hardened runtime", ["check", good, "--allow-adhoc"], 1, [r"no hardened runtime", r"CHECK FAIL"],
             env=dict(mock, MOCK_ADHOC="1", MOCK_NO_RUNTIME="1"))
-        run("A6 ad-hoc still requires the mapped entitlements", ["check", good], 1,
+        run("A6 ad-hoc still requires the mapped entitlements", ["check", good, "--allow-adhoc"], 1,
             [r"FAIL Contents/MacOS/gpu-helper.app"], env=dict(mock, MOCK_ADHOC="1", MOCK_BAD_GPU="1"))
-        run("A7 mixed ad-hoc / Developer ID fails", ["check", good], 1, [r"mixed ad-hoc and Developer ID"],
+        run("A7 mixed ad-hoc / Developer ID fails", ["check", good, "--allow-adhoc"], 1, [r"mixed ad-hoc and Developer ID"],
             env=dict(mock, MOCK_ADHOC_ONLY="gpu-helper.app"))
         run("A8 Developer ID check --strict still PASSES", ["check", good, "--strict"], 0, [r"(?m)^CHECK PASS$"],
             [r"AD-HOC"], env=mock)
+        # --- round 4 L-f: ad-hoc only with the explicit opt-in ---
+        run("A9 check rejects ad-hoc by default (no --allow-adhoc)", ["check", good], 1,
+            [r"default rejects ad-hoc", r"CHECK FAIL"], [r"CHECK PASS"], env=dict(mock, MOCK_ADHOC="1"))
+        run("A10 sign with identity '-' without --allow-adhoc refused", ["sign", good], 2,
+            [r"needs the explicit --allow-adhoc"], env=dict(mock, DANE_SIGN_IDENTITY="-", MOCK_ADHOC="1"))
+        run("A11 sign --dry-run with '-' without --allow-adhoc refused", ["sign", good, "--dry-run"], 2,
+            [r"needs the explicit --allow-adhoc"], env={"DANE_SIGN_IDENTITY": "-"})
 
         # --- L5: failing mocks for check ---
         run("C1 check FAIL: no hardened runtime", ["check", good], 1, [r"no hardened runtime", r"CHECK FAIL"],

@@ -2,18 +2,20 @@
 """Per-binary Developer ID signing and entitlement check for Dane.app.
 
     sign_dane_macos.py plan  <Dane.app> [--allow-volume DIR]...            # print the plan; no codesign needed
-    sign_dane_macos.py sign  <Dane.app> [--dry-run] [--allow-volume DIR]... # codesign inside-out (macOS);
-                                                                            # needs DANE_SIGN_IDENTITY
-    sign_dane_macos.py check <Dane.app> [--json OUT] [--strict] [--allow-volume DIR]...
+    sign_dane_macos.py sign  <Dane.app> [--dry-run] [--allow-adhoc] [--allow-volume DIR]... # codesign inside-out
+                                                                            # (macOS); needs DANE_SIGN_IDENTITY
+    sign_dane_macos.py check <Dane.app> [--json OUT] [--strict] [--allow-adhoc] [--allow-volume DIR]...
         read-only: for each row, entitlements == map, hardened-runtime flag, TeamIdentifier == TEAM_ID from
         greatdane/macos/signing.conf, secure timestamp; then codesign --verify --deep --strict
     sign_dane_macos.py guard-path <path>...   # owner-path rules only (used by sign-only.sh); rc 2 if refused
   Common options: --allow-volume DIR (must be under /Volumes), --work-dir DIR (see owner bundle-ID rule).
 
-Ad-hoc (throwaway check runs only): DANE_SIGN_IDENTITY=- signs with "-" (no --timestamp, no keychain) but keeps
---options runtime and the per-binary entitlements. `check` then reports ad-hoc rows as "expected, not Developer
-ID" (team/timestamp not required) and prints CHECK PASS (AD-HOC ...). With --strict or DANE_SIGN_STRICT=1, an
-ad-hoc signature FAILS check. A mix of ad-hoc and Developer ID rows always fails.
+Ad-hoc (throwaway check runs only, explicit opt-in --allow-adhoc; round 4, L-f): DANE_SIGN_IDENTITY=- with
+--allow-adhoc signs with "-" (no --timestamp, no keychain) but keeps --options runtime and the per-binary
+entitlements; without --allow-adhoc an ad-hoc identity is refused. `check --allow-adhoc` reports ad-hoc rows as
+"expected, not Developer ID" (team/timestamp not required) and prints CHECK PASS (AD-HOC ...). By default (no
+--allow-adhoc) an ad-hoc signature FAILS check, and with --strict or DANE_SIGN_STRICT=1 it fails even with
+--allow-adhoc. A mix of ad-hoc and Developer ID rows always fails.
 
 Map: greatdane/macos/sign-map.tsv. Entitlements: security/mac/hardenedruntime/production/.
 Team ID: greatdane/macos/signing.conf (TEAM_ID=...); env DANE_SIGNING_CONF overrides the path (tests).
@@ -394,6 +396,7 @@ def main():
     mode, app = sys.argv[1], guard(sys.argv[2])
     strict = "--strict" in sys.argv or os.environ.get("DANE_SIGN_STRICT") == "1"
     dry = "--dry-run" in sys.argv
+    allow_adhoc = "--allow-adhoc" in sys.argv
     json_out = arg_values("--json")
     json_out = json_out[-1] if json_out else None
     rows, problems = plan(app)
@@ -412,6 +415,8 @@ def main():
     if mode == "sign":
         ident = os.environ.get("DANE_SIGN_IDENTITY", "")
         adhoc_sign = ident == "-"
+        if adhoc_sign and not allow_adhoc:
+            die("ad-hoc identity '-' needs the explicit --allow-adhoc flag (throwaway check runs only)")
         if not dry and not adhoc_sign and ("(%s)" % TEAM) not in ident:
             die("set DANE_SIGN_IDENTITY to the Developer ID Application identity for team " + TEAM
                 + " (or '-' for an ad-hoc throwaway check run)")
@@ -446,7 +451,9 @@ def main():
             checks = [("entitlements", got != want), ("no hardened runtime", not runtime)]
             if adhoc and strict:
                 checks.append(("ad-hoc signature (strict: Developer ID required)", True))
-            if not adhoc or strict:
+            elif adhoc and not allow_adhoc:
+                checks.append(("ad-hoc signature (default rejects ad-hoc; --allow-adhoc for a throwaway check run)", True))
+            if not adhoc or strict or not allow_adhoc:
                 checks += [("team %s != %s" % (team, TEAM), team != TEAM), ("no secure timestamp", not stamped)]
             why = [w for w, bad in checks if bad]
             ok = not why
