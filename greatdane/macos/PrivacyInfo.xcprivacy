@@ -7,19 +7,22 @@
   greatdane/macos/PRIVACY-MANIFEST.md.
 
   Tracking: none. No tracking domains. Dane ships no ad or analytics SDKs.
-  Dane update check (declared under OtherDiagnosticData: not linked, not tracking, AppFunctionality):
+  Dane update check: declared under OtherDiagnosticData (not linked, not tracking; used for app
+  functionality only). Requests go to https://pepecoin.surf/dane/update/...; the server log keeps the
+  path, user agent and a masked IP (/24 IPv4, /48 IPv6) for about 14 days. Ruling text:
     The automatic update check sends product, version, build ID, target, locale and channel to Dane's
-    update servers (pepecoin.surf, dogecoin.surf). The servers log only product, version, platform and
-    channel, plus the request status, the user agent and a masked IP (/24 for IPv4, /48 for IPv6). Build
-    ID, locale, query strings and referrers are not logged. Logs are kept about 14 days, are not linked
-    to an account or device, and are not shared. Entries from before Nov 10, 2026 hold full IPs until
-    they rotate out around Nov 25. No check happens while the DisableAppUpdate policy is on.
+    update server (pepecoin.surf). The servers log only product, version, platform and channel, plus the
+    request status, the user agent and a masked IP (/24 for IPv4, /48 for IPv6). Build ID, locale, query
+    strings and referrers are not logged. Logs are kept about 14 days, are not linked to an account or
+    device, and are not shared. Entries from before Nov 10, 2026 hold full IPs until they rotate out
+    around Nov 25. No check happens while the DisableAppUpdate policy is on.
   Dane's servers otherwise see only pages the user chooses to open.
   Default new-tab tile icons for pepecoin.surf, dogecoin.surf, greatdane.doge and grokipedia.com are
   bundled (tippytop; grokipedia.com uses our own letter tile), so showing the new-tab page contacts
   none of those sites. A user-initiated load of a Dane site is ordinary browsing.
   Collected data: the entries below are conservative and cover stock Firefox services that Dane keeps
-  (Mozilla is the receiving party):
+  (Mozilla is the receiving party), with one exception: Dane itself (pepecoin.surf) receives the
+  update-check data, declared under OtherDiagnosticData:
     - EmailAddress: only if the user signs in to a Mozilla account (Sync). Linked.
     - DeviceID: random per-install IDs (Web Push UAID; Glean client_id only if the user opts in).
     - CoarseLocation: stock region (country) lookup from IP via location.services.mozilla.com.
@@ -28,8 +31,9 @@
       toolkit.telemetry.server="data:,").
     - OtherDiagnosticData (AppFunctionality, Analytics): NOT opt-in only. The default-on GMP (OpenH264 /
       Widevine) update check to aus5.mozilla.org sends version, build ID, build target (OS + arch),
-      locale, channel and OS version (media.gmp-manager.url). The Dane update check (above) is also
-      declared here (AppFunctionality only). Analytics covers only the opt-in telemetry diagnostics.
+      locale, channel and OS version (media.gmp-manager.url). Also the Dane update-check log at
+      pepecoin.surf (above; AppFunctionality only, receiver: Dane). Analytics covers only the opt-in
+      telemetry diagnostics.
   Not collected: crash data (crash reporter is local-only, empty ServerURL), browsing/search history
   (Safe Browsing sends hash prefixes only; Sync data is end-to-end encrypted), precise location
   (macOS CoreLocation, per-site user permission, delivered to the requesting site only).
