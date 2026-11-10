@@ -1,0 +1,127 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 16:28:53 -0600
+Subject: [PATCH 101/144] GreatDANE: privacy docs: update-check declaration
+ pending server-log answer; GMP diagnostics not opt-in (NGD R2-M1 per ruling,
+ L6)
+
+- PRIVACY-MANIFEST.md and the PrivacyInfo.xcprivacy comment:
+  - Removed the unproven "used only to answer the request" wording.
+  - Declaration and retention for the pepecoin.surf update check are marked PENDING the server-log answer
+    (now owned by Curb Appeal), with the plan for each outcome (logged: OtherDiagnosticData, not linked, not
+    tracking, AppFunctionality, plus Analytics only if used to count installs; off or anonymized: undeclared,
+    with the log setting recorded).
+  - Noted that the DisableAppUpdate policy stops the check (UpdateServiceStub.sys.mjs:209-215).
+- L6: OtherDiagnosticData is no longer described as opt-in only. The default-on GMP update check to
+  aus5.mozilla.org (media.gmp-manager.url, all.js:3474; firefox.js:2378/2400/2448) sends version, build ID,
+  build target (OS + arch), locale, channel and OS version. The manifest values are unchanged.
+- grokipedia.com uses our own letter tile (noted).
+- README: round-3 signing notes (DANE_ARCH allowlist, no dmg overwrite, wider owner guard, ad-hoc mode, legacy
+  --deep guard).
+---
+ greatdane/README.md                   | 13 ++++++++++++-
+ greatdane/macos/PRIVACY-MANIFEST.md   | 18 +++++++++++++-----
+ greatdane/macos/PrivacyInfo.xcprivacy | 22 +++++++++++++---------
+ 3 files changed, 38 insertions(+), 15 deletions(-)
+
+diff --git a/greatdane/README.md b/greatdane/README.md
+index 17e47e1451..8aa816a8ac 100644
+--- a/greatdane/README.md
++++ b/greatdane/README.md
+@@ -59,7 +59,18 @@ Decision: per the coordinator's record of its Oct 27 2026 conversation with nowo
+   `greatdane/tests/sign_dane_macos_selftest.py` (T3) fails if the two differ.
+ - Release signing: `greatdane/tools/finish-universal.sh` calls the in-tree `greatdane/tools/sign-only.sh`
+   (stage, then plan, sign, check, then dmg). It replaces the old out-of-tree `$G/sign-only.sh`, which used
+-  blanket `--entitlements ... --deep`. That script never notarizes. `check` is read-only and compares `codesign -d --entitlements -`
++  blanket `--entitlements ... --deep`. That script never notarizes.
++  - Round 3 (2026-11-10):
++    - `DANE_ARCH` must be exactly universal|arm64|x86_64.
++    - An existing dmg is never overwritten (use `DANE_OUT` for another output dir).
++    - Source and target paths are checked on their realpaths. The owner guard also covers /Applications,
++      ~/Applications, attached owner dmgs on any mount point, and owner-bundle-ID Dane.apps outside the tree
++      and work dirs.
++    - plan refuses symlinks that escape the bundle, and any framework version other than Versions/Current.
++  - **Ad-hoc throwaway check run:** `DANE_SIGN_IDENTITY=-`. There's no keychain and no timestamp; hardened
++    runtime and entitlements are kept. check reports "expected, not Developer ID" (`--strict` makes it fail),
++    and the output is `...-ADHOC.dmg`. Never distribute or notarize it. Developer ID runs use `check --strict`.
++  - `greatdane/tests/no_legacy_deep_sign_check.py` keeps any `--deep` signing path out of the tree. `check` is read-only and compares `codesign -d --entitlements -`
+   for each row against the map, then runs `codesign --verify --deep --strict`.
+ - Entitlements by binary (Mozilla production config: taskcluster/config.yml mac-signing):
+   - **Dane.app:** `production/dane.browser.xml`, which is firefox.browser.xml minus application-identifier and
+diff --git a/greatdane/macos/PRIVACY-MANIFEST.md b/greatdane/macos/PRIVACY-MANIFEST.md
+index 07f5f89f91..80103c6703 100644
+--- a/greatdane/macos/PRIVACY-MANIFEST.md
++++ b/greatdane/macos/PRIVACY-MANIFEST.md
+@@ -17,12 +17,20 @@ Every entry is a stock Firefox service that Dane keeps, with Mozilla receiving t
+ If a feature only collects after the user turns it on, it's still declared.
+ 
+ **What Dane's own servers see.** This corrects the earlier "Dane's own servers receive nothing".
+-- The automatic update check `app.update.url` (browser/app/profile/firefox.js) goes to pepecoin.surf. It carries
++- The automatic update check `app.update.url` (browser/app/profile/firefox.js:3719) goes to pepecoin.surf. It carries
+   product, version, build ID, build target, locale and channel, plus the client IP that every HTTPS request carries.
+-  It has no account or per-install identifier. It's used only to answer the request (AppFunctionality), and it isn't
+-  declared as a collected data type for that reason.
++  It has no account or per-install identifier.
++  - **Declaration and retention: PENDING the server-log answer** (owned by Curb Appeal, 2026-11-10). If the server
++    keeps access logs for these requests, the plan is to declare them under the existing OtherDiagnosticData entry
++    (not linked, not tracking, AppFunctionality; add Analytics only if the logs are used to count installs), and
++    to state the retention in days here. If the logs are off or anonymized, it stays undeclared, and the log setting
++    goes here. Until then, this document makes no claim about how the server uses or keeps these requests.
++  - The check can be turned off: the `DisableAppUpdate` enterprise policy (policies.json) makes
++    `UpdateServiceStub.updateDisabled` true (toolkit/mozapps/update/UpdateServiceStub.sys.mjs:209-215), and then no
++    update check is made.
+ - **Default new-tab tiles:** the icons for pepecoin.surf, dogecoin.surf, greatdane.doge and grokipedia.com are bundled
+-  through tippytop (browser/components/topsites/content/tippytop, see greatdane/tippytop-ICON-SOURCES.md). Showing
++  through tippytop (browser/components/topsites/content/tippytop, see greatdane/tippytop-ICON-SOURCES.md; grokipedia.com
++  uses our own generated letter tile, not the site's mark). Showing
+   the new-tab page doesn't fetch from those sites, so there's no favicon or screenshot request.
+ - **User-initiated loads** of pepecoin.surf, dogecoin.surf or greatdane.doge (clicking a tile, typing the address, the
+   manual-download and release-notes links) are ordinary browsing. That site's operator sees a normal web request,
+@@ -35,7 +43,7 @@ If a feature only collects after the user turns it on, it's still declared.
+ | CoarseLocation | no | AppFunctionality | Stock region (country) lookup: `browser.region.network.url` = location.services.mozilla.com/v1/country (all.js), used for region defaults. |
+ | ProductInteraction | no | Analytics | Only if the user turns data collection ON. Dane ships it OFF (`datareporting.healthreport.uploadEnabled=false`, `toolkit.telemetry.enabled=false`, `toolkit.telemetry.server="data:,"`), but Glean's endpoint is compiled in as incoming.telemetry.mozilla.org (toolkit/components/glean/src/init/mod.rs). Patch 0028 keeps the opt-in visible. |
+ | PerformanceData | no | Analytics | Same opt-in as above (Glean/legacy telemetry performance metrics). |
+-| OtherDiagnosticData | no | AppFunctionality, Analytics | Same opt-in as above. AppFunctionality is added because diagnostic reports are also used to find and fix faults, not only for analytics (NGD round 2 L6). |
++| OtherDiagnosticData | no | AppFunctionality, Analytics | **Not opt-in only** (corrects round 2). The default-on GMP plugin update check (`media.gmp-provider.enabled=true`, firefox.js:2448; OpenH264/Widevine enabled, :2400/:2378) fetches `media.gmp-manager.url` = aus5.mozilla.org/update/3/GMP/%VERSION%/%BUILD_ID%/%BUILD_TARGET%/%LOCALE%/%CHANNEL%/%OS_VERSION%/... (modules/libpref/init/all.js:3474). That sends app version, build ID, build target (OS + CPU arch), locale, channel and OS version to Mozilla (AppFunctionality: to serve the right plugin). The opt-in telemetry diagnostics (Analytics) come on top. Dane's own update-check logging may also land here: pending, see above. |
+ 
+ Deliberately not declared:
+ - **CrashData:** the crash reporter is local-only. application.ini has an empty `[Crash Reporter] ServerURL`, and
+diff --git a/greatdane/macos/PrivacyInfo.xcprivacy b/greatdane/macos/PrivacyInfo.xcprivacy
+index 419cea4bea..9c4f626df0 100644
+--- a/greatdane/macos/PrivacyInfo.xcprivacy
++++ b/greatdane/macos/PrivacyInfo.xcprivacy
+@@ -7,21 +7,25 @@
+   greatdane/macos/PRIVACY-MANIFEST.md.
+ 
+   Tracking: none. No tracking domains. Dane ships no ad or analytics SDKs.
+-  Dane's own servers (pepecoin.surf) collect no data type below. They see only the automatic update
+-  check (app.update.url: product, version, build ID, target, locale, channel, plus the request IP that
+-  any HTTPS request carries; no account or per-install ID) and pages the user chooses to open.
++  Dane's own servers (pepecoin.surf) receive the automatic update check (app.update.url: product,
++  version, build ID, target, locale, channel, plus the request IP that any HTTPS request carries; no
++  account or per-install ID) and pages the user chooses to open. Whether/how long the server logs the
++  update check (and so whether it must be declared, under OtherDiagnosticData) is PENDING the
++  server-log answer; see PRIVACY-MANIFEST.md. The DisableAppUpdate enterprise policy stops the check.
+   Default new-tab tile icons for pepecoin.surf, dogecoin.surf, greatdane.doge and grokipedia.com are
+-  bundled (tippytop), so showing the new-tab page contacts none of those sites. A user-initiated load
+-  of a Dane site is ordinary browsing.
++  bundled (tippytop; grokipedia.com uses our own letter tile), so showing the new-tab page contacts
++  none of those sites. A user-initiated load of a Dane site is ordinary browsing.
+   Collected data: the entries below are conservative and cover stock Firefox services that Dane keeps
+   (Mozilla is the receiving party):
+     - EmailAddress: only if the user signs in to a Mozilla account (Sync). Linked.
+     - DeviceID: random per-install IDs (Web Push UAID; Glean client_id only if the user opts in).
+     - CoarseLocation: stock region (country) lookup from IP via location.services.mozilla.com.
+-    - ProductInteraction / PerformanceData / OtherDiagnosticData (the last also AppFunctionality:
+-      diagnostics used to find and fix faults): only if the user turns
+-      data collection ON in Settings. Dane ships it OFF (datareporting.healthreport.uploadEnabled=false,
+-      toolkit.telemetry.enabled=false, toolkit.telemetry.server="data:,").
++    - ProductInteraction / PerformanceData: only if the user turns data collection ON in Settings.
++      Dane ships it OFF (datareporting.healthreport.uploadEnabled=false, toolkit.telemetry.enabled=false,
++      toolkit.telemetry.server="data:,").
++    - OtherDiagnosticData (AppFunctionality, Analytics): NOT opt-in only. The default-on GMP (OpenH264 /
++      Widevine) update check to aus5.mozilla.org sends version, build ID, build target (OS + arch),
++      locale, channel and OS version (media.gmp-manager.url). The opt-in telemetry diagnostics come on top.
+   Not collected: crash data (crash reporter is local-only, empty ServerURL), browsing/search history
+   (Safe Browsing sends hash prefixes only; Sync data is end-to-end encrypted), precise location
+   (macOS CoreLocation, per-site user permission, delivered to the requesting site only).

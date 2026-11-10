@@ -59,7 +59,18 @@ Decision: per the coordinator's record of its Oct 27 2026 conversation with nowo
   `greatdane/tests/sign_dane_macos_selftest.py` (T3) fails if the two differ.
 - Release signing: `greatdane/tools/finish-universal.sh` calls the in-tree `greatdane/tools/sign-only.sh`
   (stage, then plan, sign, check, then dmg). It replaces the old out-of-tree `$G/sign-only.sh`, which used
-  blanket `--entitlements ... --deep`. That script never notarizes. `check` is read-only and compares `codesign -d --entitlements -`
+  blanket `--entitlements ... --deep`. That script never notarizes.
+  - Round 3 (2026-11-10):
+    - `DANE_ARCH` must be exactly universal|arm64|x86_64.
+    - An existing dmg is never overwritten (use `DANE_OUT` for another output dir).
+    - Source and target paths are checked on their realpaths. The owner guard also covers /Applications,
+      ~/Applications, attached owner dmgs on any mount point, and owner-bundle-ID Dane.apps outside the tree
+      and work dirs.
+    - plan refuses symlinks that escape the bundle, and any framework version other than Versions/Current.
+  - **Ad-hoc throwaway check run:** `DANE_SIGN_IDENTITY=-`. There's no keychain and no timestamp; hardened
+    runtime and entitlements are kept. check reports "expected, not Developer ID" (`--strict` makes it fail),
+    and the output is `...-ADHOC.dmg`. Never distribute or notarize it. Developer ID runs use `check --strict`.
+  - `greatdane/tests/no_legacy_deep_sign_check.py` keeps any `--deep` signing path out of the tree. `check` is read-only and compares `codesign -d --entitlements -`
   for each row against the map, then runs `codesign --verify --deep --strict`.
 - Entitlements by binary (Mozilla production config: taskcluster/config.yml mac-signing):
   - **Dane.app:** `production/dane.browser.xml`, which is firefox.browser.xml minus application-identifier and
