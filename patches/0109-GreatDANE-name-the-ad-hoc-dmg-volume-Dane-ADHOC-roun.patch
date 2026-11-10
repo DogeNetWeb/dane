@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 16:55:55 -0600
+Subject: [PATCH 109/144] GreatDANE: name the ad-hoc dmg volume Dane-ADHOC
+ (round 4, L-e)
+
+- sign-only.sh: hdiutil -volname is "Dane-ADHOC" in ad-hoc mode (DANE_SIGN_IDENTITY=-) and stays "Dane" for
+  Developer ID. A mounted throwaway build can no longer look like the owner's /Volumes/Dane.
+- The notarize side of L-e (submit-existing refuses *-ADHOC.dmg and requires a Developer ID Application
+  authority) is out of tree. It is delivered as a new dated file, notarize.next-round4-20261110.sh, in the
+  round4b evidence folder; the hashed round-3 file is untouched.
+- Test: sign_only_selftest O27 (ad-hoc volume name, via the hdiutil stub).
+---
+ greatdane/tests/sign_only_selftest.py | 3 ++-
+ greatdane/tools/sign-only.sh          | 6 ++++--
+ 2 files changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/greatdane/tests/sign_only_selftest.py b/greatdane/tests/sign_only_selftest.py
+index ba55a5d888..d8ff6122fc 100644
+--- a/greatdane/tests/sign_only_selftest.py
++++ b/greatdane/tests/sign_only_selftest.py
+@@ -142,7 +142,8 @@ def main():
+                         os.path.isfile(mk) and ".dane-sign-only-stage" not in rd(dmg + ".contents")
+                         and "Dane.app" in rd(dmg + ".contents")))
+         results.append(("O26 Developer ID dmg volume is 'Dane'", rd(dmg + ".volname") == ["Dane"]))
+-        for nm, okv in results[-2:]:
++        results.append(("O27 ad-hoc dmg volume is 'Dane-ADHOC'", rd(adm + ".volname") == ["Dane-ADHOC"]))
++        for nm, okv in results[-3:]:
+             print("%s %-66s" % ("PASS" if okv else "FAIL", nm))
+         os.remove(dmg)
+         shutil.rmtree(os.path.join(out, "stage-universal"))
+diff --git a/greatdane/tools/sign-only.sh b/greatdane/tools/sign-only.sh
+index 8897194496..d5f474889d 100755
+--- a/greatdane/tools/sign-only.sh
++++ b/greatdane/tools/sign-only.sh
+@@ -18,7 +18,8 @@
+ #                       keychain. It's never printed. Developer ID runs use `check --strict`.
+ #                       "-" = AD-HOC throwaway check run: no keychain, no timestamp; hardened runtime and
+ #                       per-binary entitlements are kept; check reports ad-hoc as expected-not-Developer-ID;
+-#                       the dmg is named ...-ADHOC.dmg. Never distribute or notarize an ad-hoc build.
++#                       the dmg is named ...-ADHOC.dmg and its volume "Dane-ADHOC". Never distribute or notarize
++#                       an ad-hoc build (notarize.next-round4 refuses *-ADHOC.dmg and non-Developer-ID signatures).
+ #   DANE_DRY_RUN=1      stage + plan + print the codesign commands only; no signing, no dmg.
+ set -euo pipefail
+ TREE=$(cd "$(dirname "$0")/../.." && pwd -P)
+@@ -46,6 +47,7 @@ SUFFIX=""; [ $ADHOC = 1 ] && SUFFIX="-ADHOC"
+ STAGE=$OUT/stage-$ARCH$SUFFIX
+ APP=$STAGE/Dane.app
+ DMG=$OUT/Dane-$VER-mac-$ARCH$SUFFIX.dmg
++VOL=Dane$SUFFIX   # L-e: an ad-hoc dmg mounts as "Dane-ADHOC", never as "Dane"
+ POL=""
+ if [ "${DANE_NO_POLICIES:-0}" != 1 ]; then
+   POL=$(fl "$(realp "${DANE_POLICIES:-$G/dane-policies.json}")")
+@@ -110,7 +112,7 @@ python3 "$SIGNER" check "$APP" $STRICT --json "$OUT/entitlements-check-$ARCH$SUF
+ echo "== dmg -> $DMG"
+ [ ! -e "$DMG" ] || refuse "dmg appeared during the run, not overwriting: $DMG"
+ rm -f "$STAGE/$MARK"   # keep the marker out of the dmg; put back right after
+-hdiutil create -volname Dane -srcfolder "$STAGE" -format UDZO "$DMG" >/dev/null || { mark; refuse "hdiutil create failed"; }
++hdiutil create -volname "$VOL" -srcfolder "$STAGE" -format UDZO "$DMG" >/dev/null || { mark; refuse "hdiutil create failed"; }
+ mark
+ if [ $ADHOC = 1 ]; then
+   codesign --force --sign - "$DMG"

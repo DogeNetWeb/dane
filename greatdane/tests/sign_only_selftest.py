@@ -142,7 +142,8 @@ def main():
                         os.path.isfile(mk) and ".dane-sign-only-stage" not in rd(dmg + ".contents")
                         and "Dane.app" in rd(dmg + ".contents")))
         results.append(("O26 Developer ID dmg volume is 'Dane'", rd(dmg + ".volname") == ["Dane"]))
-        for nm, okv in results[-2:]:
+        results.append(("O27 ad-hoc dmg volume is 'Dane-ADHOC'", rd(adm + ".volname") == ["Dane-ADHOC"]))
+        for nm, okv in results[-3:]:
             print("%s %-66s" % ("PASS" if okv else "FAIL", nm))
         os.remove(dmg)
         shutil.rmtree(os.path.join(out, "stage-universal"))

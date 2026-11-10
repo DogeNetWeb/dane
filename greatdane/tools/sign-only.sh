@@ -18,7 +18,8 @@
 #                       keychain. It's never printed. Developer ID runs use `check --strict`.
 #                       "-" = AD-HOC throwaway check run: no keychain, no timestamp; hardened runtime and
 #                       per-binary entitlements are kept; check reports ad-hoc as expected-not-Developer-ID;
-#                       the dmg is named ...-ADHOC.dmg. Never distribute or notarize an ad-hoc build.
+#                       the dmg is named ...-ADHOC.dmg and its volume "Dane-ADHOC". Never distribute or notarize
+#                       an ad-hoc build (notarize.next-round4 refuses *-ADHOC.dmg and non-Developer-ID signatures).
 #   DANE_DRY_RUN=1      stage + plan + print the codesign commands only; no signing, no dmg.
 set -euo pipefail
 TREE=$(cd "$(dirname "$0")/../.." && pwd -P)
@@ -46,6 +47,7 @@ SUFFIX=""; [ $ADHOC = 1 ] && SUFFIX="-ADHOC"
 STAGE=$OUT/stage-$ARCH$SUFFIX
 APP=$STAGE/Dane.app
 DMG=$OUT/Dane-$VER-mac-$ARCH$SUFFIX.dmg
+VOL=Dane$SUFFIX   # L-e: an ad-hoc dmg mounts as "Dane-ADHOC", never as "Dane"
 POL=""
 if [ "${DANE_NO_POLICIES:-0}" != 1 ]; then
   POL=$(fl "$(realp "${DANE_POLICIES:-$G/dane-policies.json}")")
@@ -110,7 +112,7 @@ python3 "$SIGNER" check "$APP" $STRICT --json "$OUT/entitlements-check-$ARCH$SUF
 echo "== dmg -> $DMG"
 [ ! -e "$DMG" ] || refuse "dmg appeared during the run, not overwriting: $DMG"
 rm -f "$STAGE/$MARK"   # keep the marker out of the dmg; put back right after
-hdiutil create -volname Dane -srcfolder "$STAGE" -format UDZO "$DMG" >/dev/null || { mark; refuse "hdiutil create failed"; }
+hdiutil create -volname "$VOL" -srcfolder "$STAGE" -format UDZO "$DMG" >/dev/null || { mark; refuse "hdiutil create failed"; }
 mark
 if [ $ADHOC = 1 ]; then
   codesign --force --sign - "$DMG"
