@@ -17,17 +17,13 @@ Every entry is a stock Firefox service that Dane keeps, with Mozilla receiving t
 If a feature only collects after the user turns it on, it's still declared.
 
 **What Dane's own servers see.** This corrects the earlier "Dane's own servers receive nothing".
-- The automatic update check `app.update.url` (browser/app/profile/firefox.js:3719) goes to pepecoin.surf. It carries
-  product, version, build ID, build target, locale and channel, plus the client IP that every HTTPS request carries.
-  It has no account or per-install identifier.
-  - **Declaration and retention: PENDING the server-log answer** (owned by Curb Appeal, 2026-11-10). If the server
-    keeps access logs for these requests, the plan is to declare them under the existing OtherDiagnosticData entry
-    (not linked, not tracking, AppFunctionality; add Analytics only if the logs are used to count installs), and
-    to state the retention in days here. If the logs are off or anonymized, it stays undeclared, and the log setting
-    goes here. Until then, this document makes no claim about how the server uses or keeps these requests.
-  - The check can be turned off: the `DisableAppUpdate` enterprise policy (policies.json) makes
-    `UpdateServiceStub.updateDisabled` true (toolkit/mozapps/update/UpdateServiceStub.sys.mjs:209-215), and then no
-    update check is made.
+- **Update check** (`app.update.url`, browser/app/profile/firefox.js:3719). It's declared under the existing
+  OtherDiagnosticData entry: Linked=false, Tracking=false, purpose AppFunctionality. Analytics is not claimed for it,
+  because nothing shows the logs are used to count installs (NGD final manifest ruling, 2026-11-10).
+
+  The automatic update check sends product, version, build ID, target, locale and channel to Dane's update servers (pepecoin.surf, dogecoin.surf). The servers log only product, version, platform and channel, plus the request status, the user agent and a masked IP (/24 for IPv4, /48 for IPv6). Build ID, locale, query strings and referrers are not logged. Logs are kept about 14 days, are not linked to an account or device, and are not shared. Entries from before Nov 10, 2026 hold full IPs until they rotate out around Nov 25. No check happens while the DisableAppUpdate policy is on.
+
+  (DisableAppUpdate makes `UpdateServiceStub.updateDisabled` true: toolkit/mozapps/update/UpdateServiceStub.sys.mjs:209-215.)
 - **Default new-tab tiles:** the icons for pepecoin.surf, dogecoin.surf, greatdane.doge and grokipedia.com are bundled
   through tippytop (browser/components/topsites/content/tippytop, see greatdane/tippytop-ICON-SOURCES.md; grokipedia.com
   uses our own generated letter tile, not the site's mark). Showing
@@ -43,7 +39,7 @@ If a feature only collects after the user turns it on, it's still declared.
 | CoarseLocation | no | AppFunctionality | Stock region (country) lookup: `browser.region.network.url` = location.services.mozilla.com/v1/country (all.js), used for region defaults. |
 | ProductInteraction | no | Analytics | Only if the user turns data collection ON. Dane ships it OFF (`datareporting.healthreport.uploadEnabled=false`, `toolkit.telemetry.enabled=false`, `toolkit.telemetry.server="data:,"`), but Glean's endpoint is compiled in as incoming.telemetry.mozilla.org (toolkit/components/glean/src/init/mod.rs). Patch 0028 keeps the opt-in visible. |
 | PerformanceData | no | Analytics | Same opt-in as above (Glean/legacy telemetry performance metrics). |
-| OtherDiagnosticData | no | AppFunctionality, Analytics | **Not opt-in only** (corrects round 2). The default-on GMP plugin update check (`media.gmp-provider.enabled=true`, firefox.js:2448; OpenH264/Widevine enabled, :2400/:2378) fetches `media.gmp-manager.url` = aus5.mozilla.org/update/3/GMP/%VERSION%/%BUILD_ID%/%BUILD_TARGET%/%LOCALE%/%CHANNEL%/%OS_VERSION%/... (modules/libpref/init/all.js:3474). That sends app version, build ID, build target (OS + CPU arch), locale, channel and OS version to Mozilla (AppFunctionality: to serve the right plugin). The opt-in telemetry diagnostics (Analytics) come on top. Dane's own update-check logging may also land here: pending, see above. |
+| OtherDiagnosticData | no | AppFunctionality, Analytics | **Not opt-in only** (corrects round 2). The default-on GMP plugin update check (`media.gmp-provider.enabled=true`, firefox.js:2448; OpenH264/Widevine enabled, :2400/:2378) fetches `media.gmp-manager.url` = aus5.mozilla.org/update/3/GMP/%VERSION%/%BUILD_ID%/%BUILD_TARGET%/%LOCALE%/%CHANNEL%/%OS_VERSION%/... (modules/libpref/init/all.js:3474). That sends app version, build ID, build target (OS + CPU arch), locale, channel and OS version to Mozilla (AppFunctionality: to serve the right plugin). The Dane update check is declared here too (AppFunctionality only; see "Update check" above). **Analytics** stays only for the opt-in telemetry diagnostics, where it has been since patch 0058, and not for GMP or the update logs. |
 
 Deliberately not declared:
 - **CrashData:** the crash reporter is local-only. application.ini has an empty `[Crash Reporter] ServerURL`, and

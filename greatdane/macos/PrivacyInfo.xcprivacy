@@ -7,11 +7,14 @@
   greatdane/macos/PRIVACY-MANIFEST.md.
 
   Tracking: none. No tracking domains. Dane ships no ad or analytics SDKs.
-  Dane's own servers (pepecoin.surf) receive the automatic update check (app.update.url: product,
-  version, build ID, target, locale, channel, plus the request IP that any HTTPS request carries; no
-  account or per-install ID) and pages the user chooses to open. Whether/how long the server logs the
-  update check (and so whether it must be declared, under OtherDiagnosticData) is PENDING the
-  server-log answer; see PRIVACY-MANIFEST.md. The DisableAppUpdate enterprise policy stops the check.
+  Dane update check (declared under OtherDiagnosticData: not linked, not tracking, AppFunctionality):
+    The automatic update check sends product, version, build ID, target, locale and channel to Dane's
+    update servers (pepecoin.surf, dogecoin.surf). The servers log only product, version, platform and
+    channel, plus the request status, the user agent and a masked IP (/24 for IPv4, /48 for IPv6). Build
+    ID, locale, query strings and referrers are not logged. Logs are kept about 14 days, are not linked
+    to an account or device, and are not shared. Entries from before Nov 10, 2026 hold full IPs until
+    they rotate out around Nov 25. No check happens while the DisableAppUpdate policy is on.
+  Dane's servers otherwise see only pages the user chooses to open.
   Default new-tab tile icons for pepecoin.surf, dogecoin.surf, greatdane.doge and grokipedia.com are
   bundled (tippytop; grokipedia.com uses our own letter tile), so showing the new-tab page contacts
   none of those sites. A user-initiated load of a Dane site is ordinary browsing.
@@ -25,7 +28,8 @@
       toolkit.telemetry.server="data:,").
     - OtherDiagnosticData (AppFunctionality, Analytics): NOT opt-in only. The default-on GMP (OpenH264 /
       Widevine) update check to aus5.mozilla.org sends version, build ID, build target (OS + arch),
-      locale, channel and OS version (media.gmp-manager.url). The opt-in telemetry diagnostics come on top.
+      locale, channel and OS version (media.gmp-manager.url). The Dane update check (above) is also
+      declared here (AppFunctionality only). Analytics covers only the opt-in telemetry diagnostics.
   Not collected: crash data (crash reporter is local-only, empty ServerURL), browsing/search history
   (Safe Browsing sends hash prefixes only; Sync data is end-to-end encrypted), precise location
   (macOS CoreLocation, per-site user permission, delivered to the requesting site only).
