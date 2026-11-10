@@ -21,7 +21,9 @@ STUBS = {
     "xattr": "#!/bin/sh\nexit 0\n",
     "hdiutil": '#!/bin/sh\nif [ "$1" = info ]; then printf \'<?xml version="1.0"?><plist version="1.0"><dict>'
                '<key>images</key><array/></dict></plist>\'; exit 0; fi\n'
-               'if [ "$1" = create ]; then for a; do last=$a; done; echo fake-dmg > "$last"; exit 0; fi\nexit 1\n',
+               'if [ "$1" = create ]; then prev=; for a; do [ "$prev" = -srcfolder ] && src=$a; [ "$prev" = -volname ] && vol=$a;'
+               ' prev=$a; last=$a; done; echo fake-dmg > "$last"; ls -A "$src" > "$last.contents"; echo "$vol" > "$last.volname";'
+               ' exit 0; fi\nexit 1\n',
     "security": '#!/bin/sh\necho "  1) ABCDEF \\"Developer ID Application: Example Person (%s)\\""\n'
                 'echo "     1 valid identities found"\n' % base.TEAM,
 }
@@ -107,6 +109,13 @@ def main():
         ok = p.returncode == 2 and "takes no arguments" in p.stderr
         results.append(("O18 legacy-style arguments refused", ok))
         print("%s %-66s rc=%d (want 2)" % ("PASS" if ok else "FAIL", "O18 legacy-style arguments refused", p.returncode))
+        # round 4 L-d: a stage dir without the marker is never deleted
+        o24 = os.path.join(tmp, "o24")
+        keep = os.path.join(o24, "stage-universal", "precious")
+        os.makedirs(os.path.dirname(keep))
+        open(keep, "w").write("x")
+        run("O24 existing stage dir without marker refused and left intact", dict(env, DANE_OUT=o24), 2,
+            [r"has no \.dane-sign-only-stage marker"], post=lambda: os.path.isfile(keep))
         # dry run
         run("O13 dry run: stage + plan + codesign lines, no dmg", dict(env, DANE_DRY_RUN="1"), 0,
             [r"PLAN OK", r"DRY RUN: nothing signed, no dmg"], [r"\$ codesign .*--deep"],
@@ -127,6 +136,14 @@ def main():
         run("O16 Developer ID run: identity from keychain stub, check --strict PASS, identity never printed", env, 0,
             [r"(?m)^CHECK PASS$", r"done \(NOT notarized\)"], [r"Example Person", r"AD-HOC"],
             post=lambda: os.path.isfile(dmg) and any("--timestamp" in l and l.split()[-1] == dmg for l in open(log)))
+        rd = lambda p: open(p).read().split()
+        mk = os.path.join(out, "stage-universal", ".dane-sign-only-stage")
+        results.append(("O25 marker kept in stage, absent from the dmg contents",
+                        os.path.isfile(mk) and ".dane-sign-only-stage" not in rd(dmg + ".contents")
+                        and "Dane.app" in rd(dmg + ".contents")))
+        results.append(("O26 Developer ID dmg volume is 'Dane'", rd(dmg + ".volname") == ["Dane"]))
+        for nm, okv in results[-2:]:
+            print("%s %-66s" % ("PASS" if okv else "FAIL", nm))
         os.remove(dmg)
         shutil.rmtree(os.path.join(out, "stage-universal"))
         run("O17 Developer ID run where codesign produced ad-hoc FAILS (strict)", dict(env, MOCK_ADHOC="1"), 1,

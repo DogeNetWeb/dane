@@ -58,6 +58,13 @@ python3 "$SIGNER" guard-path "$SRC" "$NODE" "$OUT" "$STAGE" "$DMG" ${POL:+"$POL"
 [[ "$(lower "$OUT")" =~ ^/((volumes|users)(/[^/]+)?)?$ ]] && refuse "DANE_OUT too broad: $OUT"
 case "$(lower "$SRC")/" in "$(lower "$STAGE")"/*) refuse "DANE_APP_SRC is inside the stage dir that gets deleted: $SRC" ;; esac
 [ ! -L "$STAGE" ] || refuse "stage dir is a symlink: $STAGE"
+# L-d: only a stage dir this script made (it carries the marker) is ever deleted.
+MARK=.dane-sign-only-stage
+mark() { printf 'made by greatdane/tools/sign-only.sh (stage-%s); safe to delete\n' "$ARCH$SUFFIX" > "$STAGE/$MARK"; }
+if [ -e "$STAGE" ]; then
+  [ -d "$STAGE" ] && [ -f "$STAGE/$MARK" ] && [ ! -L "$STAGE/$MARK" ] \
+    || refuse "existing $STAGE has no $MARK marker, so sign-only.sh did not make it; not deleting it (move it away)"
+fi
 [ -f "$SRC/Contents/Info.plist" ] || refuse "not an app: $SRC"
 [ -x "$NODE" ] || refuse "DANE_NODE not executable: $NODE"
 [ ! -e "$DMG" ] || refuse "dmg already exists, not overwriting: $DMG (move it away or set DANE_OUT)"
@@ -78,7 +85,8 @@ export DANE_SIGN_WORK_DIRS="$STAGE"
 STRICT=--strict; [ $ADHOC = 1 ] && STRICT=""
 
 echo "== stage ($ARCH) -> $STAGE"
-rm -rf "$STAGE"; mkdir -p "$STAGE"
+[ ! -e "$STAGE" ] || [ -f "$STAGE/$MARK" ] || refuse "stage marker vanished: $STAGE"
+rm -rf "$STAGE"; mkdir -p "$STAGE"; mark
 ditto --norsrc --noextattr "$SRC" "$APP"
 cp "$NODE" "$APP/Contents/MacOS/greatdane-node"; chmod 755 "$APP/Contents/MacOS/greatdane-node"
 if [ -z "$POL" ]; then echo "   (no policies.json, DANE_NO_POLICIES=1)"
@@ -101,7 +109,9 @@ python3 "$SIGNER" check "$APP" $STRICT --json "$OUT/entitlements-check-$ARCH$SUF
 
 echo "== dmg -> $DMG"
 [ ! -e "$DMG" ] || refuse "dmg appeared during the run, not overwriting: $DMG"
-hdiutil create -volname Dane -srcfolder "$STAGE" -format UDZO "$DMG" >/dev/null
+rm -f "$STAGE/$MARK"   # keep the marker out of the dmg; put back right after
+hdiutil create -volname Dane -srcfolder "$STAGE" -format UDZO "$DMG" >/dev/null || { mark; refuse "hdiutil create failed"; }
+mark
 if [ $ADHOC = 1 ]; then
   codesign --force --sign - "$DMG"
 else

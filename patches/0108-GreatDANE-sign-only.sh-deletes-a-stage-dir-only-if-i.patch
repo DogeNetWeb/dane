@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 16:55:39 -0600
+Subject: [PATCH 108/144] GreatDANE: sign-only.sh deletes a stage dir only if
+ it carries its marker (round 4, L-d)
+
+- sign-only.sh:79 ran rm -rf "$STAGE" on whatever was at $DANE_OUT/stage-<arch>. Now an existing stage dir must
+  be a real directory containing the regular file .dane-sign-only-stage, which sign-only.sh writes right after
+  it creates the dir. Otherwise the script refuses (rc 2) and leaves the dir alone. The check runs before any
+  signing, and again immediately before the rm.
+- The marker is removed just before hdiutil create and put back right after, so it never lands in the dmg.
+- Tests:
+  - sign_only_selftest O24: a stage dir without the marker is refused and its file is kept.
+  - O25: the marker stays in the stage and is absent from the dmg contents. The hdiutil stub records the
+    srcfolder listing and the volume name.
+  - O26: the Developer ID dmg volume is "Dane".
+---
+ greatdane/tests/sign_only_selftest.py | 19 ++++++++++++++++++-
+ greatdane/tools/sign-only.sh          | 14 ++++++++++++--
+ 2 files changed, 30 insertions(+), 3 deletions(-)
+
+diff --git a/greatdane/tests/sign_only_selftest.py b/greatdane/tests/sign_only_selftest.py
+index b44da52824..ba55a5d888 100644
+--- a/greatdane/tests/sign_only_selftest.py
++++ b/greatdane/tests/sign_only_selftest.py
+@@ -21,7 +21,9 @@ STUBS = {
+     "xattr": "#!/bin/sh\nexit 0\n",
+     "hdiutil": '#!/bin/sh\nif [ "$1" = info ]; then printf \'<?xml version="1.0"?><plist version="1.0"><dict>'
+                '<key>images</key><array/></dict></plist>\'; exit 0; fi\n'
+-               'if [ "$1" = create ]; then for a; do last=$a; done; echo fake-dmg > "$last"; exit 0; fi\nexit 1\n',
++               'if [ "$1" = create ]; then prev=; for a; do [ "$prev" = -srcfolder ] && src=$a; [ "$prev" = -volname ] && vol=$a;'
++               ' prev=$a; last=$a; done; echo fake-dmg > "$last"; ls -A "$src" > "$last.contents"; echo "$vol" > "$last.volname";'
++               ' exit 0; fi\nexit 1\n',
+     "security": '#!/bin/sh\necho "  1) ABCDEF \\"Developer ID Application: Example Person (%s)\\""\n'
+                 'echo "     1 valid identities found"\n' % base.TEAM,
+ }
+@@ -107,6 +109,13 @@ def main():
+         ok = p.returncode == 2 and "takes no arguments" in p.stderr
+         results.append(("O18 legacy-style arguments refused", ok))
+         print("%s %-66s rc=%d (want 2)" % ("PASS" if ok else "FAIL", "O18 legacy-style arguments refused", p.returncode))
++        # round 4 L-d: a stage dir without the marker is never deleted
++        o24 = os.path.join(tmp, "o24")
++        keep = os.path.join(o24, "stage-universal", "precious")
++        os.makedirs(os.path.dirname(keep))
++        open(keep, "w").write("x")
++        run("O24 existing stage dir without marker refused and left intact", dict(env, DANE_OUT=o24), 2,
++            [r"has no \.dane-sign-only-stage marker"], post=lambda: os.path.isfile(keep))
+         # dry run
+         run("O13 dry run: stage + plan + codesign lines, no dmg", dict(env, DANE_DRY_RUN="1"), 0,
+             [r"PLAN OK", r"DRY RUN: nothing signed, no dmg"], [r"\$ codesign .*--deep"],
+@@ -127,6 +136,14 @@ def main():
+         run("O16 Developer ID run: identity from keychain stub, check --strict PASS, identity never printed", env, 0,
+             [r"(?m)^CHECK PASS$", r"done \(NOT notarized\)"], [r"Example Person", r"AD-HOC"],
+             post=lambda: os.path.isfile(dmg) and any("--timestamp" in l and l.split()[-1] == dmg for l in open(log)))
++        rd = lambda p: open(p).read().split()
++        mk = os.path.join(out, "stage-universal", ".dane-sign-only-stage")
++        results.append(("O25 marker kept in stage, absent from the dmg contents",
++                        os.path.isfile(mk) and ".dane-sign-only-stage" not in rd(dmg + ".contents")
++                        and "Dane.app" in rd(dmg + ".contents")))
++        results.append(("O26 Developer ID dmg volume is 'Dane'", rd(dmg + ".volname") == ["Dane"]))
++        for nm, okv in results[-2:]:
++            print("%s %-66s" % ("PASS" if okv else "FAIL", nm))
+         os.remove(dmg)
+         shutil.rmtree(os.path.join(out, "stage-universal"))
+         run("O17 Developer ID run where codesign produced ad-hoc FAILS (strict)", dict(env, MOCK_ADHOC="1"), 1,
+diff --git a/greatdane/tools/sign-only.sh b/greatdane/tools/sign-only.sh
+index 2b179763e5..8897194496 100755
+--- a/greatdane/tools/sign-only.sh
++++ b/greatdane/tools/sign-only.sh
+@@ -58,6 +58,13 @@ python3 "$SIGNER" guard-path "$SRC" "$NODE" "$OUT" "$STAGE" "$DMG" ${POL:+"$POL"
+ [[ "$(lower "$OUT")" =~ ^/((volumes|users)(/[^/]+)?)?$ ]] && refuse "DANE_OUT too broad: $OUT"
+ case "$(lower "$SRC")/" in "$(lower "$STAGE")"/*) refuse "DANE_APP_SRC is inside the stage dir that gets deleted: $SRC" ;; esac
+ [ ! -L "$STAGE" ] || refuse "stage dir is a symlink: $STAGE"
++# L-d: only a stage dir this script made (it carries the marker) is ever deleted.
++MARK=.dane-sign-only-stage
++mark() { printf 'made by greatdane/tools/sign-only.sh (stage-%s); safe to delete\n' "$ARCH$SUFFIX" > "$STAGE/$MARK"; }
++if [ -e "$STAGE" ]; then
++  [ -d "$STAGE" ] && [ -f "$STAGE/$MARK" ] && [ ! -L "$STAGE/$MARK" ] \
++    || refuse "existing $STAGE has no $MARK marker, so sign-only.sh did not make it; not deleting it (move it away)"
++fi
+ [ -f "$SRC/Contents/Info.plist" ] || refuse "not an app: $SRC"
+ [ -x "$NODE" ] || refuse "DANE_NODE not executable: $NODE"
+ [ ! -e "$DMG" ] || refuse "dmg already exists, not overwriting: $DMG (move it away or set DANE_OUT)"
+@@ -78,7 +85,8 @@ export DANE_SIGN_WORK_DIRS="$STAGE"
+ STRICT=--strict; [ $ADHOC = 1 ] && STRICT=""
+ 
+ echo "== stage ($ARCH) -> $STAGE"
+-rm -rf "$STAGE"; mkdir -p "$STAGE"
++[ ! -e "$STAGE" ] || [ -f "$STAGE/$MARK" ] || refuse "stage marker vanished: $STAGE"
++rm -rf "$STAGE"; mkdir -p "$STAGE"; mark
+ ditto --norsrc --noextattr "$SRC" "$APP"
+ cp "$NODE" "$APP/Contents/MacOS/greatdane-node"; chmod 755 "$APP/Contents/MacOS/greatdane-node"
+ if [ -z "$POL" ]; then echo "   (no policies.json, DANE_NO_POLICIES=1)"
+@@ -101,7 +109,9 @@ python3 "$SIGNER" check "$APP" $STRICT --json "$OUT/entitlements-check-$ARCH$SUF
+ 
+ echo "== dmg -> $DMG"
+ [ ! -e "$DMG" ] || refuse "dmg appeared during the run, not overwriting: $DMG"
+-hdiutil create -volname Dane -srcfolder "$STAGE" -format UDZO "$DMG" >/dev/null
++rm -f "$STAGE/$MARK"   # keep the marker out of the dmg; put back right after
++hdiutil create -volname Dane -srcfolder "$STAGE" -format UDZO "$DMG" >/dev/null || { mark; refuse "hdiutil create failed"; }
++mark
+ if [ $ADHOC = 1 ]; then
+   codesign --force --sign - "$DMG"
+ else

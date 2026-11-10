@@ -105,3 +105,4 @@
 0105-GreatDANE-harden-no_legacy_deep_sign_check.py-and-wi.patch
 0106-GreatDANE-strip-the-System-Volumes-Data-firmlink-pre.patch
 0107-GreatDANE-refuse-a-work-dir-of-Users-HOME-or-Volumes.patch
+0108-GreatDANE-sign-only.sh-deletes-a-stage-dir-only-if-i.patch
