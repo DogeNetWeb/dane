@@ -1,0 +1,229 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 17:47:57 -0600
+Subject: [PATCH 117/144] =?UTF-8?q?GreatDANE:=20proposed=20About=20attribu?=
+ =?UTF-8?q?tion=20=E2=80=94=20built=20from=20Mozilla's=20open=20source=20F?=
+ =?UTF-8?q?irefox=20ESR=20(round=204d)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Proposal pending coordinator/NGD review. The Firefox/Mozilla attribution is not dropped.
+Write-up and quotes: evidence/round4d/PROPOSED-ABOUT-WORDING.md, against the live Mozilla
+Trademark Guidelines, Distribution Policy, and Trademarks List (fetched 2026-11-10).
+
+Dane About text (dane-community-2 / dane-community-exp in greatdane brand.ftl, used by
+aboutDialog.xhtml when MOZ_OFFICIAL_BRANDING is not set):
+
+  Dane is built from Mozilla's open source Firefox ESR web browser. Dane is not
+  officially associated with Mozilla or its products. Mozilla is a global community...
+
+trademarkInfo, previously blank, is now: "Firefox and Mozilla are trademarks of
+Mozilla.org in the U.S. and other countries."
+
+Unique Fluent IDs in the branding file (shipped for every locale by locales/jar.mn)
+avoid depending on Fluent first-wins vs last-wins. en-US aboutDialog.ftl is kept in
+sync; official branding still uses community-2 / community-exp. No logos are added.
+Internal names, greatdane.* prefs, and the bundle ID are unchanged.
+
+Prepared only. Not built, signed, notarized or published.
+---
+ browser/base/content/aboutDialog.xhtml        |  16 ++-
+ .../greatdane/locales/en-US/brand.ftl         |  14 ++-
+ browser/locales/en-US/browser/aboutDialog.ftl |   8 +-
+ evidence/round4d/PROPOSED-ABOUT-WORDING.md    | 113 ++++++++++++++++++
+ 4 files changed, 146 insertions(+), 5 deletions(-)
+ create mode 100644 evidence/round4d/PROPOSED-ABOUT-WORDING.md
+
+diff --git a/browser/base/content/aboutDialog.xhtml b/browser/base/content/aboutDialog.xhtml
+index 3ffd464b96..56ffd5de91 100644
+--- a/browser/base/content/aboutDialog.xhtml
++++ b/browser/base/content/aboutDialog.xhtml
+@@ -119,12 +119,24 @@
+ #endif
+           <vbox id="experimental" hidden="true">
+             <description class="text-blurb" id="warningDesc" data-l10n-id="warningDesc-version"></description>
+-            <description class="text-blurb" id="communityExperimentalDesc" data-l10n-id="community-exp">
++            <description class="text-blurb" id="communityExperimentalDesc"
++#ifndef MOZ_OFFICIAL_BRANDING
++                         data-l10n-id="dane-community-exp"
++#else
++                         data-l10n-id="community-exp"
++#endif
++                         >
+               <label is="text-link" href="https://www.mozilla.org/?utm_source=firefox-browser&#38;utm_medium=firefox-desktop&#38;utm_campaign=about-dialog" data-l10n-name="community-exp-mozillaLink"/>
+               <label is="text-link" useoriginprincipal="true" href="about:credits" data-l10n-name="community-exp-creditsLink"/>
+             </description>
+           </vbox>
+-          <description class="text-blurb" id="communityDesc" data-l10n-id="community-2">
++          <description class="text-blurb" id="communityDesc"
++#ifndef MOZ_OFFICIAL_BRANDING
++                       data-l10n-id="dane-community-2"
++#else
++                       data-l10n-id="community-2"
++#endif
++                       >
+             <label is="text-link" href="https://www.mozilla.org/?utm_source=firefox-browser&#38;utm_medium=firefox-desktop&#38;utm_campaign=about-dialog" data-l10n-name="community-mozillaLink"/>
+             <label is="text-link" useoriginprincipal="true" href="about:credits" data-l10n-name="community-creditsLink"/>
+           </description>
+diff --git a/browser/branding/greatdane/locales/en-US/brand.ftl b/browser/branding/greatdane/locales/en-US/brand.ftl
+index fc423fb37d..ed27c218e1 100644
+--- a/browser/branding/greatdane/locales/en-US/brand.ftl
++++ b/browser/branding/greatdane/locales/en-US/brand.ftl
+@@ -24,4 +24,16 @@
+ # remain unchanged across different versions (Dane, Beta, etc.).
+ -brand-product-name = Dane
+ -vendor-short-name = Dane
+-trademarkInfo = { " " }
++# Proposed wording (round 4d). Pending coordinator/NGD review. See
++# evidence/round4d/PROPOSED-ABOUT-WORDING.md. Wordmarks are used in text only,
++# as adjectives, with a disassociation sentence and a trademark notice, per the
++# Mozilla Trademark Guidelines (Open Source Project Guidelines). This en-US file
++# is shipped in every locale's branding resource by locales/jar.mn.
++trademarkInfo = Firefox and Mozilla are trademarks of Mozilla.org in the U.S. and other countries.
++
++# Used by aboutDialog.xhtml when MOZ_OFFICIAL_BRANDING is not set. The existing
++# community-2 / community-exp IDs are left to official branding; unique IDs here
++# do not depend on Fluent first-wins vs last-wins merge order.
++dane-community-exp = { -brand-short-name } is built from Mozilla's open source Firefox ESR web browser. { -brand-short-name } is not officially associated with Mozilla or its products. <label data-l10n-name="community-exp-mozillaLink">Mozilla</label> is a <label data-l10n-name="community-exp-creditsLink">global community</label> working together to keep the Web open, public and accessible to all.
++
++dane-community-2 = { -brand-short-name } is built from Mozilla's open source Firefox ESR web browser. { -brand-short-name } is not officially associated with Mozilla or its products. <label data-l10n-name="community-mozillaLink">Mozilla</label> is a <label data-l10n-name="community-creditsLink">global community</label> working together to keep the Web open, public and accessible to all.
+diff --git a/browser/locales/en-US/browser/aboutDialog.ftl b/browser/locales/en-US/browser/aboutDialog.ftl
+index 89736c7b3d..911a166df3 100644
+--- a/browser/locales/en-US/browser/aboutDialog.ftl
++++ b/browser/locales/en-US/browser/aboutDialog.ftl
+@@ -76,9 +76,13 @@ warningDesc-version = { -brand-short-name } is experimental and may be unstable.
+ aboutdialog-help-user = { -brand-product-name } Help
+ aboutdialog-submit-feedback = Submit Feedback
+ 
+-community-exp = { -brand-short-name } is based on Mozilla Firefox. <label data-l10n-name="community-exp-mozillaLink">Mozilla</label> is a <label data-l10n-name="community-exp-creditsLink">global community</label> working together to keep the Web open, public and accessible to all.
++# Proposed wording (round 4d). Pending coordinator/NGD review. Dane builds use
++# dane-community-exp from branding/brand.ftl; this en-US string is kept in sync.
++community-exp = { -brand-short-name } is built from Mozilla's open source Firefox ESR web browser. { -brand-short-name } is not officially associated with Mozilla or its products. <label data-l10n-name="community-exp-mozillaLink">Mozilla</label> is a <label data-l10n-name="community-exp-creditsLink">global community</label> working together to keep the Web open, public and accessible to all.
+ 
+-community-2 = { -brand-short-name } is based on Mozilla Firefox, made by <label data-l10n-name="community-mozillaLink">Mozilla</label>, a <label data-l10n-name="community-creditsLink">global community</label> working together to keep the Web open, public and accessible to all.
++# Proposed wording (round 4d). Pending coordinator/NGD review. Dane builds use
++# dane-community-2 from branding/brand.ftl; this en-US string is kept in sync.
++community-2 = { -brand-short-name } is built from Mozilla's open source Firefox ESR web browser. { -brand-short-name } is not officially associated with Mozilla or its products. <label data-l10n-name="community-mozillaLink">Mozilla</label> is a <label data-l10n-name="community-creditsLink">global community</label> working together to keep the Web open, public and accessible to all.
+ 
+ helpus = Want to help? <label data-l10n-name="helpus-donateLink">Make a donation</label> or <label data-l10n-name="helpus-getInvolvedLink">get involved!</label>
+ 
+diff --git a/evidence/round4d/PROPOSED-ABOUT-WORDING.md b/evidence/round4d/PROPOSED-ABOUT-WORDING.md
+new file mode 100644
+index 0000000000..d45e97fcf3
+--- /dev/null
++++ b/evidence/round4d/PROPOSED-ABOUT-WORDING.md
+@@ -0,0 +1,113 @@
++# Proposed About-dialog attribution (round 4d)
++
++**Status:** proposal, implemented in this series, pending coordinator / NGD review.
++**Date fetched:** 10 November 2026, America/Chicago (UTC-6).
++**Sources (current official pages, not the 2009 archive):**
++
++- [Mozilla Trademark Guidelines](https://www.mozilla.org/foundation/trademarks/policy/)
++- [Distribution Policy for Mozilla Software](https://www.mozilla.org/en-US/foundation/trademarks/distribution-policy/)
++- [Mozilla Trademarks List](https://www.mozilla.org/en-US/foundation/trademarks/list/)
++
++The `/foundation/trademarks/faq/` URL currently serves the same Guidelines page (no separate FAQ). An older archived policy at `www-archive.mozilla.org` is quoted only as historical contrast; it is not treated as the live rule.
++
++This is not a legal opinion and is not a release-ready or trademark-clearance claim.
++
++## What was already in the tree
++
++en-US `aboutDialog.ftl` in the Dane ESR153 tree already said:
++
++> `{ -brand-short-name } is based on Mozilla Firefox`
++
++(and a close variant for the experimental blurb). `trademarkInfo` in greatdane `brand.ftl` was a blank string. Other locales still ship upstream `community-2` / `community-exp` ("designed by `{ -vendor-short-name }`"), which would read as "Dane is designed by Dane" after branding substitution. Apple Polish asked that the About line be present and limited to the allowed "built on Firefox ESR" attribution, with no Firefox wordmarks or logos.
++
++The Firefox/Mozilla attribution is not dropped.
++
++## Live Mozilla guidance (quotes)
++
++From the Trademark Guidelines, uses allowed without specific permission include:
++
++> Use Mozilla wordmarks to explain that your software is based on Mozilla’s open source code, or is compatible with Mozilla’s software, in accordance with the Open Source Project Guidelines below.
++
++Open Source Project Guidelines — you may:
++
++> State in words (not using logos or images) that your project is based on Mozilla open source technology, if that is true, as long as you also include a statement that your project is not officially associated with Mozilla or its products.
++
++> For instance, you may state that your project:
++>
++> - “is proudly built from Mozilla’s open source GeckoView software”
++> - “adapted from Mozilla’s open source Boot2Gecko”
++>
++> as long as you also include the statement equally prominently:
++>
++> - “[Brand Name] and [Product Name] are not officially associated with Mozilla or its products.”
++
++You must not:
++
++> Use any Mozilla trademark in connection with the user-facing name or branding of your project.
++>
++> Use any Mozilla trademark or any part of any Mozilla trademark to incorrectly suggest or give the impression your software is actually published by, affiliated with, or endorsed by Mozilla.
++
++General rules for allowed uses:
++
++> Use Mozilla wordmarks only as an adjective, never as a noun or verb. Do not use them in plural or possessive forms.
++>
++> Instead, use the generic term for the Mozilla product or service following the trademark.
++>
++> For example: Firefox web browser, Pocket app.
++>
++> Include a trademark attribution notice.
++>
++> Use a clearly visible notice to provide attribution to Mozilla, such as: “[Mozilla trademark] is a trademark of Mozilla.org in the US and other countries.”
++
++The Trademarks List sample, if using the Firefox wordmark:
++
++> “Firefox is a trademark of Mozilla.org in the U.S. and other countries.”
++
++And, if using both the Mozilla and Firefox wordmarks and the Firefox logo:
++
++> “Mozilla, Firefox and the Firefox logo are trademarks of Mozilla.org in the U.S. and other countries.”
++
++The Distribution Policy (modified builds):
++
++> if you make any changes to Firefox or other Mozilla software, you may not redistribute that product using any Mozilla trademark without Mozilla’s prior written consent and, typically, a distribution agreement with Mozilla. For example, you may not distribute a modified form of Firefox and continue to call it Firefox.
++
++## Historical contrast (archived policy, not the live rule)
++
++The archived Mozilla Trademark Policy said, of significant modifications:
++
++> For example, it would be inappropriate for them to say "based on Mozilla Firefox". Instead, in the interest of complete accuracy, they should describe their executables as "based on Mozilla technology", or "incorporating Mozilla source code."
++
++That is why this proposal does not keep the exact phrase "based on Mozilla Firefox", even though that string was already in the Dane-tree en-US file and is what the live home page currently states.
++
++## Proposed wording
++
++Visible About community line (both the normal and experimental blurbs):
++
++> Dane is built from Mozilla's open source Firefox ESR web browser. Dane is not officially associated with Mozilla or its products. Mozilla is a global community working together to keep the Web open, public and accessible to all.
++
++Fluent form (Dane UI uses `dane-community-2` / `dane-community-exp` in greatdane `brand.ftl`, shipped for every locale via `locales/jar.mn`):
++
++```
++{ -brand-short-name } is built from Mozilla's open source Firefox ESR web browser. { -brand-short-name } is not officially associated with Mozilla or its products. <label data-l10n-name="community-mozillaLink">Mozilla</label> is a <label data-l10n-name="community-creditsLink">global community</label> working together to keep the Web open, public and accessible to all.
++```
++
++Trademark notice (`trademarkInfo`), previously blank:
++
++> Firefox and Mozilla are trademarks of Mozilla.org in the U.S. and other countries.
++
++## Why this wording
++
++- **"built from Mozilla's open source …"** follows the live examples ("is proudly built from Mozilla’s open source GeckoView software") rather than the archived "based on Mozilla Firefox" phrase.
++- **"Firefox ESR web browser"** keeps the Firefox attribution Apple Polish asked for, names the actual source base (ESR), and puts the generic term "web browser" after the wordmark, per the adjective rule.
++- **The disassociation sentence** is the statement the live Open Source Project Guidelines require, in the same paragraph (same typography, so equally prominent). The template "[Brand Name] and [Product Name]…" is adapted to "{ -brand-short-name } is not officially associated…" because both names are Dane; "Dane and Dane are not…" would be awkward and no clearer.
++- **Trademark notice** attributes the Firefox and Mozilla wordmarks used in the text. It does not mention the Firefox logo, because this attribution does not display Firefox logos. (A residual `firefox-wordmark.svg` is still listed in greatdane `content/jar.mn` and is still referenced by stock new-tab / private-browsing CSS. That is outside this change and is not treated as cleared.)
++- **Mozilla community credits** ("Mozilla is a global community…") and the existing mozilla.org / about:credits links are kept.
++- Official Firefox branding is unchanged: `aboutDialog.xhtml` uses the new IDs only when `MOZ_OFFICIAL_BRANDING` is not set.
++
++## Alternatives considered
++
++- Keep "based on Mozilla Firefox" verbatim. Rejected: the archived policy called that phrase inappropriate, and the live guidelines still require the disassociation sentence, which the old string lacked.
++- "based on Mozilla open source technology" / "incorporating Mozilla source code" only, with no "Firefox". Rejected: the coordinator asked that the Firefox/Mozilla attribution not be dropped; Apple Polish asked for a "built on Firefox ESR" form.
++- Apple Polish's exact "built on Firefox ESR" as the whole line. Close, but the live examples use "built from Mozilla's open source [product]", and the adjective rule wants a generic noun after the wordmark. The proposed line is that phrasing, plus the required disassociation sentence and notice.
++
++No part of this document claims the wording has been approved by Mozilla or by NGD.
