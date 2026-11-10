@@ -1,0 +1,66 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 17:23:06 -0600
+Subject: [PATCH 113/144] GreatDANE: refuse a bare /Volumes/<name> as a signer
+ work dir (round 4c L3)
+
+A --work-dir / DANE_SIGN_WORK_DIRS entry exempts owner bundle IDs below it. A bare volume root such as
+/Volumes/Storage is as broad as a home dir, so it is now refused (rc 2) along with /, /Users, $HOME,
+/Users/<name> and /Volumes. The check also matches case variants and the /System/Volumes/Data firmlink
+form. A subdirectory such as /Volumes/<name>/build/w is still accepted. sign-only.sh passes its stage dir
+(under /Volumes/<name>/build/...), so it is unaffected.
+
+Selftest: W9-W13 refuse /Volumes/Other, /Volumes/Other/, /volumes/storage,
+/System/Volumes/Data/Volumes/Other and DANE_SIGN_WORK_DIRS=/Volumes/Other. W14 accepts
+/Volumes/Other/build/w.
+---
+ greatdane/tests/sign_dane_macos_selftest.py | 9 +++++++++
+ greatdane/tools/sign_dane_macos.py          | 8 +++++---
+ 2 files changed, 14 insertions(+), 3 deletions(-)
+
+diff --git a/greatdane/tests/sign_dane_macos_selftest.py b/greatdane/tests/sign_dane_macos_selftest.py
+index 35241878ba..a04ab6d3d0 100644
+--- a/greatdane/tests/sign_dane_macos_selftest.py
++++ b/greatdane/tests/sign_dane_macos_selftest.py
+@@ -334,6 +334,15 @@ def main():
+                 [r"work-dir entry is too broad"])
+         run("W8 DANE_SIGN_WORK_DIRS=/ refused as too broad", ["plan", good], 2, [r"work-dir entry is too broad"],
+             env={"DANE_SIGN_WORK_DIRS": os.path.join(tmp, "ok") + ":/"})
++        # --- round 4c L3: a bare volume root is too broad; a subdirectory of one is not ---
++        for i, wd in enumerate(["/Volumes/Other", "/Volumes/Other/", "/volumes/storage",
++                                "/System/Volumes/Data/Volumes/Other"]):
++            run("W%d --work-dir %s (bare volume root) refused" % (9 + i, wd), ["plan", good, "--work-dir", wd], 2,
++                [r"work-dir entry is too broad .*bare /Volumes/<name>"])
++        run("W13 DANE_SIGN_WORK_DIRS=/Volumes/Other refused", ["plan", good], 2, [r"work-dir entry is too broad"],
++            env={"DANE_SIGN_WORK_DIRS": "/Volumes/Other"})
++        run("W14 --work-dir /Volumes/Other/build/w is narrow enough", ["plan", good, "--work-dir", "/Volumes/Other/build/w"],
++            0, [r"PLAN OK"], [r"too broad"])
+         # --- round 4 L-b: /System/Volumes/Data firmlink prefix stripped for every rule ---
+         run("G32 /System/Volumes/Data/Applications/Dane.app refused", ["plan", "/System/Volumes/Data/Applications/Dane.app"],
+             2, [r"off-limits \(installed app location"])
+diff --git a/greatdane/tools/sign_dane_macos.py b/greatdane/tools/sign_dane_macos.py
+index 7929b71c43..255be5b860 100755
+--- a/greatdane/tools/sign_dane_macos.py
++++ b/greatdane/tools/sign_dane_macos.py
+@@ -30,7 +30,8 @@ Path guard (case-insensitive, on the realpath):
+     file name contains "dane" or whose mount holds a top-level Dane.app (owner dmg on a custom mount point).
+   - a Dane.app whose CFBundleIdentifier is an owner ID (surf.dogecoin.dane, org.mozilla.surf.pepecoin.greatdane)
+     is refused unless it is inside this source tree (e.g. obj-gd/dist/gd-release/stage-*) or a --work-dir DIR /
+-    env DANE_SIGN_WORK_DIRS entry. A work dir of /, /Users, $HOME (or any /Users/<name>) or /Volumes is refused.
++    env DANE_SIGN_WORK_DIRS entry. A work dir of /, /Users, $HOME (or any /Users/<name>), /Volumes or a bare
++    volume root /Volumes/<name> is refused (round 4c L3); use a subdirectory such as /Volumes/<name>/build/w.
+   - anything else under /Volumes is refused unless it is under a directory given with --allow-volume DIR or in
+     env DANE_SIGN_ALLOW_VOLUMES (colon-separated). Allowlist entries must themselves be under /Volumes (rc 2
+     otherwise). The owner rules above still apply inside an allowed dir.
+@@ -167,8 +168,9 @@ def guard(app):
+             die("work-dir entry is itself off-limits: " + w)
+         wl = w.lower().rstrip("/")
+         # L-c: a work dir exempts owner bundle IDs below it, so it must be narrow.
+-        if wl in ("", "/users", "/volumes") or wl == home or re.fullmatch(r"/users/[^/]+", wl):
+-            die("work-dir entry is too broad (/, /Users, a home dir, /Volumes are refused): " + w)
++        # Round 4c L3: a bare volume root /Volumes/<name> is as broad as a home dir.
++        if wl in ("", "/users", "/volumes") or wl == home or re.fullmatch(r"/(users|volumes)/[^/]+", wl):
++            die("work-dir entry is too broad (/, /Users, a home dir, /Volumes, a bare /Volumes/<name> are refused): " + w)
+     if under(real, "/volumes") and not any(under(real, a) for a in allowed):
+         die("paths under /Volumes need --allow-volume DIR or DANE_SIGN_ALLOW_VOLUMES: " + real)
+     ip = os.path.join(real, "Contents", "Info.plist")

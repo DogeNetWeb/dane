@@ -30,7 +30,8 @@ Path guard (case-insensitive, on the realpath):
     file name contains "dane" or whose mount holds a top-level Dane.app (owner dmg on a custom mount point).
   - a Dane.app whose CFBundleIdentifier is an owner ID (surf.dogecoin.dane, org.mozilla.surf.pepecoin.greatdane)
     is refused unless it is inside this source tree (e.g. obj-gd/dist/gd-release/stage-*) or a --work-dir DIR /
-    env DANE_SIGN_WORK_DIRS entry. A work dir of /, /Users, $HOME (or any /Users/<name>) or /Volumes is refused.
+    env DANE_SIGN_WORK_DIRS entry. A work dir of /, /Users, $HOME (or any /Users/<name>), /Volumes or a bare
+    volume root /Volumes/<name> is refused (round 4c L3); use a subdirectory such as /Volumes/<name>/build/w.
   - anything else under /Volumes is refused unless it is under a directory given with --allow-volume DIR or in
     env DANE_SIGN_ALLOW_VOLUMES (colon-separated). Allowlist entries must themselves be under /Volumes (rc 2
     otherwise). The owner rules above still apply inside an allowed dir.
@@ -167,8 +168,9 @@ def guard(app):
             die("work-dir entry is itself off-limits: " + w)
         wl = w.lower().rstrip("/")
         # L-c: a work dir exempts owner bundle IDs below it, so it must be narrow.
-        if wl in ("", "/users", "/volumes") or wl == home or re.fullmatch(r"/users/[^/]+", wl):
-            die("work-dir entry is too broad (/, /Users, a home dir, /Volumes are refused): " + w)
+        # Round 4c L3: a bare volume root /Volumes/<name> is as broad as a home dir.
+        if wl in ("", "/users", "/volumes") or wl == home or re.fullmatch(r"/(users|volumes)/[^/]+", wl):
+            die("work-dir entry is too broad (/, /Users, a home dir, /Volumes, a bare /Volumes/<name> are refused): " + w)
     if under(real, "/volumes") and not any(under(real, a) for a in allowed):
         die("paths under /Volumes need --allow-volume DIR or DANE_SIGN_ALLOW_VOLUMES: " + real)
     ip = os.path.join(real, "Contents", "Info.plist")

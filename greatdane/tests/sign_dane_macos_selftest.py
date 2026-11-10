@@ -334,6 +334,15 @@ def main():
                 [r"work-dir entry is too broad"])
         run("W8 DANE_SIGN_WORK_DIRS=/ refused as too broad", ["plan", good], 2, [r"work-dir entry is too broad"],
             env={"DANE_SIGN_WORK_DIRS": os.path.join(tmp, "ok") + ":/"})
+        # --- round 4c L3: a bare volume root is too broad; a subdirectory of one is not ---
+        for i, wd in enumerate(["/Volumes/Other", "/Volumes/Other/", "/volumes/storage",
+                                "/System/Volumes/Data/Volumes/Other"]):
+            run("W%d --work-dir %s (bare volume root) refused" % (9 + i, wd), ["plan", good, "--work-dir", wd], 2,
+                [r"work-dir entry is too broad .*bare /Volumes/<name>"])
+        run("W13 DANE_SIGN_WORK_DIRS=/Volumes/Other refused", ["plan", good], 2, [r"work-dir entry is too broad"],
+            env={"DANE_SIGN_WORK_DIRS": "/Volumes/Other"})
+        run("W14 --work-dir /Volumes/Other/build/w is narrow enough", ["plan", good, "--work-dir", "/Volumes/Other/build/w"],
+            0, [r"PLAN OK"], [r"too broad"])
         # --- round 4 L-b: /System/Volumes/Data firmlink prefix stripped for every rule ---
         run("G32 /System/Volumes/Data/Applications/Dane.app refused", ["plan", "/System/Volumes/Data/Applications/Dane.app"],
             2, [r"off-limits \(installed app location"])
