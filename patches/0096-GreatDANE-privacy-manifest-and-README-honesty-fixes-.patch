@@ -1,0 +1,148 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 16:07:44 -0600
+Subject: [PATCH 096/144] GreatDANE: privacy-manifest and README honesty fixes
+ (NGD round 2 M4, L1, L4, L6)
+
+- PrivacyInfo.xcprivacy comment and PRIVACY-MANIFEST.md: replace "Dane's own servers receive nothing".
+  - Say what pepecoin.surf actually sees: the update check's request fields plus IP, and pages the user opens.
+  - Default-tile icons are bundled (tippytop), so the new-tab page contacts none of those sites.
+  - User-initiated loads of Dane sites are ordinary browsing.
+- L1: the CA92.1 rationale now openly lists other-app preference domains Gecko uses:
+  - the com.apple.dock persistent-domain read (nsMacDockSupport.mm:367, :407) and write (:347);
+  - the com.apple.loginwindow TALLogoutSavesState read (nsCocoaUtils.mm:310-312).
+  Callers are named. The manifest values are unchanged.
+- L6: OtherDiagnosticData purposes are now AppFunctionality + Analytics.
+- L4: greatdane/README.md gets a known regression: system passkeys (Touch ID / iCloud Keychain via
+  public-key-credential) are unavailable until Apple grants the entitlement and a provisioning profile is embedded.
+- README: the signing notes now match the round-2 signer (main-executable-only exception, case-insensitive
+  realpath guard with a /Volumes allowlist, identity redaction, signing.conf, in-tree sign-only.sh).
+---
+ greatdane/README.md                   | 18 ++++++++++++++++--
+ greatdane/macos/PRIVACY-MANIFEST.md   | 20 ++++++++++++++++----
+ greatdane/macos/PrivacyInfo.xcprivacy | 17 ++++++++++++++---
+ 3 files changed, 46 insertions(+), 9 deletions(-)
+
+diff --git a/greatdane/README.md b/greatdane/README.md
+index 4344dd68ae..17e47e1451 100644
+--- a/greatdane/README.md
++++ b/greatdane/README.md
+@@ -48,8 +48,18 @@ Decision: per the coordinator's record of its Oct 27 2026 conversation with nowo
+ 
+ - Map: `greatdane/macos/sign-map.tsv`. Tool: `greatdane/tools/sign_dane_macos.py plan|sign|check <Dane.app>`.
+   It signs inside-out with `--force --timestamp --options runtime` and never uses `--deep` to sign. It refuses any
+-  Mach-O not covered by the map, refuses restricted entitlements without an embedded provisioning profile, and
+-  refuses /Volumes/Dane and DaneNotarized paths. `check` is read-only and compares `codesign -d --entitlements -`
++  regular Mach-O or nested bundle that no map row covers. The only exception is the CFBundleExecutable main
++  executable of the app or of the mapped bundle that directly encloses it. It also refuses restricted
++  entitlements without an embedded provisioning profile.
++  Path guard: case-insensitive on the realpath. It refuses /Volumes/Dane (and `Dane N` / `Dane-N`), any
++  `*DaneNotarized*` component and the GreatDANE profile path, plus anything else under /Volumes unless
++  `--allow-volume` or `DANE_SIGN_ALLOW_VOLUMES` allowlists it. The identity is redacted in logs.
++- Team ID: one source of truth, `greatdane/macos/signing.conf` (`TEAM_ID`). sign-map.tsv, the signer and the
++  entitlement headers reference it. `build/moz.configure/update-programs.configure` keeps a build-time copy, and
++  `greatdane/tests/sign_dane_macos_selftest.py` (T3) fails if the two differ.
++- Release signing: `greatdane/tools/finish-universal.sh` calls the in-tree `greatdane/tools/sign-only.sh`
++  (stage, then plan, sign, check, then dmg). It replaces the old out-of-tree `$G/sign-only.sh`, which used
++  blanket `--entitlements ... --deep`. That script never notarizes. `check` is read-only and compares `codesign -d --entitlements -`
+   for each row against the map, then runs `codesign --verify --deep --strict`.
+ - Entitlements by binary (Mozilla production config: taskcluster/config.yml mac-signing):
+   - **Dane.app:** `production/dane.browser.xml`, which is firefox.browser.xml minus application-identifier and
+@@ -62,5 +72,9 @@ Decision: per the coordinator's record of its Oct 27 2026 conversation with nowo
+   - **No entitlements, hardened runtime only:** gpu-helper.app, updater.app (+ UpdateSettings.framework), the
+     LaunchServices surf.dogecoin.dane.updater and surf.dogecoin.dane.dmgInstallHelper, crashreporter.app,
+     crashhelper, pingsender, nmhproxy, XUL, *.dylib, gmp-clearkey, ChannelPrefs.framework and greatdane-node*.
++- **Known regression: system passkeys.** Passkeys stored in the macOS system (Touch ID / iCloud Keychain, through
++  `com.apple.developer.web-browser.public-key-credential`) are unavailable until Apple grants Dane's team that
++  entitlement and a matching provisioning profile is embedded in Dane.app. Security keys (USB/NFC FIDO2) and
++  passkeys from third-party password managers that inject through the web page aren't affected.
+ - `mach macos-sign` reads taskcluster/config.yml. It now uses the Dane LaunchServices names, includes
+   greatdane-node*, and uses dane.browser.xml for the app.
+diff --git a/greatdane/macos/PRIVACY-MANIFEST.md b/greatdane/macos/PRIVACY-MANIFEST.md
+index 12a9d6647e..07f5f89f91 100644
+--- a/greatdane/macos/PRIVACY-MANIFEST.md
++++ b/greatdane/macos/PRIVACY-MANIFEST.md
+@@ -13,8 +13,20 @@ Reason-code wording below is quoted from Apple's NSPrivacyAccessedAPITypeReasons
+   sponsored tiles, Pocket and ads feeds are off (browser/app/profile/firefox.js, GreatDANE block).
+ 
+ ## Collected data types (conservative)
+-Dane's own servers receive nothing. Every entry is a stock Firefox service that Dane keeps, with Mozilla receiving
+-the data. Each one has Tracking=false. If a feature only collects after the user turns it on, it's still declared.
++Every entry is a stock Firefox service that Dane keeps, with Mozilla receiving the data. Each one has Tracking=false.
++If a feature only collects after the user turns it on, it's still declared.
++
++**What Dane's own servers see.** This corrects the earlier "Dane's own servers receive nothing".
++- The automatic update check `app.update.url` (browser/app/profile/firefox.js) goes to pepecoin.surf. It carries
++  product, version, build ID, build target, locale and channel, plus the client IP that every HTTPS request carries.
++  It has no account or per-install identifier. It's used only to answer the request (AppFunctionality), and it isn't
++  declared as a collected data type for that reason.
++- **Default new-tab tiles:** the icons for pepecoin.surf, dogecoin.surf, greatdane.doge and grokipedia.com are bundled
++  through tippytop (browser/components/topsites/content/tippytop, see greatdane/tippytop-ICON-SOURCES.md). Showing
++  the new-tab page doesn't fetch from those sites, so there's no favicon or screenshot request.
++- **User-initiated loads** of pepecoin.surf, dogecoin.surf or greatdane.doge (clicking a tile, typing the address, the
++  manual-download and release-notes links) are ordinary browsing. That site's operator sees a normal web request,
++  the same as for any other site.
+ 
+ | Type | Linked | Purpose | Why it is declared |
+ |---|---|---|---|
+@@ -23,7 +35,7 @@ the data. Each one has Tracking=false. If a feature only collects after the user
+ | CoarseLocation | no | AppFunctionality | Stock region (country) lookup: `browser.region.network.url` = location.services.mozilla.com/v1/country (all.js), used for region defaults. |
+ | ProductInteraction | no | Analytics | Only if the user turns data collection ON. Dane ships it OFF (`datareporting.healthreport.uploadEnabled=false`, `toolkit.telemetry.enabled=false`, `toolkit.telemetry.server="data:,"`), but Glean's endpoint is compiled in as incoming.telemetry.mozilla.org (toolkit/components/glean/src/init/mod.rs). Patch 0028 keeps the opt-in visible. |
+ | PerformanceData | no | Analytics | Same opt-in as above (Glean/legacy telemetry performance metrics). |
+-| OtherDiagnosticData | no | Analytics | Same opt-in as above. |
++| OtherDiagnosticData | no | AppFunctionality, Analytics | Same opt-in as above. AppFunctionality is added because diagnostic reports are also used to find and fix faults, not only for analytics (NGD round 2 L6). |
+ 
+ Deliberately not declared:
+ - **CrashData:** the crash reporter is local-only. application.ini has an empty `[Crash Reporter] ServerURL`, and
+@@ -43,7 +55,7 @@ Dane deliberately declares more than that.
+ | FileTimestamp | C617.1, 3B52.1, DDA9.1 | **C617.1** ("files inside the app container…"): profile, cache, omni.ja, update staging mtimes (xpcom/io/nsLocalFileUnix.cpp). **3B52.1** ("files … the user specifically granted access to"): files picked in the file picker / drag-drop, exposed as `File.lastModified`. **DDA9.1** ("display file timestamps to the person"): downloads list and file:// directory listings. |
+ | SystemBootTime | 35F9.1, 8FFB.1 | **35F9.1**: `mach_absolute_time` for TimeStamp and timers (mozglue/misc/TimeStamp_darwin.cpp). **8FFB.1**: converting NSEvent timestamps (seconds since boot) to Gecko event times (widget/cocoa/nsCocoaUtils.mm). |
+ | DiskSpace | E174.1 | "check whether there is sufficient disk space to write files": cache smart-sizing, downloads, updater staging, and the run-from-dmg install (toolkit/xre/MacRunFromDmgUtils.mm, nsLocalFileUnix.cpp). |
+-| UserDefaults | CA92.1 | "information that is only accessible to the app itself": `[NSUserDefaults standardUserDefaults]` in widget/cocoa (dock, window, look-and-feel). There's no App Group. |
++| UserDefaults | CA92.1 | "information that is only accessible to the app itself": `[NSUserDefaults standardUserDefaults]` in widget/cocoa (window, look-and-feel). There's no App Group. **Stated openly:** Gecko also touches two other apps' preference domains. (1) **com.apple.dock**: it reads the Dock's persistent domain (`persistentDomainForName:kDockDomainName`, widget/cocoa/nsMacDockSupport.mm:367 and :407) and writes it back (`setPersistentDomain:forName:kDockDomainName`, nsMacDockSupport.mm:347). The read runs at startup for the `os_environment.is_kept_in_dock` metric (browser/components/StartupTelemetry.sys.mjs:512, uploaded only under the telemetry opt-in) and again when the pin flow checks. The write happens only through `ShellService.pinToTaskbar` (browser/components/shell/ShellService.sys.mjs:762), when the user accepts pin-to-Dock, for example in onboarding. (2) **com.apple.loginwindow**: it reads `TALLogoutSavesState` (`CFPreferencesCopyAppValue`, widget/cocoa/nsCocoaUtils.mm:310-312), only at a login-launch, to honor the user's "Reopen windows when logging back in" choice. Neither access is literally "only accessible to the app itself". No required-reason code covers other apps' domains, and CA92.1 is the closest declared reason. Mozilla's stock macOS build does the same thing. If Apple review objects, the fallback is to drop the Dock write path (a feature change, owner's call). |
+ 
+ Not declared: ActiveKeyboards (that category covers iOS `UITextInputMode`; Gecko on macOS uses TIS input-source APIs,
+ which aren't in the required-reason list).
+diff --git a/greatdane/macos/PrivacyInfo.xcprivacy b/greatdane/macos/PrivacyInfo.xcprivacy
+index 168f2bb5ec..419cea4bea 100644
+--- a/greatdane/macos/PrivacyInfo.xcprivacy
++++ b/greatdane/macos/PrivacyInfo.xcprivacy
+@@ -7,17 +7,27 @@
+   greatdane/macos/PRIVACY-MANIFEST.md.
+ 
+   Tracking: none. No tracking domains. Dane ships no ad or analytics SDKs.
+-  Collected data: Dane's own servers receive nothing. Entries below are conservative and cover
+-  stock Firefox services that Dane keeps (Mozilla is the receiving party):
++  Dane's own servers (pepecoin.surf) collect no data type below. They see only the automatic update
++  check (app.update.url: product, version, build ID, target, locale, channel, plus the request IP that
++  any HTTPS request carries; no account or per-install ID) and pages the user chooses to open.
++  Default new-tab tile icons for pepecoin.surf, dogecoin.surf, greatdane.doge and grokipedia.com are
++  bundled (tippytop), so showing the new-tab page contacts none of those sites. A user-initiated load
++  of a Dane site is ordinary browsing.
++  Collected data: the entries below are conservative and cover stock Firefox services that Dane keeps
++  (Mozilla is the receiving party):
+     - EmailAddress: only if the user signs in to a Mozilla account (Sync). Linked.
+     - DeviceID: random per-install IDs (Web Push UAID; Glean client_id only if the user opts in).
+     - CoarseLocation: stock region (country) lookup from IP via location.services.mozilla.com.
+-    - ProductInteraction / PerformanceData / OtherDiagnosticData: only if the user turns
++    - ProductInteraction / PerformanceData / OtherDiagnosticData (the last also AppFunctionality:
++      diagnostics used to find and fix faults): only if the user turns
+       data collection ON in Settings. Dane ships it OFF (datareporting.healthreport.uploadEnabled=false,
+       toolkit.telemetry.enabled=false, toolkit.telemetry.server="data:,").
+   Not collected: crash data (crash reporter is local-only, empty ServerURL), browsing/search history
+   (Safe Browsing sends hash prefixes only; Sync data is end-to-end encrypted), precise location
+   (macOS CoreLocation, per-site user permission, delivered to the requesting site only).
++  UserDefaults CA92.1: Dane's own defaults domain, plus the Dock and login-window preferences the
++  user's own Dock/session settings use (com.apple.dock read/write, com.apple.loginwindow read).
++  See PRIVACY-MANIFEST.md for why this is stated openly.
+ -->
+ <plist version="1.0">
+ <dict>
+@@ -97,6 +107,7 @@
+ 			<false/>
+ 			<key>NSPrivacyCollectedDataTypePurposes</key>
+ 			<array>
++				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+ 				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+ 			</array>
+ 		</dict>

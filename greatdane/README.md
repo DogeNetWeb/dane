@@ -48,8 +48,18 @@ Decision: per the coordinator's record of its Oct 27 2026 conversation with nowo
 
 - Map: `greatdane/macos/sign-map.tsv`. Tool: `greatdane/tools/sign_dane_macos.py plan|sign|check <Dane.app>`.
   It signs inside-out with `--force --timestamp --options runtime` and never uses `--deep` to sign. It refuses any
-  Mach-O not covered by the map, refuses restricted entitlements without an embedded provisioning profile, and
-  refuses /Volumes/Dane and DaneNotarized paths. `check` is read-only and compares `codesign -d --entitlements -`
+  regular Mach-O or nested bundle that no map row covers. The only exception is the CFBundleExecutable main
+  executable of the app or of the mapped bundle that directly encloses it. It also refuses restricted
+  entitlements without an embedded provisioning profile.
+  Path guard: case-insensitive on the realpath. It refuses /Volumes/Dane (and `Dane N` / `Dane-N`), any
+  `*DaneNotarized*` component and the GreatDANE profile path, plus anything else under /Volumes unless
+  `--allow-volume` or `DANE_SIGN_ALLOW_VOLUMES` allowlists it. The identity is redacted in logs.
+- Team ID: one source of truth, `greatdane/macos/signing.conf` (`TEAM_ID`). sign-map.tsv, the signer and the
+  entitlement headers reference it. `build/moz.configure/update-programs.configure` keeps a build-time copy, and
+  `greatdane/tests/sign_dane_macos_selftest.py` (T3) fails if the two differ.
+- Release signing: `greatdane/tools/finish-universal.sh` calls the in-tree `greatdane/tools/sign-only.sh`
+  (stage, then plan, sign, check, then dmg). It replaces the old out-of-tree `$G/sign-only.sh`, which used
+  blanket `--entitlements ... --deep`. That script never notarizes. `check` is read-only and compares `codesign -d --entitlements -`
   for each row against the map, then runs `codesign --verify --deep --strict`.
 - Entitlements by binary (Mozilla production config: taskcluster/config.yml mac-signing):
   - **Dane.app:** `production/dane.browser.xml`, which is firefox.browser.xml minus application-identifier and
@@ -62,5 +72,9 @@ Decision: per the coordinator's record of its Oct 27 2026 conversation with nowo
   - **No entitlements, hardened runtime only:** gpu-helper.app, updater.app (+ UpdateSettings.framework), the
     LaunchServices surf.dogecoin.dane.updater and surf.dogecoin.dane.dmgInstallHelper, crashreporter.app,
     crashhelper, pingsender, nmhproxy, XUL, *.dylib, gmp-clearkey, ChannelPrefs.framework and greatdane-node*.
+- **Known regression: system passkeys.** Passkeys stored in the macOS system (Touch ID / iCloud Keychain, through
+  `com.apple.developer.web-browser.public-key-credential`) are unavailable until Apple grants Dane's team that
+  entitlement and a matching provisioning profile is embedded in Dane.app. Security keys (USB/NFC FIDO2) and
+  passkeys from third-party password managers that inject through the web page aren't affected.
 - `mach macos-sign` reads taskcluster/config.yml. It now uses the Dane LaunchServices names, includes
   greatdane-node*, and uses dane.browser.xml for the app.

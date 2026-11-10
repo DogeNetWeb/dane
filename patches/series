@@ -93,3 +93,4 @@
 0093-GreatDANE-harden-sign_dane_macos.py-NGD-round-2-M1-M.patch
 0094-GreatDANE-in-tree-sign-only.sh-using-the-per-binary-.patch
 0095-GreatDANE-bundle-tippytop-icons-for-the-Dane-default.patch
+0096-GreatDANE-privacy-manifest-and-README-honesty-fixes-.patch

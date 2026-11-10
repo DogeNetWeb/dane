@@ -13,8 +13,20 @@ Reason-code wording below is quoted from Apple's NSPrivacyAccessedAPITypeReasons
   sponsored tiles, Pocket and ads feeds are off (browser/app/profile/firefox.js, GreatDANE block).
 
 ## Collected data types (conservative)
-Dane's own servers receive nothing. Every entry is a stock Firefox service that Dane keeps, with Mozilla receiving
-the data. Each one has Tracking=false. If a feature only collects after the user turns it on, it's still declared.
+Every entry is a stock Firefox service that Dane keeps, with Mozilla receiving the data. Each one has Tracking=false.
+If a feature only collects after the user turns it on, it's still declared.
+
+**What Dane's own servers see.** This corrects the earlier "Dane's own servers receive nothing".
+- The automatic update check `app.update.url` (browser/app/profile/firefox.js) goes to pepecoin.surf. It carries
+  product, version, build ID, build target, locale and channel, plus the client IP that every HTTPS request carries.
+  It has no account or per-install identifier. It's used only to answer the request (AppFunctionality), and it isn't
+  declared as a collected data type for that reason.
+- **Default new-tab tiles:** the icons for pepecoin.surf, dogecoin.surf, greatdane.doge and grokipedia.com are bundled
+  through tippytop (browser/components/topsites/content/tippytop, see greatdane/tippytop-ICON-SOURCES.md). Showing
+  the new-tab page doesn't fetch from those sites, so there's no favicon or screenshot request.
+- **User-initiated loads** of pepecoin.surf, dogecoin.surf or greatdane.doge (clicking a tile, typing the address, the
+  manual-download and release-notes links) are ordinary browsing. That site's operator sees a normal web request,
+  the same as for any other site.
 
 | Type | Linked | Purpose | Why it is declared |
 |---|---|---|---|
@@ -23,7 +35,7 @@ the data. Each one has Tracking=false. If a feature only collects after the user
 | CoarseLocation | no | AppFunctionality | Stock region (country) lookup: `browser.region.network.url` = location.services.mozilla.com/v1/country (all.js), used for region defaults. |
 | ProductInteraction | no | Analytics | Only if the user turns data collection ON. Dane ships it OFF (`datareporting.healthreport.uploadEnabled=false`, `toolkit.telemetry.enabled=false`, `toolkit.telemetry.server="data:,"`), but Glean's endpoint is compiled in as incoming.telemetry.mozilla.org (toolkit/components/glean/src/init/mod.rs). Patch 0028 keeps the opt-in visible. |
 | PerformanceData | no | Analytics | Same opt-in as above (Glean/legacy telemetry performance metrics). |
-| OtherDiagnosticData | no | Analytics | Same opt-in as above. |
+| OtherDiagnosticData | no | AppFunctionality, Analytics | Same opt-in as above. AppFunctionality is added because diagnostic reports are also used to find and fix faults, not only for analytics (NGD round 2 L6). |
 
 Deliberately not declared:
 - **CrashData:** the crash reporter is local-only. application.ini has an empty `[Crash Reporter] ServerURL`, and
@@ -43,7 +55,7 @@ Dane deliberately declares more than that.
 | FileTimestamp | C617.1, 3B52.1, DDA9.1 | **C617.1** ("files inside the app container…"): profile, cache, omni.ja, update staging mtimes (xpcom/io/nsLocalFileUnix.cpp). **3B52.1** ("files … the user specifically granted access to"): files picked in the file picker / drag-drop, exposed as `File.lastModified`. **DDA9.1** ("display file timestamps to the person"): downloads list and file:// directory listings. |
 | SystemBootTime | 35F9.1, 8FFB.1 | **35F9.1**: `mach_absolute_time` for TimeStamp and timers (mozglue/misc/TimeStamp_darwin.cpp). **8FFB.1**: converting NSEvent timestamps (seconds since boot) to Gecko event times (widget/cocoa/nsCocoaUtils.mm). |
 | DiskSpace | E174.1 | "check whether there is sufficient disk space to write files": cache smart-sizing, downloads, updater staging, and the run-from-dmg install (toolkit/xre/MacRunFromDmgUtils.mm, nsLocalFileUnix.cpp). |
-| UserDefaults | CA92.1 | "information that is only accessible to the app itself": `[NSUserDefaults standardUserDefaults]` in widget/cocoa (dock, window, look-and-feel). There's no App Group. |
+| UserDefaults | CA92.1 | "information that is only accessible to the app itself": `[NSUserDefaults standardUserDefaults]` in widget/cocoa (window, look-and-feel). There's no App Group. **Stated openly:** Gecko also touches two other apps' preference domains. (1) **com.apple.dock**: it reads the Dock's persistent domain (`persistentDomainForName:kDockDomainName`, widget/cocoa/nsMacDockSupport.mm:367 and :407) and writes it back (`setPersistentDomain:forName:kDockDomainName`, nsMacDockSupport.mm:347). The read runs at startup for the `os_environment.is_kept_in_dock` metric (browser/components/StartupTelemetry.sys.mjs:512, uploaded only under the telemetry opt-in) and again when the pin flow checks. The write happens only through `ShellService.pinToTaskbar` (browser/components/shell/ShellService.sys.mjs:762), when the user accepts pin-to-Dock, for example in onboarding. (2) **com.apple.loginwindow**: it reads `TALLogoutSavesState` (`CFPreferencesCopyAppValue`, widget/cocoa/nsCocoaUtils.mm:310-312), only at a login-launch, to honor the user's "Reopen windows when logging back in" choice. Neither access is literally "only accessible to the app itself". No required-reason code covers other apps' domains, and CA92.1 is the closest declared reason. Mozilla's stock macOS build does the same thing. If Apple review objects, the fallback is to drop the Dock write path (a feature change, owner's call). |
 
 Not declared: ActiveKeyboards (that category covers iOS `UITextInputMode`; Gecko on macOS uses TIS input-source APIs,
 which aren't in the required-reason list).
