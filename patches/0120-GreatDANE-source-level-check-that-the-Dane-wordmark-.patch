@@ -1,0 +1,249 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 17:54:59 -0600
+Subject: [PATCH 120/144] GreatDANE: source-level check that the Dane wordmark
+ covers the stock chrome URL (round 4e)
+
+greatdane/tests/wordmark_branding_check.py (no build, no signing, no network) asserts:
+
+- about-wordmark.svg is a plain-text "Dane" wordmark with context-fill, the navy
+  #13254A fallback, and a transparent ground, and does not contain the official
+  Firefox path-logo.
+- content/jar.mn aliases firefox-wordmark.svg to about-wordmark.svg, ships
+  about-wordmark.svg, overrides window-firefox.svg to greatdane-icon.svg, and
+  keeps the existing sidebar/firefox.svg override.
+- There is no differing duplicate firefox-wordmark.svg file.
+- Official branding, when present in the tree, still has the upstream Firefox
+  wordmark. Stock new-tab / private-browsing CSS, when present, still load
+  chrome://branding/content/firefox-wordmark.svg.
+- WORDMARK-SOURCES.md documents the stock leftovers that were not swapped, and
+  states this is not a trademark clearance.
+
+Prepared only. Not built, signed, notarized or published.
+---
+ greatdane/tests/README.md                  |   1 +
+ greatdane/tests/wordmark_branding_check.py | 206 +++++++++++++++++++++
+ 2 files changed, 207 insertions(+)
+ create mode 100644 greatdane/tests/wordmark_branding_check.py
+
+diff --git a/greatdane/tests/README.md b/greatdane/tests/README.md
+index 9a5d1235d4..726f3c979a 100644
+--- a/greatdane/tests/README.md
++++ b/greatdane/tests/README.md
+@@ -21,3 +21,4 @@ sign_dane_macos_selftest.py: `python3 greatdane/tests/sign_dane_macos_selftest.p
+ - `sign_only_selftest.py`: sign-only.sh with stub tools + mock codesign (DANE_ARCH allowlist, dmg refusal, realpath owner guards, ad-hoc and Developer ID runs). No real signing.
+ - `no_legacy_deep_sign_check.py [--root DIR] [-v]`: round 4 (L-a). Scans every text file under greatdane/ (tests and non-.sh/.py files too; Markdown fenced blocks only) plus taskcluster/config.yml. It flags the deep flag outside a verify-only command (no sign flag in it, so a `--verify` elsewhere in a signing command does not exempt it): line continuations, `$CS --deep`, `DEEP=`/`$DEEP` flag variables, file-local variables expanded (`${F}ep`), any token containing "deep" in a codesign command, eval and `bash -c`/`sh -c` strings parsed as shell, and Python strings folded from `+`, `*`, f-strings and assigned names (`D="--deep"`, `"-"*2+"deep"`, `CS+" --deep"`). It also flags browser.entitlements.plist and legacy script names (sign-only.sh unless it is `$TREE/greatdane/tools/sign-only.sh`, including via a variable, a glob or a fake path; build-universal.sh; notarize.sh without --submit-existing). YAML is checked with or without PyYAML: `deep: true` behind anchors, aliases or tags, plain and block-scalar `run:` values as shell, and no comment can hide a hit. Markdown fenced and indented code blocks are checked (round 4c L2). There is no waiver (round 4c L1): the `nolegacy:` comment mechanism is removed, and the selftest builds its must-not-match regex at runtime instead. sign_dane_macos_selftest.py runs it on this tree (L0: PASS with 0 hits and no waivers) and on fixtures (L1-L45; L21 checks that a `nolegacy:` comment no longer waives anything).
+ - `locale_branding_check.py`: source-level check (no build) that `generate_ini.py` overrides `MozillaMaintenanceDescription` for every locale in all-locales and shipped-locales (fixtures for de, fr, ja, zh-CN, en-GB, ar, plus synthetic leftover/missing-key cases; official Firefox wording is left alone), and that the proposed About attribution lives in greatdane brand.ftl, is shipped to every locale via locales/jar.mn, and is wired from aboutDialog.xhtml when MOZ_OFFICIAL_BRANDING is not set.
++- `wordmark_branding_check.py`: source-level check (no build) that greatdane about-wordmark.svg is a plain-text Dane wordmark (context-fill, navy #13254A fallback, transparent ground, no official Firefox path-logo), that content/jar.mn aliases firefox-wordmark.svg to it and overrides window-firefox.svg to greatdane-icon.svg, that official branding is untouched, and that WORDMARK-SOURCES.md documents the stock leftovers that were not swapped.
+diff --git a/greatdane/tests/wordmark_branding_check.py b/greatdane/tests/wordmark_branding_check.py
+new file mode 100644
+index 0000000000..758a8cad40
+--- /dev/null
++++ b/greatdane/tests/wordmark_branding_check.py
+@@ -0,0 +1,206 @@
++#!/usr/bin/env python3
++"""Source-level check that Dane branding does not ship a Firefox wordmark.
++
++Run from the source tree root:
++  python3 greatdane/tests/wordmark_branding_check.py
++
++No build, no signing, no network. Exit 0 on pass, 1 on any failure.
++"""
++from __future__ import annotations
++
++import os
++import re
++import sys
++
++ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
++
++ABOUT_WM = os.path.join(ROOT, "browser/branding/greatdane/content/about-wordmark.svg")
++FIREFOX_WM = os.path.join(ROOT, "browser/branding/greatdane/content/firefox-wordmark.svg")
++JAR = os.path.join(ROOT, "browser/branding/greatdane/content/jar.mn")
++INVENTORY = os.path.join(ROOT, "greatdane/WORDMARK-SOURCES.md")
++OFFICIAL_WM = os.path.join(ROOT, "browser/branding/official/content/firefox-wordmark.svg")
++
++# Fragment of the official Firefox path-logo (must not appear in Dane wordmarks).
++OFFICIAL_PATH_FRAG = "M0 0h52.89"
++NAVY = "#13254A"
++
++STOCK_WORDMARK_URL = "chrome://branding/content/firefox-wordmark.svg"
++ABOUT_WORDMARK_URL = "chrome://branding/content/about-wordmark.svg"
++
++STOCK_CSS = (
++    "browser/extensions/newtab/content-src/components/Logo/_Logo.scss",
++    "browser/extensions/newtab/css/activity-stream.css",
++    "browser/extensions/newtab/css/nova/activity-stream.css",
++    "browser/themes/shared/privatebrowsing/aboutPrivateBrowsing.css",
++)
++ABOUT_CSS = "browser/base/content/aboutDialog.css"
++
++DOCUMENTED_LEFTOVERS = (
++    "chrome://newtab/content/data/content/assets/firefox.svg",
++    "firefox-mascot-prop-paintbucket-rgb.svg",
++    "firefox-motion-head-pop-up-no-bg.svg",
++    "firefox-wallpaper-desktop-hills-light-rgb.svg",
++    "chrome://global/content/ml/mozilla-logo.webp",
++)
++
++
++def fail(msg, bad):
++    print("FAIL " + msg)
++    bad.append(msg)
++
++
++def pass_(msg):
++    print("PASS " + msg)
++
++
++def read(path):
++    with open(path, encoding="utf-8") as f:
++        return f.read()
++
++
++def check_wordmark_svg(path, label, bad):
++    if not os.path.isfile(path):
++        fail("%s is missing (%s)" % (label, path), bad)
++        return
++    text = read(path)
++    if OFFICIAL_PATH_FRAG in text or "h52.89v11.95" in text:
++        fail("%s still contains the official Firefox path-logo" % label, bad)
++    if re.search(r"<path[\s>]", text):
++        fail("%s should be a text wordmark, but contains a <path>" % label, bad)
++    if not re.search(r">Dane</text>", text):
++        fail("%s does not contain a plain-text 'Dane' element" % label, bad)
++    if "context-fill" not in text:
++        fail("%s is missing context-fill (stock CSS sets fill via context properties)" % label, bad)
++    # Navy fallback, case-insensitive, allow with or without the hash on a separate fill.
++    if NAVY.lower() not in text.lower() and NAVY in text:
++        pass_("%s has navy fallback" % label)
++    elif NAVY.lower() not in text.lower():
++        fail("%s is missing the navy fallback %s" % (label, NAVY), bad)
++    else:
++        pass_("%s is a plain-text Dane wordmark with context-fill and navy fallback %s" % (label, NAVY))
++    # Transparent ground: no full-canvas rect / background fill other than text.
++    if re.search(r"<rect[^>]*fill=", text, re.I):
++        fail("%s has a filled rect (wordmark should be on transparent ground)" % label, bad)
++    else:
++        pass_("%s has no background rect (transparent ground)" % label)
++
++
++def check_jar(bad):
++    if not os.path.isfile(JAR):
++        fail("greatdane content/jar.mn is missing", bad)
++        return
++    text = read(JAR)
++    # Alias: firefox-wordmark.svg maps to about-wordmark.svg
++    alias = re.search(
++        r"content/branding/firefox-wordmark\.svg\s+\(about-wordmark\.svg\)",
++        text,
++    )
++    if not alias:
++        fail("jar.mn does not alias firefox-wordmark.svg to about-wordmark.svg", bad)
++    else:
++        pass_("jar.mn aliases content/branding/firefox-wordmark.svg to about-wordmark.svg")
++    if "content/branding/about-wordmark.svg" not in text:
++        fail("jar.mn does not ship about-wordmark.svg", bad)
++    else:
++        pass_("jar.mn ships about-wordmark.svg")
++    if "% override chrome://browser/skin/window-firefox.svg chrome://branding/content/greatdane-icon.svg" not in text:
++        fail("jar.mn is missing the window-firefox.svg override to greatdane-icon.svg", bad)
++    else:
++        pass_("jar.mn overrides chrome://browser/skin/window-firefox.svg to greatdane-icon.svg")
++    if "% override chrome://browser/skin/sidebar/firefox.svg chrome://branding/content/greatdane-icon.svg" not in text:
++        fail("jar.mn lost the existing sidebar/firefox.svg override", bad)
++    else:
++        pass_("jar.mn keeps the existing sidebar/firefox.svg override")
++    # Must not override official branding files or disable packs.
++    if "browser/branding/official" in text:
++        fail("jar.mn unexpectedly mentions official branding", bad)
++
++
++def check_no_duplicate_file(bad):
++    if os.path.isfile(FIREFOX_WM):
++        # Allowed only if it is byte-identical to about-wordmark.svg.
++        about = open(ABOUT_WM, "rb").read()
++        other = open(FIREFOX_WM, "rb").read()
++        if about != other:
++            fail("firefox-wordmark.svg exists and differs from about-wordmark.svg; it should be an alias only", bad)
++        else:
++            pass_("firefox-wordmark.svg is a byte-identical copy of about-wordmark.svg")
++    else:
++        pass_("no separate firefox-wordmark.svg file (chrome URL is the jar.mn alias)")
++
++
++def check_official_untouched(bad):
++    if not os.path.isfile(OFFICIAL_WM):
++        pass_("official firefox-wordmark.svg is not in this tree (snapshot); official branding was not imported or changed")
++        return
++    text = read(OFFICIAL_WM)
++    if OFFICIAL_PATH_FRAG not in text:
++        fail("official firefox-wordmark.svg no longer looks like the upstream Firefox wordmark", bad)
++    else:
++        pass_("official firefox-wordmark.svg is still the upstream Firefox path-logo")
++
++
++def check_stock_css_untouched(bad):
++    found = 0
++    for rel in STOCK_CSS:
++        path = os.path.join(ROOT, rel)
++        if not os.path.isfile(path):
++            continue
++        found += 1
++        text = read(path)
++        if STOCK_WORDMARK_URL not in text:
++            fail("%s no longer references %s" % (rel, STOCK_WORDMARK_URL), bad)
++        else:
++            pass_("%s still loads %s (stock file not rewritten)" % (rel, STOCK_WORDMARK_URL))
++    if found == 0:
++        pass_("stock new-tab / private-browsing CSS not in this snapshot; expected URL is %s" % STOCK_WORDMARK_URL)
++    about = os.path.join(ROOT, ABOUT_CSS)
++    if os.path.isfile(about):
++        text = read(about)
++        if ABOUT_WORDMARK_URL not in text:
++            fail("aboutDialog.css no longer references %s" % ABOUT_WORDMARK_URL, bad)
++        else:
++            pass_("aboutDialog.css still loads %s" % ABOUT_WORDMARK_URL)
++    else:
++        pass_("aboutDialog.css not in this snapshot; expected URL is %s" % ABOUT_WORDMARK_URL)
++
++
++def check_inventory(bad):
++    if not os.path.isfile(INVENTORY):
++        fail("greatdane/WORDMARK-SOURCES.md is missing", bad)
++        return
++    text = read(INVENTORY)
++    missing = [item for item in DOCUMENTED_LEFTOVERS if item not in text]
++    if missing:
++        fail("WORDMARK-SOURCES.md does not document leftover(s): " + ", ".join(missing), bad)
++    else:
++        pass_("WORDMARK-SOURCES.md documents the stock leftovers that were not swapped")
++    if "not a trademark clearance" not in text.lower() and "Not a trademark clearance" not in text:
++        # the file says "This is not a trademark clearance."
++        if "trademark clearance" not in text.lower():
++            fail("WORDMARK-SOURCES.md should state this is not a trademark clearance", bad)
++        else:
++            pass_("WORDMARK-SOURCES.md states this is not a trademark clearance")
++    else:
++        pass_("WORDMARK-SOURCES.md states this is not a trademark clearance")
++
++
++def main():
++    bad = []
++    print("wordmark_branding_check: root %s" % ROOT)
++    check_wordmark_svg(ABOUT_WM, "about-wordmark.svg", bad)
++    check_no_duplicate_file(bad)
++    check_jar(bad)
++    check_official_untouched(bad)
++    check_stock_css_untouched(bad)
++    check_inventory(bad)
++    print()
++    if bad:
++        print("%d FAIL(s)" % len(bad))
++        return 1
++    print("ALL PASS")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
