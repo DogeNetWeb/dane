@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 17:23:06 -0600
+Subject: [PATCH 112/144] GreatDANE: PrivacyInfo comment states the reduced
+ logged path (round 4c M1)
+
+PrivacyInfo.xcprivacy:11-12 said the server log keeps "the path", which contradicted the ruling text at
+:17-18: only product, version, platform and channel are logged, and build ID and locale are not. It now
+says the log keeps a reduced path (product, version, platform, channel; build ID and locale replaced
+with '-'), the status, the user agent and a masked IP (/24 IPv4, /48 IPv6) for about 14 days.
+
+PRIVACY-MANIFEST.md has no "keeps the path" wording. Its update-check text already says the log keeps
+only product, version, platform and channel plus status, user agent and masked IP, so it is unchanged.
+Only the XML comment changes; the plist data is unchanged.
+---
+ greatdane/macos/PrivacyInfo.xcprivacy | 5 +++--
+ 1 file changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/greatdane/macos/PrivacyInfo.xcprivacy b/greatdane/macos/PrivacyInfo.xcprivacy
+index 2ac59bd559..46eae8649a 100644
+--- a/greatdane/macos/PrivacyInfo.xcprivacy
++++ b/greatdane/macos/PrivacyInfo.xcprivacy
+@@ -8,8 +8,9 @@
+ 
+   Tracking: none. No tracking domains. Dane ships no ad or analytics SDKs.
+   Dane update check: declared under OtherDiagnosticData (not linked, not tracking; used for app
+-  functionality only). Requests go to https://pepecoin.surf/dane/update/...; the server log keeps the
+-  path, user agent and a masked IP (/24 IPv4, /48 IPv6) for about 14 days. For the Dane update check the
++  functionality only). Requests go to https://pepecoin.surf/dane/update/...; the server log keeps a
++  reduced path (product, version, platform, channel; build ID and locale replaced with '-'), status,
++  user agent and a masked IP (/24 IPv4, /48 IPv6) for about 14 days. For the Dane update check the
+   purpose is AppFunctionality only; the entry also carries Analytics because of Mozilla's opt-in
+   telemetry. Ruling text:
+     The automatic update check sends product, version, build ID, target, locale and channel to Dane's

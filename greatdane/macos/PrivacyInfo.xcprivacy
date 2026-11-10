@@ -8,8 +8,9 @@
 
   Tracking: none. No tracking domains. Dane ships no ad or analytics SDKs.
   Dane update check: declared under OtherDiagnosticData (not linked, not tracking; used for app
-  functionality only). Requests go to https://pepecoin.surf/dane/update/...; the server log keeps the
-  path, user agent and a masked IP (/24 IPv4, /48 IPv6) for about 14 days. For the Dane update check the
+  functionality only). Requests go to https://pepecoin.surf/dane/update/...; the server log keeps a
+  reduced path (product, version, platform, channel; build ID and locale replaced with '-'), status,
+  user agent and a masked IP (/24 IPv4, /48 IPv6) for about 14 days. For the Dane update check the
   purpose is AppFunctionality only; the entry also carries Analytics because of Mozilla's opt-in
   telemetry. Ruling text:
     The automatic update check sends product, version, build ID, target, locale and channel to Dane's
