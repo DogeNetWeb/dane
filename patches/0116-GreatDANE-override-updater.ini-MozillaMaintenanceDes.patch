@@ -1,0 +1,111 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 17:47:25 -0600
+Subject: [PATCH 116/144] GreatDANE: override updater.ini
+ MozillaMaintenanceDescription for every locale (round 4d)
+
+en-US already uses %MOZ_APP_DISPLAYNAME% (f7640e8). Other shipped locales still hardcode
+"Mozilla Firefox" / "Firefox" in MozillaMaintenanceDescription; TitleText and InfoText
+already use the placeholder. Hand-editing l10n is not viable: those files live in the
+l10n checkout, not this tree.
+
+generate_ini.py now replaces (or, if missing, appends) that one key's value with the same
+branded English wording as en-US, for every locale, whenever MOZ_APP_DISPLAYNAME is not
+Firefox / Mozilla Firefox. The key name is unchanged (serviceinstall.cpp). Official
+Firefox builds keep the localized wording. TitleText and InfoText stay localized.
+
+Prepared only. Not built, signed, notarized or published.
+---
+ browser/locales/generate_ini.py | 72 +++++++++++++++++++++++++++++----
+ 1 file changed, 65 insertions(+), 7 deletions(-)
+
+diff --git a/browser/locales/generate_ini.py b/browser/locales/generate_ini.py
+index eddeed012b..6ca2e8f6bf 100644
+--- a/browser/locales/generate_ini.py
++++ b/browser/locales/generate_ini.py
+@@ -9,20 +9,78 @@ import codecs
+ import re
+ import shutil
+ 
+-import buildconfig
+ 
++# Official Firefox keeps each locale's Mozilla Firefox maintenance-service wording.
++# Rebranded display names (Dane) get one build-time override so every locale is covered,
++# not just en-US. The key name stays MozillaMaintenanceDescription (serviceinstall.cpp).
++OFFICIAL_DISPLAY_NAMES = frozenset({"Firefox", "Mozilla Firefox"})
++MAINT_KEY = "MozillaMaintenanceDescription"
++BRANDED_MAINT_TEMPLATE = (
++    "The %MOZ_APP_DISPLAYNAME% Maintenance Service ensures that you have the "
++    "latest and most secure version of %MOZ_APP_DISPLAYNAME% on your computer. "
++    "Keeping %MOZ_APP_DISPLAYNAME% up to date is very important for your online "
++    "security, so we strongly recommend that you keep this service enabled."
++)
++_MAINT_LINE_RE = re.compile(r"^" + re.escape(MAINT_KEY) + r"=.*$", re.MULTILINE)
+ 
+-def main(output, ini, ini_append=None, locale=None):
++
++def should_override_maintenance_description(display_name):
++    return display_name not in OFFICIAL_DISPLAY_NAMES
++
++
++def branded_maintenance_description(display_name):
++    return BRANDED_MAINT_TEMPLATE.replace("%MOZ_APP_DISPLAYNAME%", display_name)
++
++
++def newline_of(text):
++    if "\r\n" in text:
++        return "\r\n"
++    return "\n"
++
++
++def apply_maintenance_description_override(text, display_name):
++    """Replace or append MozillaMaintenanceDescription for a rebranded display name."""
++    if not should_override_maintenance_description(display_name):
++        return text
++    nl = newline_of(text)
++    new_line = MAINT_KEY + "=" + branded_maintenance_description(display_name)
++    if _MAINT_LINE_RE.search(text):
++        return _MAINT_LINE_RE.sub(new_line, text, count=1)
++    out = text
++    if out and not out.endswith(("\n", "\r")):
++        out += nl
++    return out + new_line + nl
++
++
++def _display_name(substs=None):
++    if substs is not None:
++        return substs["MOZ_APP_DISPLAYNAME"]
++    import buildconfig
++
++    return buildconfig.substs["MOZ_APP_DISPLAYNAME"]
++
++
++def _is_windows(substs=None):
++    if substs is not None:
++        return substs.get("OS_TARGET") == "WINNT"
++    import buildconfig
++
++    return buildconfig.substs["OS_TARGET"] == "WINNT"
++
++
++def main(output, ini, ini_append=None, locale=None, substs=None):
++    display_name = _display_name(substs)
+     fixup_re = re.compile("^(Info|Title)Text=")
++    chunks = []
+     # Input INI is always utf-8.
+     with codecs.open(ini, "rb", "utf_8") as f:
+         for line in f:
+             fixed_line = fixup_re.sub(r"\1=", line)
+-            fixed_line = fixed_line.replace(
+-                "%MOZ_APP_DISPLAYNAME%", buildconfig.substs["MOZ_APP_DISPLAYNAME"]
+-            )
+-            output.write(fixed_line)
+-    if ini_append and buildconfig.substs["OS_TARGET"] == "WINNT":
++            fixed_line = fixed_line.replace("%MOZ_APP_DISPLAYNAME%", display_name)
++            chunks.append(fixed_line)
++    text = apply_maintenance_description_override("".join(chunks), display_name)
++    output.write(text)
++    if ini_append and _is_windows(substs):
+         # Also append the contents of `ini_append`.
+         with codecs.open(ini_append, "rb", "utf_8") as f:
+             shutil.copyfileobj(f, output)
