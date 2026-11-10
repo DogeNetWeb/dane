@@ -1,0 +1,82 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 16:27:23 -0600
+Subject: [PATCH 099/144] GreatDANE: in-tree guard against the retired legacy
+ --deep signing paths (steering round 3)
+
+There are no in-tree copies of the legacy $G/sign-only.sh, build-universal.sh or notarize.sh: not in the
+ESR153 source tree and not on this branch. The only in-tree signing entry points are
+greatdane/tools/sign-only.sh (it refuses any argument, so there are no legacy modes) and
+sign_dane_macos.py, which is called by finish-universal.sh.
+
+greatdane/tests/no_legacy_deep_sign_check.py fails if any greatdane/ script (tests excluded):
+- signs with codesign --deep (verify --deep is allowed);
+- references the blanket browser.entitlements.plist;
+- calls $G/sign-only.sh, $G/build-universal.sh or $G/notarize.sh.
+It also fails if taskcluster/config.yml has a mac-signing group with `deep: true`, so `mach macos-sign` can
+never deep-sign; all 11 groups are deep: false. PASS on this branch. A negative self-check (planted
+script) gives 3 hits.
+
+The live Mac scripts are NOT touched. The retirement plan and shims for them are delivered as files
+outside the tree (round3 artifacts).
+---
+ greatdane/tests/README.md                    |  1 +
+ greatdane/tests/no_legacy_deep_sign_check.py | 40 ++++++++++++++++++++
+ 2 files changed, 41 insertions(+)
+ create mode 100644 greatdane/tests/no_legacy_deep_sign_check.py
+
+diff --git a/greatdane/tests/README.md b/greatdane/tests/README.md
+index 0e0409aceb..4bf1646fa6 100644
+--- a/greatdane/tests/README.md
++++ b/greatdane/tests/README.md
+@@ -19,3 +19,4 @@ sign_dane_macos_selftest.py: `python3 greatdane/tests/sign_dane_macos_selftest.p
+ 
+ - `tippytop_default_sites_check.py`: every default.sites host has a bundled tippytop icon (run from tree root).
+ - `sign_only_selftest.py`: sign-only.sh with stub tools + mock codesign (DANE_ARCH allowlist, dmg refusal, realpath owner guards, ad-hoc and Developer ID runs). No real signing.
++- `no_legacy_deep_sign_check.py`: no in-tree script signs with `--deep`, uses browser.entitlements.plist, or calls the out-of-tree legacy scripts; no `deep: true` in taskcluster/config.yml.
+diff --git a/greatdane/tests/no_legacy_deep_sign_check.py b/greatdane/tests/no_legacy_deep_sign_check.py
+new file mode 100644
+index 0000000000..03b9817d99
+--- /dev/null
++++ b/greatdane/tests/no_legacy_deep_sign_check.py
+@@ -0,0 +1,40 @@
++#!/usr/bin/env python3
++"""Guard: no in-tree signing path may use the retired legacy mode (codesign --deep to SIGN, or the blanket
++browser.entitlements.plist), or call the out-of-tree $G/sign-only.sh / build-universal.sh / notarize.sh.
++
++Scans greatdane/**/*.sh and *.py (except greatdane/tests) plus taskcluster/config.yml (no `deep: true`).
++`codesign --verify --deep` is allowed (verifying is fine). Run from the tree root; exit 1 on any hit.
++"""
++import os, re, sys
++
++hits = []
++for dp, dns, fns in os.walk("greatdane"):
++    if os.path.normpath(dp).startswith(os.path.join("greatdane", "tests")):
++        continue
++    for fn in fns:
++        if not fn.endswith((".sh", ".py")):
++            continue
++        p = os.path.join(dp, fn)
++        for n, line in enumerate(open(p, encoding="utf-8", errors="replace"), 1):
++            code = line.split("#", 1)[0] if fn.endswith(".sh") else line
++            if fn.endswith(".py") and code.lstrip().startswith("#"):
++                continue
++            if fn.endswith(".sh"):
++                deep = "codesign" in code and "--deep" in code
++            else:  # Python: only an actual "--deep" argument literal, not prose in docstrings
++                deep = bool(re.search(r"""["']--deep["']""", code))
++            if deep and "--verify" not in code:
++                hits.append("%s:%d: codesign --deep used to sign" % (p, n))
++            if "browser.entitlements.plist" in code:
++                hits.append("%s:%d: blanket browser.entitlements.plist" % (p, n))
++            if re.search(r"\$\{?G\}?/(sign-only|build-universal|notarize)\.sh", code):
++                hits.append("%s:%d: calls a legacy out-of-tree script" % (p, n))
++cfg = os.path.join("taskcluster", "config.yml")
++if os.path.isfile(cfg):
++    for n, line in enumerate(open(cfg, encoding="utf-8"), 1):
++        if re.match(r"\s*-?\s*deep:\s*true\b", line):
++            hits.append("%s:%d: mac-signing group with deep: true" % (cfg, n))
++for h in hits:
++    print("FAIL " + h)
++print("legacy-signing check: %s (%d hit%s)" % ("FAIL" if hits else "PASS", len(hits), "" if len(hits) == 1 else "s"))
++sys.exit(1 if hits else 0)

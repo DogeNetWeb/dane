@@ -19,3 +19,4 @@ sign_dane_macos_selftest.py: `python3 greatdane/tests/sign_dane_macos_selftest.p
 
 - `tippytop_default_sites_check.py`: every default.sites host has a bundled tippytop icon (run from tree root).
 - `sign_only_selftest.py`: sign-only.sh with stub tools + mock codesign (DANE_ARCH allowlist, dmg refusal, realpath owner guards, ad-hoc and Developer ID runs). No real signing.
+- `no_legacy_deep_sign_check.py`: no in-tree script signs with `--deep`, uses browser.entitlements.plist, or calls the out-of-tree legacy scripts; no `deep: true` in taskcluster/config.yml.
