@@ -125,7 +125,7 @@ GUARD = os.path.join(TREE, "greatdane", "tests", "no_legacy_deep_sign_check.py")
 # guard when it scans greatdane/tests itself.
 PH = {"@D@": DEEP_FLAG, "@V@": "-" * 2 + "verify", "@SO@": "".join(["sign-", "only.sh"]),
       "@BU@": "".join(["build-", "universal.sh"]), "@NO@": "".join(["notar", "ize.sh"]),
-      "@BEP@": ".".join(["browser", "entitlements", "plist"])}
+      "@BEP@": ".".join(["browser", "entitlements", "plist"]), "@SOG@": "".join(["sign-o", "*.sh"])}
 
 
 def fx(text):
@@ -145,8 +145,8 @@ def guard_tree(root, files):
 def run_guard(name, root, expect_rc, must=(), mustnot=()):
     p = subprocess.run([sys.executable, "-B", GUARD, "--root", root], capture_output=True, text=True)
     out = p.stdout + p.stderr
-    ok = p.returncode == expect_rc and all(re.search(m, out) for m in must) and not any(
-        re.search(m, out) for m in mustnot)
+    ok = p.returncode == expect_rc and all(re.search(fx(m), out) for m in must) and not any(
+        re.search(fx(m), out) for m in mustnot)
     results.append((name, ok, p.returncode, expect_rc))
     print("%s %-62s rc=%d (want %d)" % ("PASS" if ok else "FAIL", name, p.returncode, expect_rc))
     if VERBOSE or not ok:
@@ -162,9 +162,9 @@ def legacy_guard_cases(tmp):
         ("L2 sh wrapper variable $CS @D@", "greatdane/tools/a.sh", 'CS="codesign --force --sign -"\n$CS @D@ a.app\n', r"a\.sh:2: codesign"),
         ("L3 sh flag variable DEEP=@D@ / $DEEP", "greatdane/tools/a.sh", "DEEP=@D@\ncodesign --force $DEEP --sign - a\n", r"(?s)a\.sh:1:.*a\.sh:2:"),
         ("L4 sh verify and sign on one line", "greatdane/tools/a.sh", "codesign @V@ @D@ a; codesign --force @D@ --sign - a\n", r"a\.sh:1: codesign .*--sign"),
-        ("L5 py '+' concatenation", "greatdane/tools/a.py", 'import subprocess\nsubprocess.run(["codesign", "--force", "--de" + "ep", "-s", "-", "a"])\n', r"a\.py:2: --deep in a Python string"),
-        ("L6 py implicit concatenation", "greatdane/tools/a.py", 'cmd = ["codesign", "--de" "ep", "-s", "-", "a"]\n', r"a\.py:1: --deep"),
-        ("L7 py command string", "greatdane/tools/a.py", 'import os\nos.system("codesign --force @D@ --sign - a.app")\n', r"a\.py:2: --deep"),
+        ("L5 py '+' concatenation", "greatdane/tools/a.py", 'import subprocess\nsubprocess.run(["codesign", "--force", "--de" + "ep", "-s", "-", "a"])\n', r"a\.py:2: @D@ in a Python string"),
+        ("L6 py implicit concatenation", "greatdane/tools/a.py", 'cmd = ["codesign", "--de" "ep", "-s", "-", "a"]\n', r"a\.py:1: @D@"),
+        ("L7 py command string", "greatdane/tools/a.py", 'import os\nos.system("codesign --force @D@ --sign - a.app")\n', r"a\.py:2: @D@"),
         ("L8 $G/@SO@", "greatdane/tools/a.sh", "$G/@SO@ arm64\n", r"legacy sign.only\.sh outside greatdane/tools/: \$G/"),
         ("L9 absolute legacy path", "greatdane/tools/a.sh", "/Volumes/Storage/build/greatdane/@SO@\n", r"outside greatdane/tools/: /Volumes"),
         ("L10 relative legacy path", "greatdane/tools/a.sh", "./@SO@\n", r"outside greatdane/tools/: \./"),
@@ -177,6 +177,45 @@ def legacy_guard_cases(tmp):
         ("L17 greatdane/tests is scanned", "greatdane/tests/x.sh", "codesign --force @D@ --sign - a\n", r"tests/x\.sh:1"),
         ("L18 py legacy path in a call", "greatdane/tools/a.py", 'import subprocess\nsubprocess.run(["bash", "/x/greatdane/@SO@"])\n', r"a\.py:2: legacy sign.only"),
         ("L19 blanket entitlements", "greatdane/tools/a.sh", "codesign --force --entitlements @BEP@ --sign - a\n", r"blanket browser"),
+        # --- round 4c L2: guard gaps (one case each) ---
+        ("L22 eval string", "greatdane/tools/a.sh", 'eval "codesign --force @D@ --sign - a"\n', r"a\.sh:1: codesign"),
+        ("L23 bash -c string", "greatdane/tools/a.sh", "bash -c 'codesign --force @D@ -s - a'\n", r"a\.sh:1: codesign"),
+        ("L24 sh -c string with its own flag variable", "greatdane/tools/a.sh", "sh -c 'X=--de; codesign -f ${X}ep -s - a'\n",
+         r"a\.sh:1: codesign"),
+        ("L25 ${F}ep with F assigned in the file", "greatdane/tools/a.sh", "F=--de\ncodesign --force ${F}ep --sign - a\n",
+         r"a\.sh:2: codesign"),
+        ("L26 ${F}ep with F unknown (env)", "greatdane/tools/a.sh", "codesign --force ${F}ep --sign - a\n", r"a\.sh:1: codesign"),
+        ("L27 any deep token in a codesign command", "greatdane/tools/a.sh", "codesign --force -s - a --Deep\n",
+         r"a\.sh:1: codesign"),
+        ("L28 @V@ anywhere in a signing command", "greatdane/tools/a.sh", "codesign --force --sign - @D@ a.app @V@\n",
+         r"a\.sh:1: codesign"),
+        ("L29 py D = '@D@'", "greatdane/tools/a.py", 'import subprocess\nD = "@D@"\nsubprocess.run(["codesign", D, "-s", "-", "a"])\n',
+         r"a\.py:2: @D@ in a Python string"),
+        ("L30 py '-' * 2 + 'deep'", "greatdane/tools/a.py", 'cmd = ["codesign", "-" * 2 + "deep", "-s", "-", "a"]\n',
+         r"a\.py:1: @D@ in a Python string"),
+        ("L31 py f-string from a known prefix", "greatdane/tools/a.py", 'import os\nP = "--"\nos.system(f"codesign {P}deep -s - a")\n',
+         r"a\.py:3: @D@ in a Python string"),
+        ("L32 py f-string with an unknown part", "greatdane/tools/a.py", 'import os, sys\nos.system(f"codesign -f --de{sys.argv[1]} -s - a")\n',
+         r"a\.py:2: @D@ in a Python string"),
+        ("L33 py CS + ' @D@'", "greatdane/tools/a.py", 'import os\nCS = os.environ["CS"]\nos.system(CS + " @D@ -s - a")\n',
+         r"a\.py:3: @D@ in a Python string"),
+        ("L34 YAML alias to an anchored true", "greatdane/ci/a.yml", "t: &t true\nmac:\n  deep: *t\n", r"a\.yml:3: YAML deep: true"),
+        ("L35 YAML anchor on the value", "greatdane/ci/a.yml", "mac:\n  deep: &x yes\n", r"a\.yml:2: YAML deep: true"),
+        ("L36 YAML tag", "greatdane/ci/a.yml", "mac:\n  deep: !!bool true\n", r"a\.yml:2: YAML deep: true"),
+        ("L37 YAML block-scalar run:", "greatdane/ci/a.yml", "steps:\n  - run: |\n      echo hi\n      codesign --force @D@ --sign - a\n",
+         r"a\.yml:4: codesign"),
+        ("L38 YAML plain run: value", "greatdane/ci/a.yml", "steps:\n  - run: codesign --force @D@ --sign - a\n", r"a\.yml:2: codesign"),
+        ("L39 YAML: a comment with deep: true does not hide a real hit", "greatdane/ci/a.yml",
+         "# deep: true (comment)\nv: &v true\nmac:\n  deep: *v\n", r"a\.yml:4: YAML deep: true"),
+        ("L40 quoted # does not end the command", "greatdane/ci/a.yml", 'run: echo " #" && codesign --force @D@ -s - a\n',
+         r"a\.yml:1: codesign"),
+        ("L41 @SO@ through a variable", "greatdane/tools/a.sh", 'S=/x/greatdane/tools/@SO@\nbash "$S"\n',
+         r"a\.sh:2: legacy sign.only\.sh outside greatdane/tools/: /x/greatdane/tools/"),
+        ("L42 @SO@ name built from a variable", "greatdane/tools/a.sh", 'N=sign-only\n"$G/$N.sh"\n', r"a\.sh:2: legacy sign.only"),
+        ("L43 @SO@ through a glob", "greatdane/tools/a.sh", "$TREE/greatdane/tools/@SOG@\n", r"a\.sh:1: legacy sign.only\.sh named through a glob"),
+        ("L44 fake path ending in tools/@SO@", "greatdane/tools/a.sh", "/tmp/evil/greatdane/tools/@SO@\n",
+         r"a\.sh:1: legacy sign.only\.sh outside greatdane/tools/: /tmp/evil"),
+        ("L45 indented Markdown code", "greatdane/DOC.md", "Prose.\n\n    codesign --force @D@ --sign - a\n", r"DOC\.md:3: codesign"),
     ]
     for i, (name, rel, body, must) in enumerate(bad):
         root = guard_tree(os.path.join(tmp, "lg-bad%d" % i), {rel: body})
@@ -188,15 +227,19 @@ def legacy_guard_cases(tmp):
                                  'subprocess.run(["codesign", "@V@", "@D@", "a"])\n'
                                  'p = os.path.join("T", "greatdane", "tools", "@SO@")\n',
         "greatdane/README.md": "The old `$G/@SO@` used `@D@` (prose is fine).\n",
-        "greatdane/ci/ok.yml": "mac:\n  - deep: false\n",
+        "greatdane/ci/ok.yml": "mac:\n  - deep: false\n  - deep: !!bool false\nf: &f no\nm:\n  deep: *f\n"
+                               "steps:\n  - run: |\n      codesign @V@ @D@ --strict a.app\n",
+        "greatdane/tools/ok2.sh": "${TREE}/greatdane/tools/@SO@\nbash greatdane/tools/@SO@\nS=$TREE/greatdane/tools/@SO@\n\"$S\"\n"
+                                  "rm -rf /volumes/*\n",
+        "greatdane/DOC.md": "- item\n\n    - @SO@ deletes only its own stage dir (nested list prose)\n",
     })
-    run_guard("L20 allowed forms (verify, comments, docstring, prose, tools path) PASS", good, 0,
+    run_guard("L20 allowed forms (verify, comments, docstring, prose, $TREE tools path, YAML false) PASS", good, 0,
               [r"legacy-signing check: PASS \(0 hits"])
     waive = guard_tree(os.path.join(tmp, "lg-waive"), {
         "greatdane/tools/w.sh": "codesign --force @D@ --sign - a  # nolegacy: fixture\n",
         "greatdane/tools/w.py": 'import subprocess\nsubprocess.run(["codesign", "@D@", "-s", "-", "a"])  # nolegacy: x\n'})
     run_guard("L21 a nolegacy comment no longer waives anything", waive, 1,
-              [r"w\.sh:1: codesign", r"w\.py:2: --deep", r"legacy-signing check: FAIL \(2 hits"], [r"WAIVED"])
+              [r"w\.sh:1: codesign", r"w\.py:2: @D@", r"legacy-signing check: FAIL \(2 hits"], [r"WAIVED"])
 
 
 def main():

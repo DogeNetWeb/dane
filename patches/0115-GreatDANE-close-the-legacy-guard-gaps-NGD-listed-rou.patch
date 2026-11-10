@@ -1,0 +1,1623 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 17:27:40 -0600
+Subject: [PATCH 115/144] GreatDANE: close the legacy-guard gaps NGD listed
+ (round 4c L2)
+
+no_legacy_deep_sign_check.py:
+
+Shell
+- The deep flag is exempt only in a verify-only command (--verify or -v and no --sign/-s/--force/-f). A
+  --verify anywhere in a signing command no longer exempts it.
+- File-local NAME=value assignments are expanded before checking (TREE is kept symbolic). ${F}ep with
+  F=--de is caught.
+- In a codesign command (including one run through an unresolved $CS wrapper), any token containing
+  "deep" (any case) is flagged. So is an unresolved expansion glued to a fragment of the flag
+  (${F}ep, --de$X).
+- eval strings and bash/sh/zsh/dash/ksh -c strings are parsed as shell and checked strictly.
+- Comment stripping is quote-aware (a " #" inside quotes no longer ends the command).
+
+Python
+- String expressions are folded from constants, +, str*int, f-strings, and names assigned anywhere in
+  the file. That catches D = "--deep", "-" * 2 + "deep", f"{P}deep" and f"--de{x}".
+- CS + " --deep" (unknown parts) is caught.
+- The command-string rule no longer needs "codesign" in the string.
+
+YAML (with or without PyYAML)
+- Anchors (deep: &x yes), tags (deep: !!bool true) and aliases (deep: *t to an anchored scalar) are
+  resolved.
+- Plain and block-scalar values (run: |) are checked with the shell rules. y counts as truthy.
+- The PyYAML pass no longer drops a hit when any line, including a comment, contains "deep: true".
+  Every parsed truthy deep is reported.
+
+Legacy names
+- sign-only.sh is in-tree only as $TREE/greatdane/tools/sign-only.sh, ${TREE}/..., a relative
+  greatdane/tools/sign-only.sh, or this checkout's absolute path.
+- Variables are expanded first. A glob that matches the name (at least 4 literal characters), a fake
+  path that merely ends in .../tools/sign-only.sh, and NAME=path assignments are flagged.
+- Globs are applied to build-universal.sh and notarize*.sh too.
+
+Markdown
+- Indented code blocks (4+ spaces past the list indentation, after a blank line) are checked, as well
+  as fenced blocks. Nested-list prose is not code.
+
+The guard's own D/V/SO/BU constants use str.join, which the folder does not evaluate. The selftest's
+expected-output regexes use the @D@ placeholder through fx().
+
+Selftest:
+- L22-L45 add one case per gap: eval, bash -c, sh -c with its own variable, ${F}ep known and unknown,
+  a "deep" token, --verify in a signing command, D=, "-"*2+"deep", f-string known and unknown,
+  CS+" --deep", YAML alias/anchor/tag/block-scalar/plain run:, a comment that does not hide a hit, a
+  quoted #, sign-only.sh via a variable, a built name, a glob and a fake tools/ path, and indented
+  Markdown code.
+- L20 adds allowed forms: ${TREE} and relative tools paths, $S set to the $TREE path, rm of /volumes/*,
+  YAML deep: false/!!bool false/*f, a verify-only block scalar, and nested-list Markdown prose.
+
+134/134 cases pass, both with and without PyYAML. The tree passes (0 hits).
+---
+ greatdane/tests/README.md                     |   2 +-
+ .../no_legacy_deep_sign_check.cpython-313.pyc | Bin 0 -> 41801 bytes
+ .../sign_dane_macos_selftest.cpython-313.pyc  | Bin 0 -> 45689 bytes
+ greatdane/tests/no_legacy_deep_sign_check.py  | 462 ++++++++++++++----
+ greatdane/tests/sign_dane_macos_selftest.py   |  61 ++-
+ 5 files changed, 429 insertions(+), 96 deletions(-)
+ create mode 100644 greatdane/tests/__pycache__/no_legacy_deep_sign_check.cpython-313.pyc
+ create mode 100644 greatdane/tests/__pycache__/sign_dane_macos_selftest.cpython-313.pyc
+
+diff --git a/greatdane/tests/README.md b/greatdane/tests/README.md
+index ae4fc5b50b..7927bda8bd 100644
+--- a/greatdane/tests/README.md
++++ b/greatdane/tests/README.md
+@@ -19,4 +19,4 @@ sign_dane_macos_selftest.py: `python3 greatdane/tests/sign_dane_macos_selftest.p
+ 
+ - `tippytop_default_sites_check.py`: every default.sites host has a bundled tippytop icon (run from tree root).
+ - `sign_only_selftest.py`: sign-only.sh with stub tools + mock codesign (DANE_ARCH allowlist, dmg refusal, realpath owner guards, ad-hoc and Developer ID runs). No real signing.
+-- `no_legacy_deep_sign_check.py [--root DIR] [-v]`: round 4 (L-a). Scans every text file under greatdane/ (tests and non-.sh/.py files too; Markdown fenced blocks only) plus taskcluster/config.yml. It flags any `--deep` outside a `--verify` command (line continuations, `$CS --deep`, `DEEP=`/`$DEEP` flag variables, verify+sign on one line, Python `+`/implicit string concatenation), browser.entitlements.plist, legacy script names outside greatdane/tools/ (sign-only.sh via $G or any other path, build-universal.sh, notarize.sh without --submit-existing), and YAML `deep: true` (PyYAML if installed, else a line parser). There is no waiver (round 4c L1): the `nolegacy:` comment mechanism is removed, and the selftest builds its must-not-match regex at runtime instead. sign_dane_macos_selftest.py runs it on this tree (L0: PASS with 0 hits and no waivers) and on fixtures (L1-L21; L21 checks that a `nolegacy:` comment no longer waives anything).
++- `no_legacy_deep_sign_check.py [--root DIR] [-v]`: round 4 (L-a). Scans every text file under greatdane/ (tests and non-.sh/.py files too; Markdown fenced blocks only) plus taskcluster/config.yml. It flags the deep flag outside a verify-only command (no sign flag in it, so a `--verify` elsewhere in a signing command does not exempt it): line continuations, `$CS --deep`, `DEEP=`/`$DEEP` flag variables, file-local variables expanded (`${F}ep`), any token containing "deep" in a codesign command, eval and `bash -c`/`sh -c` strings parsed as shell, and Python strings folded from `+`, `*`, f-strings and assigned names (`D="--deep"`, `"-"*2+"deep"`, `CS+" --deep"`). It also flags browser.entitlements.plist and legacy script names (sign-only.sh unless it is `$TREE/greatdane/tools/sign-only.sh`, including via a variable, a glob or a fake path; build-universal.sh; notarize.sh without --submit-existing). YAML is checked with or without PyYAML: `deep: true` behind anchors, aliases or tags, plain and block-scalar `run:` values as shell, and no comment can hide a hit. Markdown fenced and indented code blocks are checked (round 4c L2). There is no waiver (round 4c L1): the `nolegacy:` comment mechanism is removed, and the selftest builds its must-not-match regex at runtime instead. sign_dane_macos_selftest.py runs it on this tree (L0: PASS with 0 hits and no waivers) and on fixtures (L1-L45; L21 checks that a `nolegacy:` comment no longer waives anything).
+diff --git a/greatdane/tests/__pycache__/no_legacy_deep_sign_check.cpython-313.pyc b/greatdane/tests/__pycache__/no_legacy_deep_sign_check.cpython-313.pyc
+new file mode 100644
+index 0000000000000000000000000000000000000000..9754e1ca66a38c30dc7ed0f4a06116014b5b3ba4
+GIT binary patch
+literal 41801
+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
+MEii{_3mAg@zoG-I!~g&Q
+
+literal 0
+HcmV?d00001
+
+diff --git a/greatdane/tests/__pycache__/sign_dane_macos_selftest.cpython-313.pyc b/greatdane/tests/__pycache__/sign_dane_macos_selftest.cpython-313.pyc
+new file mode 100644
+index 0000000000000000000000000000000000000000..967d2e5e080eb17bb6bc8077342e51a2509fc8f1
+GIT binary patch
+literal 45689
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/greatdane/tests/no_legacy_deep_sign_check.py b/greatdane/tests/no_legacy_deep_sign_check.py
+index cd1ee2fcf9..16b4bcec3e 100644
+--- a/greatdane/tests/no_legacy_deep_sign_check.py
++++ b/greatdane/tests/no_legacy_deep_sign_check.py
+@@ -1,51 +1,70 @@
+ #!/usr/bin/env python3
+-"""Guard (round 4, L-a): keep the retired legacy Mac signing mode out of the tree.
++"""Guard (round 4 L-a, round 4c L1/L2): keep the retired legacy Mac signing mode out of the tree.
+ 
+     python3 greatdane/tests/no_legacy_deep_sign_check.py [--root DIR] [-v]      (default root: the tree root)
+ 
+ It flags:
+-  1. Any `--deep` that is not part of a `--verify` command. That covers:
+-     - shell line continuations (joined first);
+-     - wrapper variables (`$CS --deep`, `"$CODESIGN" --deep`);
+-     - flag variables (`DEEP=--deep`, `$DEEP`, `${deep_flag}`);
+-     - one line that both verifies and signs (`codesign --verify --deep a; codesign --deep --sign - b` flags
+-       the second command; commands are split on ; && || | and newlines);
+-     - Python string literals, including implicit and `+` concatenation (`"--de" "ep"`, `"--de" + "ep"`).
+-     In Python, `--deep` is flagged when it is a list or tuple element or a call argument, or a command string
+-     containing codesign, and no string in the same statement contains `--verify`. Comparisons such as
+-     `"--deep" not in line` and docstrings are not commands.
++  1. The deep flag outside a pure verify command. A verify command has --verify (or -v) and no sign flag
++     (--sign/-s/--force/-f). A --verify anywhere in a command that also signs does not exempt it.
++     Shell:
++     - line continuations are joined first. Commands are split on ; && || | ( ) and newlines.
++     - variables assigned in the same file are expanded before checking (`F=--de` ... `${F}ep`).
++     - wrapper and flag variables are flagged: `$CS --deep`, `DEEP=--deep`, `$DEEP`, `${deep_flag}`.
++     - in a codesign command (including one run through an unresolved `$CS` wrapper), ANY token containing
++       "deep" (any case) is flagged. So is a token that glues an unresolved expansion to a fragment of the
++       flag (`${F}ep`, `--de$X`).
++     - eval, and bash/sh/zsh/dash -c strings, are parsed as shell and checked the same strict way.
++     Python (string expressions are folded: constants, `+`, `*`, f-strings, and names assigned to a
++     foldable value anywhere in the file):
++     - `D = "--deep"`, `"-" * 2 + "deep"`, `f"{P}deep"`, `CS + " --deep"`, a list/tuple/call/dict element, or
++       a command string. An expression with unknown parts is flagged when a known part is the flag or glues a
++       fragment of it to an unknown part.
++     - Comparisons (`"--deep" not in line`) and docstrings are not commands.
+   2. The blanket browser.entitlements.plist, in code.
+-  3. A legacy script name outside greatdane/tools/:
+-     - sign-only.sh anywhere other than .../greatdane/tools/sign-only.sh (that covers $G/..., absolute and
+-       relative paths, and a bare call);
+-     - build-universal.sh anywhere;
++  3. A legacy script name:
++     - sign-only.sh unless it is the in-tree one. The in-tree path is `$TREE/greatdane/tools/sign-only.sh` (or
++       `${TREE}/...`), a relative `greatdane/tools/sign-only.sh` (resolved against $TREE), or an absolute path
++       equal to this checkout's greatdane/tools/sign-only.sh. Variables are expanded first (except TREE).
++       A glob that can match the name (`sign-o*.sh`), a bare call, ./ or $G paths, and a fake path that only
++       ends in .../tools/sign-only.sh are all flagged.
++     - build-universal.sh anywhere (also via a glob).
+      - notarize.sh or notarize.next*.sh used without --submit-existing (the legacy re-sign mode).
+      In Python, a bare "sign-only.sh" is accepted only as an os.path.join() part that follows "tools".
+-  4. YAML (*.yml, *.yaml, and taskcluster/config.yml): `deep: true` (also True/yes/on, quoted keys and flow
+-     style), with PyYAML if it is installed and a line parser otherwise. YAML string values are checked with
+-     the shell rules as well.
++  4. YAML (*.yml, *.yaml, and taskcluster/config.yml), with or without PyYAML:
++     - `deep: true` (also True/yes/on/y, quoted keys, flow style);
++     - values behind anchors (`&a true`) or tags (`!!bool true`), and aliases (`deep: *a`) resolved to an
++       anchored scalar;
++     - plain values and block scalars (`run: |`) are checked with the shell rules.
++     With PyYAML, every parsed `deep` truthy value is also reported. No line, comment or other text can
++     suppress a hit.
+ 
+ Scope: every text file under greatdane/ (including greatdane/tests and non-.sh/.py files) plus
+ taskcluster/config.yml. Binary files are skipped.
+ - Shell rules apply to *.sh, files with a shell shebang, and other text files.
+-- In Markdown, only fenced code blocks are checked; prose may name the legacy scripts.
+-- Shell comments are ignored.
++- In Markdown, fenced code blocks and indented code blocks (4+ spaces past any list indentation, after a
++  blank line) are checked; prose may name the legacy scripts.
++- Shell comments are not commands and are skipped (quote-aware).
+ There is no opt-out (round 4c L1): the old `nolegacy:` waiver comment is gone, and a line carrying one is
+ checked like any other. Code that has to name a flag (the selftest's must-not-match regex) builds it at
+-runtime. Exit 1 on any hit.
++runtime. Limits: values the folder cannot evaluate statically (str.join, %, .format, environment input) are
++not resolved. Exit 1 on any hit.
+ """
+-import ast, os, re, shlex, sys
++import ast, fnmatch, os, re, shlex, sys
+ 
+ ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+ if "--root" in sys.argv:
+     ROOT = os.path.abspath(sys.argv[sys.argv.index("--root") + 1])
+ VERBOSE = "-v" in sys.argv
+-D = "-" * 2 + "deep"          # built at runtime so this file's own literals are not commands
+-V = "-" * 2 + "verify"
+-# Names joined at runtime so this file's own literals never look like calls.
+-SO, BU, NO = "".join(["sign-", "only.sh"]), "".join(["build-", "universal.sh"]), "".join(["notar", "ize"])
++# Built with str.join (which the folder does not evaluate), so this file's own constants are not commands.
++D = "".join(["-", "-", "de", "ep"])
++V = "".join(["-", "-", "ver", "ify"])
++SO, BU = "".join(["sign-", "only.sh"]), "".join(["build-", "universal.sh"])
++NO = "".join(["notar", "ize"])
+ BEP = ".".join(["browser", "entitlements", "plist"])
+ NOTE = "legacy %s.sh mode (no --submit-existing)" % NO
++SIGN_FLAGS = ("--sign", "-s", "--force", "-f")
++UNK = "\x00"                                   # stands for a part whose value is unknown
++SHELLS = ("bash", "sh", "zsh", "dash", "ksh")
+ hits = []
+ 
+ 
+@@ -53,29 +72,82 @@ def hit(path, n, msg, line=""):
+     hits.append("%s:%d: %s" % (os.path.relpath(path, ROOT), n, msg))
+ 
+ 
++def is_fragment(rem):
++    """A literal piece that, glued to an unknown part, could complete the deep flag."""
++    rem = rem.lower()
++    return len(rem) >= 2 and rem not in ("--",) and (D.startswith(rem) or D.endswith(rem)) and rem != D
++
++
++def glued_fragment(tok):
++    """True if tok contains an unknown part (UNK or an unresolved $X) next to a fragment of the flag."""
++    parts = re.split(UNK + r"|\$\{[^}]*\}|\$\w+", tok)
++    if len(parts) < 2:
++        return False
++    return any(is_fragment(p) for p in parts if p)
++
++
++def verify_only(toks):
++    return any(t in (V, "-v") or t.startswith(V + "=") for t in toks) and not any(
++        t in SIGN_FLAGS or t.startswith("--sign=") for t in toks)
++
++
++def deep_tok(t):
++    return t == D or t.lower().startswith(D + "=") or bool(re.fullmatch(r"\w+=" + re.escape(D), t))
++
++
++# ---------------------------------------------------------------- legacy script names
++def in_tree_so(t):
++    for pre in ("$TREE/", "${TREE}/"):
++        if t.startswith(pre):
++            return os.path.normpath(t[len(pre):]) == os.path.join("greatdane", "tools", SO)
++    if "$" in t or UNK in t:
++        return False
++    if os.path.isabs(t):
++        return os.path.normpath(t) == os.path.join(ROOT, "greatdane", "tools", SO)
++    return "/" in t and not t.startswith("./") and os.path.normpath(t) == os.path.join("greatdane", "tools", SO)
++
++
++def glob_names(base, name):
++    """base is a glob (*, ?, [..]) that can match name and has at least 4 literal characters besides .sh."""
++    if not any(c in base for c in "*?["):
++        return False
++    lit = re.sub(r"\[[^\]]*\]|[*?]", "", base)
++    lit = lit[:-3] if lit.endswith(".sh") else lit
++    return len(lit) >= 4 and fnmatch.fnmatchcase(name, base)
++
++
+ def legacy_name(tok):
+-    """Reason string if a single token/path names a legacy script outside greatdane/tools/, else None."""
++    """Reason string if a single token/path names a legacy script outside the in-tree tools, else None."""
+     t = tok.strip().strip("'\"")
+-    if re.fullmatch(r"(?:.*/)?" + re.escape(SO), t):
+-        if not re.search(r"(^|/)greatdane/tools/" + re.escape(SO) + "$", t):
+-            return "legacy %s outside greatdane/tools/: %s" % (SO, t)
+-    if re.fullmatch(r"(?:.*/)?" + re.escape(BU), t):
++    m = re.match(r"^\w+=(.*)$", t)
++    if m:
++        t = m.group(1)
++    base = t.rstrip("/").rsplit("/", 1)[-1]
++    if base == BU or glob_names(base, BU):
+         return "legacy %s: %s" % (BU, t)
++    if base == SO or glob_names(base, SO):
++        if base != SO:
++            return "legacy %s named through a glob: %s" % (SO, t)
++        if not in_tree_so(t):
++            return "legacy %s outside greatdane/tools/: %s (in-tree is $TREE/greatdane/tools/%s)" % (SO, t, SO)
+     return None
+ 
+ 
+ def notarize_tok(tok):
+-    return re.fullmatch(r"(?:.*/)?" + NO + r"(?:\.next[\w.-]*)?\.sh", tok.strip().strip("'\"")) is not None
++    t = tok.strip().strip("'\"")
++    base = t.rsplit("/", 1)[-1]
++    if re.fullmatch(NO + r"(?:\.next[\w.-]*)?\.sh", base):
++        return True
++    return glob_names(base, NO + ".sh") or glob_names(base, NO + ".next.sh")
+ 
+ 
++# ---------------------------------------------------------------- shell
+ def strip_sh_comment(line):
+     out, q = [], None
+     for i, c in enumerate(line):
+         if q:
+-            if c == q:
++            if c == q and not (q == '"' and i > 0 and line[i - 1] == "\\"):
+                 q = None
+-            elif c == "\\" and q == '"':
+-                pass
+         elif c in "'\"":
+             q = c
+         elif c == "#" and (i == 0 or line[i - 1] in " \t;&|("):
+@@ -84,8 +156,18 @@ def strip_sh_comment(line):
+     return "".join(out)
+ 
+ 
++def split_words(buf):
++    try:
++        lx = shlex.shlex(buf, posix=True, punctuation_chars=";&|()")
++        lx.whitespace_split = True
++        lx.commenters = ""
++        return list(lx)
++    except ValueError:
++        return buf.split()
++
++
+ def sh_segments(text):
+-    """Yield (start_line, segment_tokens) for each simple command; continuations joined, comments stripped."""
++    """Yield (start_line, segment_tokens, raw_line) per simple command; continuations joined, comments stripped."""
+     lines = text.split("\n")
+     i = 0
+     while i < len(lines):
+@@ -94,15 +176,8 @@ def sh_segments(text):
+             i += 1
+             buf = buf.rstrip()[:-1] + " " + strip_sh_comment(lines[i])
+         i += 1
+-        try:
+-            lx = shlex.shlex(buf, posix=True, punctuation_chars=";&|()")
+-            lx.whitespace_split = True
+-            lx.commenters = ""
+-            toks = list(lx)
+-        except ValueError:
+-            toks = buf.split()
+         seg = []
+-        for t in toks + [";"]:
++        for t in split_words(buf) + [";"]:
+             if t and set(t) <= set(";&|()"):
+                 if seg:
+                     yield start, seg, lines[start - 1]
+@@ -111,32 +186,127 @@ def sh_segments(text):
+                 seg.append(t)
+ 
+ 
+-def check_shell_text(path, text, base_line=0):
++def sh_vars(text):
++    """NAME=value assignments in a shell text (last one wins); values are kept unexpanded."""
++    out = {}
++    for _, seg, _ in sh_segments(text):
++        for t in seg:
++            m = re.fullmatch(r"(\w+)=(.*)", t, re.S)
++            if m and m.group(1) not in ("TREE",):
++                out[m.group(1)] = m.group(2)
++            elif t in ("export", "local", "readonly", "declare") or m:
++                continue
++            else:
++                break
++    return out
++
++
++def expand(tok, env, depth=0):
++    """Expand $NAME / ${NAME} / ${NAME:-x} from env; TREE and unknown names are left as written."""
++    if depth > 6 or "$" not in tok:
++        return tok
++
++    def sub(m):
++        name = m.group(1) or m.group(2)
++        if name == "TREE" or name not in env:
++            return m.group(0)
++        return expand(env[name], env, depth + 1)
++    return re.sub(r"\$\{(\w+)(?::?[-=+?][^}]*)?\}|\$(\w+)", sub, tok)
++
++
++def command_word(toks):
++    k = 0
++    while k < len(toks) and (re.fullmatch(r"\w+=.*", toks[k], re.S) or toks[k] in (
++            "env", "sudo", "command", "exec", "time", "nohup", "xcrun", "builtin")):
++        k += 1
++    return k
++
++
++def check_shell_text(path, text, base_line=0, strict=False, env=None, depth=0):
++    """strict: every command is treated like a codesign command (used for eval and sh -c strings)."""
++    env = dict(env or {})
++    env.update(sh_vars(text))
+     for n, seg, raw in sh_segments(text):
+         n += base_line
+-        verify = any(t == V or t.startswith(V + "=") for t in seg)
+-        deepvar = any(re.search(r"\$\{?\w*deep\w*\}?", t, re.I) for t in seg)
+-        if not verify and (D in seg or any(re.fullmatch(r"\w+=" + D, t) for t in seg) or deepvar):
+-            hit(path, n, "codesign %s (or a deep flag variable) used outside --verify: %s" % (D, " ".join(seg)[:120]), raw)
+-        if any(BEP in t for t in seg):
+-            hit(path, n, "blanket " + BEP, raw)
++        ex = []
+         for t in seg:
++            e = expand(t, env)
++            # an unquoted expansion word-splits; a value with spaces (CS="codesign --force") becomes words
++            ex += e.split() if (e != t and re.fullmatch(r"\$\{?\w+\}?", t)) else [e]
++        k = command_word(ex)
++        cmd = ex[k] if k < len(ex) else ""
++        args = ex[k + 1:]
++        base = os.path.basename(cmd)
++        codesign = strict or base == "codesign" or (cmd.startswith("$") and k < len(ex))
++        verify = verify_only(ex)
++        if not verify:
++            deep = any(deep_tok(t) for t in ex)
++            deepvar = any(re.search(r"\$\{?\w*deep\w*", t, re.I) for t in seg)
++            if codesign:
++                deep = deep or any("deep" in t.lower() or glued_fragment(t) for t in ex[k:])
++            if deep or deepvar:
++                hit(path, n, "codesign %s (or a deep flag variable/fragment) used outside a verify-only command: %s"
++                    % (D, " ".join(seg)[:120]), raw)
++        if any(BEP in t for t in ex):
++            hit(path, n, "blanket " + BEP, raw)
++        for t in ex:
+             why = legacy_name(t)
+             if why:
+                 hit(path, n, why, raw)
+-        if any(notarize_tok(t) for t in seg) and "--submit-existing" not in seg:
++        if any(notarize_tok(t) for t in ex) and "--submit-existing" not in ex:
+             hit(path, n, NOTE, raw)
+-
+-
+-def fold(node):
+-    """Value of a str constant or a +-concatenation of str constants, else None."""
++        # eval / sh -c: the string is shell, checked strictly
++        inner = None
++        if base == "eval":
++            inner = " ".join(args)
++        elif base in SHELLS:
++            for j, a in enumerate(args):
++                if re.fullmatch(r"-[a-z]*c[a-z]*", a) and j + 1 < len(args):
++                    inner = args[j + 1]
++                    break
++        if inner is not None and depth < 4:
++            check_shell_text(path, inner, base_line=n - 1, strict=True, env=env, depth=depth + 1)
++
++
++# ---------------------------------------------------------------- Python
++def fold(node, env, partial=False):
++    """String value of a constant-ish expression. With partial=True, unknown parts become UNK."""
+     if isinstance(node, ast.Constant) and isinstance(node.value, str):
+         return node.value
++    if isinstance(node, ast.Name):
++        if node.id in env:
++            return env[node.id]
++        return UNK if partial else None
+     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+-        a, b = fold(node.left), fold(node.right)
++        a, b = fold(node.left, env, partial), fold(node.right, env, partial)
+         if a is not None and b is not None:
+             return a + b
+-    return None
++        return None
++    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
++        for s_, n_ in ((node.left, node.right), (node.right, node.left)):
++            sv = fold(s_, env, partial) if not (isinstance(s_, ast.Constant) and isinstance(s_.value, int)) else None
++            if sv is not None:
++                if isinstance(n_, ast.Constant) and isinstance(n_.value, int) and 0 <= n_.value <= 64:
++                    return sv * n_.value
++                return (sv + UNK) if partial else None
++        return None
++    if isinstance(node, ast.JoinedStr):
++        out = []
++        for v in node.values:
++            if isinstance(v, ast.Constant):
++                out.append(str(v.value))
++            elif isinstance(v, ast.FormattedValue):
++                x = fold(v.value, env, partial)
++                if x is None:
++                    if not partial:
++                        return None
++                    x = UNK
++                out.append(x)
++        return "".join(out)
++    return UNK if partial and isinstance(node, (ast.Attribute, ast.Subscript, ast.Call)) else None
++
++
++STRINGY = (ast.Constant, ast.BinOp, ast.JoinedStr)
+ 
+ 
+ def check_python(path, text):
+@@ -153,8 +323,24 @@ def check_python(path, text):
+     docs = set()
+     for p in ast.walk(tree):
+         if isinstance(p, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and p.body \
+-                and isinstance(p.body[0], ast.Expr) and fold(p.body[0].value) is not None:
++                and isinstance(p.body[0], ast.Expr) and isinstance(p.body[0].value, ast.Constant) \
++                and isinstance(p.body[0].value.value, str):
+             docs.add(p.body[0].value)
++    # names assigned to a foldable value anywhere in the file (two passes for chains)
++    env = {}
++    for _ in range(3):
++        for st in ast.walk(tree):
++            if isinstance(st, ast.Assign):
++                tg, val = st.targets, st.value
++            elif isinstance(st, ast.AnnAssign) and st.value is not None:
++                tg, val = [st.target], st.value
++            else:
++                continue
++            v = fold(val, env)
++            if v is not None:
++                for t in tg:
++                    if isinstance(t, ast.Name):
++                        env[t.id] = v
+ 
+     def stmt_of(n):
+         while n in parents and not isinstance(n, ast.stmt):
+@@ -163,28 +349,38 @@ def check_python(path, text):
+ 
+     seen = set()
+     for node in ast.walk(tree):
+-        s = fold(node)
+-        if s is None or node in docs or node in seen:
++        if node in docs or node in seen or not isinstance(node, STRINGY):
++            continue
++        if isinstance(node, ast.Constant) and not isinstance(node.value, str):
+             continue
+         par = parents.get(node)
+-        if isinstance(par, ast.BinOp) and fold(par) is not None:
+-            continue  # the outer concatenation is handled as one string
++        if isinstance(par, (ast.BinOp, ast.JoinedStr, ast.FormattedValue)) and fold(par, env, True) is not None:
++            continue  # the outer expression is handled as one string
++        s = fold(node, env, partial=True)
++        if s is None:
++            continue
+         for sub in ast.walk(node):
+             seen.add(sub)
+         n = getattr(node, "lineno", 0)
+         raw = lines[n - 1] if 0 < n <= len(lines) else ""
+         st = stmt_of(node)
+-        strs = [fold(x) for x in ast.walk(st)]
+-        verify = any(x is not None and V in x for x in strs)
++        strs = [fold(x, env, True) for x in ast.walk(st) if isinstance(x, STRINGY)]
++        stoks = []
++        for x in strs:
++            if x:
++                try:
++                    stoks += shlex.split(x)
++                except ValueError:
++                    stoks += x.split()
++        verify = any(t == V for t in stoks) and not any(t in SIGN_FLAGS for t in stoks)
+         in_compare = isinstance(par, ast.Compare)
+-        as_arg = isinstance(par, (ast.List, ast.Tuple, ast.Call, ast.Starred, ast.keyword))
+         try:
+             toks = shlex.split(s)
+         except ValueError:
+             toks = s.split()
+         if not verify and not in_compare:
+-            if (s == D and as_arg) or (D in toks and "codesign" in s) or re.fullmatch(r"\w+=" + D, s):
+-                hit(path, n, "%s in a Python string outside --verify: %r" % (D, s[:100]), raw)
++            if s == D or any(deep_tok(t) or (UNK in t and glued_fragment(t)) for t in toks):
++                hit(path, n, "%s in a Python string outside --verify: %r" % (D, s.replace(UNK, "{?}")[:100]), raw)
+         if BEP in s and not in_compare:
+             hit(path, n, "blanket " + BEP, raw)
+         for t in (toks if len(toks) > 1 else [s]):
+@@ -192,7 +388,7 @@ def check_python(path, text):
+             if not why:
+                 continue
+             if t == SO and isinstance(par, ast.Call):
+-                args = [fold(a) for a in par.args]
++                args = [fold(a, env) for a in par.args]
+                 if node in par.args:
+                     k = par.args.index(node)
+                     if k > 0 and args[k - 1] == "tools":
+@@ -203,14 +399,81 @@ def check_python(path, text):
+             hit(path, n, NOTE, raw)
+ 
+ 
+-YAML_DEEP = re.compile(r"""(^|[\s{,\-])["']?deep["']?\s*:\s*["']?(true|yes|on)["']?\s*($|[,}#\s])""", re.I)
++# ---------------------------------------------------------------- YAML
++TRUTHY = ("true", "yes", "on", "y")
++
++
++def strip_yaml_comment(line):
++    out, q = [], None
++    for i, c in enumerate(line):
++        if q:
++            if c == q:
++                q = None
++        elif c in "'\"":
++            q = c
++        elif c == "#" and (i == 0 or line[i - 1] in " \t"):
++            break
++        out.append(c)
++    return "".join(out)
++
++
++def yaml_scalar(v, anchors):
++    """Plain value of a YAML scalar text: anchors/tags stripped, quotes removed, aliases resolved."""
++    v = v.strip()
++    while True:
++        m = re.match(r"(&[^\s,{}\[\]]+|![^\s,{}\[\]]*|!<[^>]*>)\s*(.*)$", v, re.S)
++        if not m:
++            break
++        v = m.group(2).strip()
++    m = re.fullmatch(r"\*([^\s,{}\[\]]+)", v)
++    if m:
++        v = anchors.get(m.group(1), "")
++    return v.strip().strip("'\"").strip()
++
++
++KEYVAL = re.compile(r"""(?:^|[\s{,\-?])(["']?)([\w.-]+)\1\s*:(?:\s+|$)(.*)$""")
+ 
+ 
+ def check_yaml(path, text):
+-    for n, line in enumerate(text.split("\n"), 1):
+-        code = re.sub(r"(^|\s)#.*$", "", line)
+-        if YAML_DEEP.search(code):
+-            hit(path, n, "YAML deep: true", line)
++    lines = text.split("\n")
++    anchors = {}
++    i = 0
++    while i < len(lines):
++        n, line = i + 1, lines[i]
++        code = strip_yaml_comment(line)
++        for m in re.finditer(r"&([^\s,{}\[\]]+)\s+([^\s,{}\[\]#][^,{}\[\]#]*)", code):
++            anchors[m.group(1)] = m.group(2).strip().strip("'\"")
++        # every key: value pair on the line, including flow style {a: b, deep: yes}
++        for piece in re.split(r"[{},\[\]]", code):
++            m = KEYVAL.search(piece)
++            if not m:
++                continue
++            key, val = m.group(2), m.group(3)
++            if key.lower() == "deep" and yaml_scalar(val, anchors).lower() in TRUTHY:
++                hit(path, n, "YAML deep: true", line)
++        # block scalar: key: | / >- / |2 ... collect the more-indented lines and check them as shell
++        bm = re.match(r"^(\s*)(?:-\s+)?(?:[\"']?[\w.-]+[\"']?\s*:\s*)?(?:&\S+\s+|!\S*\s+)*[|>][-+0-9]*\s*$", code)
++        if bm and code.strip() not in ("|", ">"):
++            ind = len(bm.group(1))
++            j = i + 1
++            body = []
++            while j < len(lines) and (not lines[j].strip() or len(lines[j]) - len(lines[j].lstrip()) > ind):
++                body.append(lines[j])
++                j += 1
++            check_shell_text(path, "\n".join(body), base_line=i + 1)
++            i = j
++            continue
++        # plain scalar values (key: value or - value) are checked as shell too
++        vm = re.match(r"^\s*(?:-\s+)?(?:[\"']?[\w.-]+[\"']?\s*:\s+)?(.+)$", code)
++        if vm:
++            val = yaml_scalar(vm.group(1), anchors)
++            if re.search(r"deep|" + re.escape(SO) + "|" + re.escape(BU) + "|" + NO, val, re.I):
++                check_shell_text(path, val, base_line=n - 1)
++                for q in re.findall(r"\"([^\"]*)\"|'([^']*)'", vm.group(1)):
++                    qq = q[0] or q[1]
++                    if qq and qq != val:
++                        check_shell_text(path, qq, base_line=n - 1)
++        i += 1
+     try:
+         import yaml  # optional; the line parser above always runs
+     except ImportError:
+@@ -224,30 +487,56 @@ def check_yaml(path, text):
+     def walk(o, trail):
+         if isinstance(o, dict):
+             for k, v in o.items():
+-                if str(k).lower() == "deep" and (v is True or str(v).lower() in ("true", "yes", "on")):
+-                    if not any(re.search(r"deep\W+(true|yes|on)", l, re.I) for l in text.split("\n")):
+-                        hit(path, 0, "YAML deep: true at %s" % "/".join(trail + [str(k)]))
++                if str(k).lower() == "deep" and (v is True or str(v).lower() in TRUTHY):
++                    hit(path, 0, "YAML deep: true at %s (PyYAML)" % "/".join(trail + [str(k)]))
+                 walk(v, trail + [str(k)])
+         elif isinstance(o, list):
+-            for i, v in enumerate(o):
+-                walk(v, trail + [str(i)])
+-        elif isinstance(o, str) and (D in o or SO in o or BU in o):
++            for i_, v in enumerate(o):
++                walk(v, trail + [str(i_)])
++        elif isinstance(o, str) and re.search(r"deep|" + re.escape(SO) + "|" + re.escape(BU) + "|" + NO, o, re.I):
+             check_shell_text(path, o)
+     for d in docs:
+         walk(d, [])
+ 
+ 
++# ---------------------------------------------------------------- Markdown
++LIST_ITEM = re.compile(r"^(\s*)([-*+]|\d+[.)])(\s+)")
++
++
+ def check_markdown(path, text):
+     lines, i = text.split("\n"), 0
++    list_indent = 0          # content indent of the list we are in (0 = not in a list)
++    prev_blank = True
+     while i < len(lines):
+-        if re.match(r"\s*(```|~~~)", lines[i]):
++        line = lines[i]
++        if re.match(r"\s*(```|~~~)", line):
+             j = i + 1
+             while j < len(lines) and not re.match(r"\s*(```|~~~)", lines[j]):
+                 j += 1
+             check_shell_text(path, "\n".join(lines[i + 1:j]), base_line=i + 1)
+-            i = j + 1
+-        else:
++            i, prev_blank = j + 1, False
++            continue
++        if not line.strip():
++            prev_blank = True
+             i += 1
++            continue
++        ind = len(line.expandtabs(4)) - len(line.expandtabs(4).lstrip())
++        if prev_blank and ind >= list_indent + 4:
++            j, block = i, []
++            while j < len(lines) and (not lines[j].strip() or
++                                      len(lines[j].expandtabs(4)) - len(lines[j].expandtabs(4).lstrip()) >= list_indent + 4):
++                block.append(lines[j])
++                j += 1
++            check_shell_text(path, "\n".join(block), base_line=i)
++            i, prev_blank = j, False
++            continue
++        m = LIST_ITEM.match(line.expandtabs(4))
++        if m:
++            list_indent = len(m.group(1)) + len(m.group(2)) + len(m.group(3))
++        elif ind == 0:
++            list_indent = 0
++        prev_blank = False
++        i += 1
+ 
+ 
+ def check_file(path):
+@@ -280,13 +569,14 @@ def main():
+         files.append(cfg)
+     for f in sorted(files):
+         check_file(f)
+-    for h in hits:
++    for h in sorted(set(hits), key=hits.index):
+         print("FAIL " + h)
+     if VERBOSE:
+         print("scanned %d files under %s" % (len(files), ROOT))
++    nh = len(set(hits))
+     print("legacy-signing check: %s (%d hit%s, %d files)" % (
+-        "FAIL" if hits else "PASS", len(hits), "" if len(hits) == 1 else "s", len(files)))
+-    sys.exit(1 if hits else 0)
++        "FAIL" if nh else "PASS", nh, "" if nh == 1 else "s", len(files)))
++    sys.exit(1 if nh else 0)
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/greatdane/tests/sign_dane_macos_selftest.py b/greatdane/tests/sign_dane_macos_selftest.py
+index d521617ed6..8bc985c734 100644
+--- a/greatdane/tests/sign_dane_macos_selftest.py
++++ b/greatdane/tests/sign_dane_macos_selftest.py
+@@ -125,7 +125,7 @@ GUARD = os.path.join(TREE, "greatdane", "tests", "no_legacy_deep_sign_check.py")
+ # guard when it scans greatdane/tests itself.
+ PH = {"@D@": DEEP_FLAG, "@V@": "-" * 2 + "verify", "@SO@": "".join(["sign-", "only.sh"]),
+       "@BU@": "".join(["build-", "universal.sh"]), "@NO@": "".join(["notar", "ize.sh"]),
+-      "@BEP@": ".".join(["browser", "entitlements", "plist"])}
++      "@BEP@": ".".join(["browser", "entitlements", "plist"]), "@SOG@": "".join(["sign-o", "*.sh"])}
+ 
+ 
+ def fx(text):
+@@ -145,8 +145,8 @@ def guard_tree(root, files):
+ def run_guard(name, root, expect_rc, must=(), mustnot=()):
+     p = subprocess.run([sys.executable, "-B", GUARD, "--root", root], capture_output=True, text=True)
+     out = p.stdout + p.stderr
+-    ok = p.returncode == expect_rc and all(re.search(m, out) for m in must) and not any(
+-        re.search(m, out) for m in mustnot)
++    ok = p.returncode == expect_rc and all(re.search(fx(m), out) for m in must) and not any(
++        re.search(fx(m), out) for m in mustnot)
+     results.append((name, ok, p.returncode, expect_rc))
+     print("%s %-62s rc=%d (want %d)" % ("PASS" if ok else "FAIL", name, p.returncode, expect_rc))
+     if VERBOSE or not ok:
+@@ -162,9 +162,9 @@ def legacy_guard_cases(tmp):
+         ("L2 sh wrapper variable $CS @D@", "greatdane/tools/a.sh", 'CS="codesign --force --sign -"\n$CS @D@ a.app\n', r"a\.sh:2: codesign"),
+         ("L3 sh flag variable DEEP=@D@ / $DEEP", "greatdane/tools/a.sh", "DEEP=@D@\ncodesign --force $DEEP --sign - a\n", r"(?s)a\.sh:1:.*a\.sh:2:"),
+         ("L4 sh verify and sign on one line", "greatdane/tools/a.sh", "codesign @V@ @D@ a; codesign --force @D@ --sign - a\n", r"a\.sh:1: codesign .*--sign"),
+-        ("L5 py '+' concatenation", "greatdane/tools/a.py", 'import subprocess\nsubprocess.run(["codesign", "--force", "--de" + "ep", "-s", "-", "a"])\n', r"a\.py:2: --deep in a Python string"),
+-        ("L6 py implicit concatenation", "greatdane/tools/a.py", 'cmd = ["codesign", "--de" "ep", "-s", "-", "a"]\n', r"a\.py:1: --deep"),
+-        ("L7 py command string", "greatdane/tools/a.py", 'import os\nos.system("codesign --force @D@ --sign - a.app")\n', r"a\.py:2: --deep"),
++        ("L5 py '+' concatenation", "greatdane/tools/a.py", 'import subprocess\nsubprocess.run(["codesign", "--force", "--de" + "ep", "-s", "-", "a"])\n', r"a\.py:2: @D@ in a Python string"),
++        ("L6 py implicit concatenation", "greatdane/tools/a.py", 'cmd = ["codesign", "--de" "ep", "-s", "-", "a"]\n', r"a\.py:1: @D@"),
++        ("L7 py command string", "greatdane/tools/a.py", 'import os\nos.system("codesign --force @D@ --sign - a.app")\n', r"a\.py:2: @D@"),
+         ("L8 $G/@SO@", "greatdane/tools/a.sh", "$G/@SO@ arm64\n", r"legacy sign.only\.sh outside greatdane/tools/: \$G/"),
+         ("L9 absolute legacy path", "greatdane/tools/a.sh", "/Volumes/Storage/build/greatdane/@SO@\n", r"outside greatdane/tools/: /Volumes"),
+         ("L10 relative legacy path", "greatdane/tools/a.sh", "./@SO@\n", r"outside greatdane/tools/: \./"),
+@@ -177,6 +177,45 @@ def legacy_guard_cases(tmp):
+         ("L17 greatdane/tests is scanned", "greatdane/tests/x.sh", "codesign --force @D@ --sign - a\n", r"tests/x\.sh:1"),
+         ("L18 py legacy path in a call", "greatdane/tools/a.py", 'import subprocess\nsubprocess.run(["bash", "/x/greatdane/@SO@"])\n', r"a\.py:2: legacy sign.only"),
+         ("L19 blanket entitlements", "greatdane/tools/a.sh", "codesign --force --entitlements @BEP@ --sign - a\n", r"blanket browser"),
++        # --- round 4c L2: guard gaps (one case each) ---
++        ("L22 eval string", "greatdane/tools/a.sh", 'eval "codesign --force @D@ --sign - a"\n', r"a\.sh:1: codesign"),
++        ("L23 bash -c string", "greatdane/tools/a.sh", "bash -c 'codesign --force @D@ -s - a'\n", r"a\.sh:1: codesign"),
++        ("L24 sh -c string with its own flag variable", "greatdane/tools/a.sh", "sh -c 'X=--de; codesign -f ${X}ep -s - a'\n",
++         r"a\.sh:1: codesign"),
++        ("L25 ${F}ep with F assigned in the file", "greatdane/tools/a.sh", "F=--de\ncodesign --force ${F}ep --sign - a\n",
++         r"a\.sh:2: codesign"),
++        ("L26 ${F}ep with F unknown (env)", "greatdane/tools/a.sh", "codesign --force ${F}ep --sign - a\n", r"a\.sh:1: codesign"),
++        ("L27 any deep token in a codesign command", "greatdane/tools/a.sh", "codesign --force -s - a --Deep\n",
++         r"a\.sh:1: codesign"),
++        ("L28 @V@ anywhere in a signing command", "greatdane/tools/a.sh", "codesign --force --sign - @D@ a.app @V@\n",
++         r"a\.sh:1: codesign"),
++        ("L29 py D = '@D@'", "greatdane/tools/a.py", 'import subprocess\nD = "@D@"\nsubprocess.run(["codesign", D, "-s", "-", "a"])\n',
++         r"a\.py:2: @D@ in a Python string"),
++        ("L30 py '-' * 2 + 'deep'", "greatdane/tools/a.py", 'cmd = ["codesign", "-" * 2 + "deep", "-s", "-", "a"]\n',
++         r"a\.py:1: @D@ in a Python string"),
++        ("L31 py f-string from a known prefix", "greatdane/tools/a.py", 'import os\nP = "--"\nos.system(f"codesign {P}deep -s - a")\n',
++         r"a\.py:3: @D@ in a Python string"),
++        ("L32 py f-string with an unknown part", "greatdane/tools/a.py", 'import os, sys\nos.system(f"codesign -f --de{sys.argv[1]} -s - a")\n',
++         r"a\.py:2: @D@ in a Python string"),
++        ("L33 py CS + ' @D@'", "greatdane/tools/a.py", 'import os\nCS = os.environ["CS"]\nos.system(CS + " @D@ -s - a")\n',
++         r"a\.py:3: @D@ in a Python string"),
++        ("L34 YAML alias to an anchored true", "greatdane/ci/a.yml", "t: &t true\nmac:\n  deep: *t\n", r"a\.yml:3: YAML deep: true"),
++        ("L35 YAML anchor on the value", "greatdane/ci/a.yml", "mac:\n  deep: &x yes\n", r"a\.yml:2: YAML deep: true"),
++        ("L36 YAML tag", "greatdane/ci/a.yml", "mac:\n  deep: !!bool true\n", r"a\.yml:2: YAML deep: true"),
++        ("L37 YAML block-scalar run:", "greatdane/ci/a.yml", "steps:\n  - run: |\n      echo hi\n      codesign --force @D@ --sign - a\n",
++         r"a\.yml:4: codesign"),
++        ("L38 YAML plain run: value", "greatdane/ci/a.yml", "steps:\n  - run: codesign --force @D@ --sign - a\n", r"a\.yml:2: codesign"),
++        ("L39 YAML: a comment with deep: true does not hide a real hit", "greatdane/ci/a.yml",
++         "# deep: true (comment)\nv: &v true\nmac:\n  deep: *v\n", r"a\.yml:4: YAML deep: true"),
++        ("L40 quoted # does not end the command", "greatdane/ci/a.yml", 'run: echo " #" && codesign --force @D@ -s - a\n',
++         r"a\.yml:1: codesign"),
++        ("L41 @SO@ through a variable", "greatdane/tools/a.sh", 'S=/x/greatdane/tools/@SO@\nbash "$S"\n',
++         r"a\.sh:2: legacy sign.only\.sh outside greatdane/tools/: /x/greatdane/tools/"),
++        ("L42 @SO@ name built from a variable", "greatdane/tools/a.sh", 'N=sign-only\n"$G/$N.sh"\n', r"a\.sh:2: legacy sign.only"),
++        ("L43 @SO@ through a glob", "greatdane/tools/a.sh", "$TREE/greatdane/tools/@SOG@\n", r"a\.sh:1: legacy sign.only\.sh named through a glob"),
++        ("L44 fake path ending in tools/@SO@", "greatdane/tools/a.sh", "/tmp/evil/greatdane/tools/@SO@\n",
++         r"a\.sh:1: legacy sign.only\.sh outside greatdane/tools/: /tmp/evil"),
++        ("L45 indented Markdown code", "greatdane/DOC.md", "Prose.\n\n    codesign --force @D@ --sign - a\n", r"DOC\.md:3: codesign"),
+     ]
+     for i, (name, rel, body, must) in enumerate(bad):
+         root = guard_tree(os.path.join(tmp, "lg-bad%d" % i), {rel: body})
+@@ -188,15 +227,19 @@ def legacy_guard_cases(tmp):
+                                  'subprocess.run(["codesign", "@V@", "@D@", "a"])\n'
+                                  'p = os.path.join("T", "greatdane", "tools", "@SO@")\n',
+         "greatdane/README.md": "The old `$G/@SO@` used `@D@` (prose is fine).\n",
+-        "greatdane/ci/ok.yml": "mac:\n  - deep: false\n",
++        "greatdane/ci/ok.yml": "mac:\n  - deep: false\n  - deep: !!bool false\nf: &f no\nm:\n  deep: *f\n"
++                               "steps:\n  - run: |\n      codesign @V@ @D@ --strict a.app\n",
++        "greatdane/tools/ok2.sh": "${TREE}/greatdane/tools/@SO@\nbash greatdane/tools/@SO@\nS=$TREE/greatdane/tools/@SO@\n\"$S\"\n"
++                                  "rm -rf /volumes/*\n",
++        "greatdane/DOC.md": "- item\n\n    - @SO@ deletes only its own stage dir (nested list prose)\n",
+     })
+-    run_guard("L20 allowed forms (verify, comments, docstring, prose, tools path) PASS", good, 0,
++    run_guard("L20 allowed forms (verify, comments, docstring, prose, $TREE tools path, YAML false) PASS", good, 0,
+               [r"legacy-signing check: PASS \(0 hits"])
+     waive = guard_tree(os.path.join(tmp, "lg-waive"), {
+         "greatdane/tools/w.sh": "codesign --force @D@ --sign - a  # nolegacy: fixture\n",
+         "greatdane/tools/w.py": 'import subprocess\nsubprocess.run(["codesign", "@D@", "-s", "-", "a"])  # nolegacy: x\n'})
+     run_guard("L21 a nolegacy comment no longer waives anything", waive, 1,
+-              [r"w\.sh:1: codesign", r"w\.py:2: --deep", r"legacy-signing check: FAIL \(2 hits"], [r"WAIVED"])
++              [r"w\.sh:1: codesign", r"w\.py:2: @D@", r"legacy-signing check: FAIL \(2 hits"], [r"WAIVED"])
+ 
+ 
+ def main():
