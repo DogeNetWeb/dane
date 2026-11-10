@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 15:45:33 -0600
+Subject: [PATCH 092/144] GreatDANE: updater.ini maintenance-service
+ description says Dane, not Mozilla Firefox
+
+browser/locales/en-US/updater/updater.ini is the locale source that browser/locales/generate_ini.py
+turns into Contents/Resources/updater.ini (and the Windows install dir copy). The value now uses
+%MOZ_APP_DISPLAYNAME% (Dane per browser/branding/greatdane/configure.sh), which generate_ini.py
+substitutes. The key MozillaMaintenanceDescription is unchanged, because serviceinstall.cpp reads it
+by name. The Windows service display name (SVC_DISPLAY_NAME "Mozilla Maintenance Service") is
+internal to the maintenance service and isn't touched here.
+
+Prepared only. Not built, signed, notarized or published.
+---
+ browser/locales/en-US/updater/updater.ini | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/browser/locales/en-US/updater/updater.ini b/browser/locales/en-US/updater/updater.ini
+index cc4ae5405e..8dc7d418cd 100644
+--- a/browser/locales/en-US/updater/updater.ini
++++ b/browser/locales/en-US/updater/updater.ini
+@@ -6,4 +6,5 @@
+ [Strings]
+ TitleText=%MOZ_APP_DISPLAYNAME% Update
+ InfoText=%MOZ_APP_DISPLAYNAME% is installing your updates and will start in a few moments…
+-MozillaMaintenanceDescription=The Mozilla Maintenance Service ensures that you have the latest and most secure version of Mozilla Firefox on your computer. Keeping Firefox up to date is very important for your online security, and Mozilla strongly recommends that you keep this service enabled.
++; GreatDANE: key name is read by toolkit/components/maintenanceservice/serviceinstall.cpp; only the value is rebranded.
++MozillaMaintenanceDescription=The %MOZ_APP_DISPLAYNAME% Maintenance Service ensures that you have the latest and most secure version of %MOZ_APP_DISPLAYNAME% on your computer. Keeping %MOZ_APP_DISPLAYNAME% up to date is very important for your online security, so we strongly recommend that you keep this service enabled.
