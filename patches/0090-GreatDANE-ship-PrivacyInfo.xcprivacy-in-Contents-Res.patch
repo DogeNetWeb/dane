@@ -1,0 +1,264 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 15:45:33 -0600
+Subject: [PATCH 090/144] GreatDANE: ship PrivacyInfo.xcprivacy in
+ Contents/Resources (conservative data types, accurate reason codes)
+
+- greatdane/macos/PrivacyInfo.xcprivacy: no tracking, no tracking domains. Declares stock Mozilla-service data
+  (EmailAddress for an optional Mozilla account; DeviceID for the push UAID/opt-in Glean client_id; CoarseLocation
+  for the region lookup; ProductInteraction/PerformanceData/OtherDiagnosticData only with opt-in data collection).
+  Required-reason APIs: FileTimestamp C617.1/3B52.1/DDA9.1, SystemBootTime 35F9.1/8FFB.1, DiskSpace E174.1,
+  UserDefaults CA92.1.
+- greatdane/macos/PRIVACY-MANIFEST.md: per-entry rationale with source pointers.
+- browser/app/Makefile.in: repackage copies it into Contents/Resources.
+- browser/installer/package-manifest.in: @RESPATH@/PrivacyInfo.xcprivacy.
+
+Prepared only. Not built, signed, notarized or published.
+---
+ browser/app/Makefile.in               |   2 +
+ browser/installer/package-manifest.in |   2 +
+ greatdane/macos/PRIVACY-MANIFEST.md   |  49 ++++++++++
+ greatdane/macos/PrivacyInfo.xcprivacy | 133 +++++++++++++++++++++++---
+ 4 files changed, 174 insertions(+), 12 deletions(-)
+ create mode 100644 greatdane/macos/PRIVACY-MANIFEST.md
+
+diff --git a/browser/app/Makefile.in b/browser/app/Makefile.in
+index aff356083d..10c5595c78 100644
+--- a/browser/app/Makefile.in
++++ b/browser/app/Makefile.in
+@@ -84,6 +84,8 @@ tools repackage:: $(DIST)/bin/$(MOZ_APP_NAME) $(objdir)/macbuild/Contents/MacOS-
+ 	rsync -aL $(DIST)/bin/$(MOZ_APP_NAME) '$(dist_dest)/Contents/MacOS'
+ 	cp -RL $(topsrcdir)/$(MOZ_BRANDING_DIRECTORY)/firefox.icns '$(dist_dest)/Contents/Resources/dane.icns'
+ 	cp -RL $(topsrcdir)/$(MOZ_BRANDING_DIRECTORY)/document.icns '$(dist_dest)/Contents/Resources/document.icns'
++	# GreatDANE: Apple privacy manifest (greatdane/macos/PRIVACY-MANIFEST.md)
++	cp -f $(topsrcdir)/greatdane/macos/PrivacyInfo.xcprivacy '$(dist_dest)/Contents/Resources/PrivacyInfo.xcprivacy'
+ 	if [ -f $(topsrcdir)/$(MOZ_BRANDING_DIRECTORY)/Assets.car ]; then cp -RL $(topsrcdir)/$(MOZ_BRANDING_DIRECTORY)/Assets.car '$(dist_dest)/Contents/Resources/Assets.car'; fi
+ 	$(MKDIR) -p '$(dist_dest)/Contents/Library/LaunchServices'
+ ifdef MOZ_UPDATER
+diff --git a/browser/installer/package-manifest.in b/browser/installer/package-manifest.in
+index ea21e86a62..4c55bf15f4 100644
+--- a/browser/installer/package-manifest.in
++++ b/browser/installer/package-manifest.in
+@@ -42,6 +42,8 @@
+ @APPNAME@/Contents/PkgInfo
+ @RESPATH@/dane.icns
+ @RESPATH@/document.icns
++; GreatDANE: Apple privacy manifest
++@RESPATH@/PrivacyInfo.xcprivacy
+ ; GreatDANE: no Assets.car (app icon comes from dane.icns via CFBundleIconFile)
+ @RESPATH@/@LPROJ_ROOT@.lproj/*
+ #endif
+diff --git a/greatdane/macos/PRIVACY-MANIFEST.md b/greatdane/macos/PRIVACY-MANIFEST.md
+new file mode 100644
+index 0000000000..12a9d6647e
+--- /dev/null
++++ b/greatdane/macos/PRIVACY-MANIFEST.md
+@@ -0,0 +1,49 @@
++# Dane privacy manifest (PrivacyInfo.xcprivacy): rationale
++
++Shipped at `Dane.app/Contents/Resources/PrivacyInfo.xcprivacy`.
++It's installed by `browser/app/Makefile.in` (repackage) and listed in `browser/installer/package-manifest.in`, so
++`mach package` and every dmg built from the tree carry it. `greatdane/tools/finish-universal.sh` also copies it after
++unify, and that stays harmless because the content is the same. A privacy manifest is optional for Developer ID
++(non-App Store) distribution. It's kept accurate anyway, and Apple Polish asked for it.
++
++Reason-code wording below is quoted from Apple's NSPrivacyAccessedAPITypeReasons reference (fetched 2026-11-10).
++
++## Tracking
++- `NSPrivacyTracking` = false. `NSPrivacyTrackingDomains` = empty. Dane has no ad or attribution SDKs, and the
++  sponsored tiles, Pocket and ads feeds are off (browser/app/profile/firefox.js, GreatDANE block).
++
++## Collected data types (conservative)
++Dane's own servers receive nothing. Every entry is a stock Firefox service that Dane keeps, with Mozilla receiving
++the data. Each one has Tracking=false. If a feature only collects after the user turns it on, it's still declared.
++
++| Type | Linked | Purpose | Why it is declared |
++|---|---|---|---|
++| EmailAddress | yes | AppFunctionality | Optional Mozilla account sign-in for Sync (stock feature kept). Mozilla stores the account email. |
++| DeviceID | no | AppFunctionality, Analytics | Web Push keeps a random per-install UAID at push.services.mozilla.com (on by default, see greatdane/PRIVACY.md). Glean's random client_id is sent only if the user opts in to data collection. |
++| CoarseLocation | no | AppFunctionality | Stock region (country) lookup: `browser.region.network.url` = location.services.mozilla.com/v1/country (all.js), used for region defaults. |
++| ProductInteraction | no | Analytics | Only if the user turns data collection ON. Dane ships it OFF (`datareporting.healthreport.uploadEnabled=false`, `toolkit.telemetry.enabled=false`, `toolkit.telemetry.server="data:,"`), but Glean's endpoint is compiled in as incoming.telemetry.mozilla.org (toolkit/components/glean/src/init/mod.rs). Patch 0028 keeps the opt-in visible. |
++| PerformanceData | no | Analytics | Same opt-in as above (Glean/legacy telemetry performance metrics). |
++| OtherDiagnosticData | no | Analytics | Same opt-in as above. |
++
++Deliberately not declared:
++- **CrashData:** the crash reporter is local-only. application.ini has an empty `[Crash Reporter] ServerURL`, and
++  auto-submit and the tab-crash "send report" are off (greatdane/README.md).
++- **BrowsingHistory / SearchHistory:** Safe Browsing sends hash prefixes only. Sync data is end-to-end encrypted and
++  Mozilla can't read it. Search queries and suggestions go to the user-chosen engine as the service the user asked for.
++- **PreciseLocation:** macOS CoreLocation (`geo.provider.use_corelocation=true`), behind a per-site permission, and
++  delivered only to the requesting site.
++
++Mozilla's own Firefox for iOS manifest (mozilla-mobile/firefox-ios `firefox-ios/PrivacyInfo.xcprivacy`, fetched
++2026-11-10, sha256 a2b03d6b9adc82f566aeb200ac80eac7f34cbba59044c6fb12a6b45fb1de097b) declares no collected data types.
++Dane deliberately declares more than that.
++
++## Required-reason APIs
++| Category | Reasons | Gecko use |
++|---|---|---|
++| FileTimestamp | C617.1, 3B52.1, DDA9.1 | **C617.1** ("files inside the app container…"): profile, cache, omni.ja, update staging mtimes (xpcom/io/nsLocalFileUnix.cpp). **3B52.1** ("files … the user specifically granted access to"): files picked in the file picker / drag-drop, exposed as `File.lastModified`. **DDA9.1** ("display file timestamps to the person"): downloads list and file:// directory listings. |
++| SystemBootTime | 35F9.1, 8FFB.1 | **35F9.1**: `mach_absolute_time` for TimeStamp and timers (mozglue/misc/TimeStamp_darwin.cpp). **8FFB.1**: converting NSEvent timestamps (seconds since boot) to Gecko event times (widget/cocoa/nsCocoaUtils.mm). |
++| DiskSpace | E174.1 | "check whether there is sufficient disk space to write files": cache smart-sizing, downloads, updater staging, and the run-from-dmg install (toolkit/xre/MacRunFromDmgUtils.mm, nsLocalFileUnix.cpp). |
++| UserDefaults | CA92.1 | "information that is only accessible to the app itself": `[NSUserDefaults standardUserDefaults]` in widget/cocoa (dock, window, look-and-feel). There's no App Group. |
++
++Not declared: ActiveKeyboards (that category covers iOS `UITextInputMode`; Gecko on macOS uses TIS input-source APIs,
++which aren't in the required-reason list).
+diff --git a/greatdane/macos/PrivacyInfo.xcprivacy b/greatdane/macos/PrivacyInfo.xcprivacy
+index 7e892547fe..168f2bb5ec 100644
+--- a/greatdane/macos/PrivacyInfo.xcprivacy
++++ b/greatdane/macos/PrivacyInfo.xcprivacy
+@@ -1,8 +1,24 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+-<!-- Dane privacy manifest. No tracking, no tracking domains, no data collected by the
+-     app vendor. Required-reason API declarations cover stock Gecko usage. Optional for
+-     Developer ID distribution; see https://developer.apple.com/documentation/bundleresources/privacy-manifest-files -->
++<!--
++  Dane privacy manifest (Contents/Resources/PrivacyInfo.xcprivacy).
++  Installed by browser/app/Makefile.in (repackage) and listed in browser/installer/package-manifest.in.
++  Optional for Developer ID distribution; kept accurate anyway. Rationale for every entry:
++  greatdane/macos/PRIVACY-MANIFEST.md.
++
++  Tracking: none. No tracking domains. Dane ships no ad or analytics SDKs.
++  Collected data: Dane's own servers receive nothing. Entries below are conservative and cover
++  stock Firefox services that Dane keeps (Mozilla is the receiving party):
++    - EmailAddress: only if the user signs in to a Mozilla account (Sync). Linked.
++    - DeviceID: random per-install IDs (Web Push UAID; Glean client_id only if the user opts in).
++    - CoarseLocation: stock region (country) lookup from IP via location.services.mozilla.com.
++    - ProductInteraction / PerformanceData / OtherDiagnosticData: only if the user turns
++      data collection ON in Settings. Dane ships it OFF (datareporting.healthreport.uploadEnabled=false,
++      toolkit.telemetry.enabled=false, toolkit.telemetry.server="data:,").
++  Not collected: crash data (crash reporter is local-only, empty ServerURL), browsing/search history
++  (Safe Browsing sends hash prefixes only; Sync data is end-to-end encrypted), precise location
++  (macOS CoreLocation, per-site user permission, delivered to the requesting site only).
++-->
+ <plist version="1.0">
+ <dict>
+ 	<key>NSPrivacyTracking</key>
+@@ -10,24 +26,117 @@
+ 	<key>NSPrivacyTrackingDomains</key>
+ 	<array/>
+ 	<key>NSPrivacyCollectedDataTypes</key>
+-	<array/>
++	<array>
++		<dict>
++			<key>NSPrivacyCollectedDataType</key>
++			<string>NSPrivacyCollectedDataTypeEmailAddress</string>
++			<key>NSPrivacyCollectedDataTypeLinked</key>
++			<true/>
++			<key>NSPrivacyCollectedDataTypeTracking</key>
++			<false/>
++			<key>NSPrivacyCollectedDataTypePurposes</key>
++			<array>
++				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
++			</array>
++		</dict>
++		<dict>
++			<key>NSPrivacyCollectedDataType</key>
++			<string>NSPrivacyCollectedDataTypeDeviceID</string>
++			<key>NSPrivacyCollectedDataTypeLinked</key>
++			<false/>
++			<key>NSPrivacyCollectedDataTypeTracking</key>
++			<false/>
++			<key>NSPrivacyCollectedDataTypePurposes</key>
++			<array>
++				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
++				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
++			</array>
++		</dict>
++		<dict>
++			<key>NSPrivacyCollectedDataType</key>
++			<string>NSPrivacyCollectedDataTypeCoarseLocation</string>
++			<key>NSPrivacyCollectedDataTypeLinked</key>
++			<false/>
++			<key>NSPrivacyCollectedDataTypeTracking</key>
++			<false/>
++			<key>NSPrivacyCollectedDataTypePurposes</key>
++			<array>
++				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
++			</array>
++		</dict>
++		<dict>
++			<key>NSPrivacyCollectedDataType</key>
++			<string>NSPrivacyCollectedDataTypeProductInteraction</string>
++			<key>NSPrivacyCollectedDataTypeLinked</key>
++			<false/>
++			<key>NSPrivacyCollectedDataTypeTracking</key>
++			<false/>
++			<key>NSPrivacyCollectedDataTypePurposes</key>
++			<array>
++				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
++			</array>
++		</dict>
++		<dict>
++			<key>NSPrivacyCollectedDataType</key>
++			<string>NSPrivacyCollectedDataTypePerformanceData</string>
++			<key>NSPrivacyCollectedDataTypeLinked</key>
++			<false/>
++			<key>NSPrivacyCollectedDataTypeTracking</key>
++			<false/>
++			<key>NSPrivacyCollectedDataTypePurposes</key>
++			<array>
++				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
++			</array>
++		</dict>
++		<dict>
++			<key>NSPrivacyCollectedDataType</key>
++			<string>NSPrivacyCollectedDataTypeOtherDiagnosticData</string>
++			<key>NSPrivacyCollectedDataTypeLinked</key>
++			<false/>
++			<key>NSPrivacyCollectedDataTypeTracking</key>
++			<false/>
++			<key>NSPrivacyCollectedDataTypePurposes</key>
++			<array>
++				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
++			</array>
++		</dict>
++	</array>
+ 	<key>NSPrivacyAccessedAPITypes</key>
+ 	<array>
+ 		<dict>
+-			<key>NSPrivacyAccessedAPIType</key><string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+-			<key>NSPrivacyAccessedAPITypeReasons</key><array><string>CA92.1</string></array>
++			<key>NSPrivacyAccessedAPIType</key>
++			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
++			<key>NSPrivacyAccessedAPITypeReasons</key>
++			<array>
++				<string>C617.1</string>
++				<string>3B52.1</string>
++				<string>DDA9.1</string>
++			</array>
+ 		</dict>
+ 		<dict>
+-			<key>NSPrivacyAccessedAPIType</key><string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+-			<key>NSPrivacyAccessedAPITypeReasons</key><array><string>C617.1</string></array>
++			<key>NSPrivacyAccessedAPIType</key>
++			<string>NSPrivacyAccessedAPICategorySystemBootTime</string>
++			<key>NSPrivacyAccessedAPITypeReasons</key>
++			<array>
++				<string>35F9.1</string>
++				<string>8FFB.1</string>
++			</array>
+ 		</dict>
+ 		<dict>
+-			<key>NSPrivacyAccessedAPIType</key><string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+-			<key>NSPrivacyAccessedAPITypeReasons</key><array><string>35F9.1</string></array>
++			<key>NSPrivacyAccessedAPIType</key>
++			<string>NSPrivacyAccessedAPICategoryDiskSpace</string>
++			<key>NSPrivacyAccessedAPITypeReasons</key>
++			<array>
++				<string>E174.1</string>
++			</array>
+ 		</dict>
+ 		<dict>
+-			<key>NSPrivacyAccessedAPIType</key><string>NSPrivacyAccessedAPICategoryDiskSpace</string>
+-			<key>NSPrivacyAccessedAPITypeReasons</key><array><string>E174.1</string></array>
++			<key>NSPrivacyAccessedAPIType</key>
++			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
++			<key>NSPrivacyAccessedAPITypeReasons</key>
++			<array>
++				<string>CA92.1</string>
++			</array>
+ 		</dict>
+ 	</array>
+ </dict>
