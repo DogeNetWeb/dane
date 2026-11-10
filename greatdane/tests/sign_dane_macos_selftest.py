@@ -327,6 +327,13 @@ def main():
             "/Applications/Dane.app", os.path.join(tmp, "a", "DaneNotarized", "x")], 2,
             [r"Dane 2", r"/Applications/Dane.app", r"DaneNotarized"])
         run("G31 guard-path accepts a work path", ["guard-path", good, os.path.join(tmp, "out")], 0)
+        # --- round 4 L-c: work dirs that are too broad ---
+        for i, wd in enumerate(["/", "/Users", "/users/", os.path.expanduser("~"), "/Users/someone", "/Volumes",
+                                "/System/Volumes/Data/Users"]):
+            run("W%d --work-dir %s refused as too broad" % (i + 1, wd), ["plan", good, "--work-dir", wd], 2,
+                [r"work-dir entry is too broad"])
+        run("W8 DANE_SIGN_WORK_DIRS=/ refused as too broad", ["plan", good], 2, [r"work-dir entry is too broad"],
+            env={"DANE_SIGN_WORK_DIRS": os.path.join(tmp, "ok") + ":/"})
         # --- round 4 L-b: /System/Volumes/Data firmlink prefix stripped for every rule ---
         run("G32 /System/Volumes/Data/Applications/Dane.app refused", ["plan", "/System/Volumes/Data/Applications/Dane.app"],
             2, [r"off-limits \(installed app location"])

@@ -104,3 +104,4 @@
 0104-GreatDANE-privacy-wording-The-server-logs-Analytics-.patch
 0105-GreatDANE-harden-no_legacy_deep_sign_check.py-and-wi.patch
 0106-GreatDANE-strip-the-System-Volumes-Data-firmlink-pre.patch
+0107-GreatDANE-refuse-a-work-dir-of-Users-HOME-or-Volumes.patch
