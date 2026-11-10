@@ -31,7 +31,9 @@ VER=$(cat browser/config/version_display.txt); V=${VER%esr}
 lipo -archs $U/x86_64/Dane.app/Contents/MacOS/greatdane | tee -a $G/universal.status
 cp $TREE/greatdane/macos/PrivacyInfo.xcprivacy $U/x86_64/Dane.app/Contents/Resources/PrivacyInfo.xcprivacy
 st "sign (no notarize)"
-DANE_ARCH=universal DANE_APP_SRC=$U/x86_64/Dane.app DANE_NODE=$ND/build-pin-universal/greatdane-node $G/sign-only.sh > $G/universal-sign.log 2>&1
+# Per-binary signing via the in-tree signer (greatdane/tools/sign-only.sh -> sign_dane_macos.py sign + check).
+# The old out-of-tree $G/sign-only.sh (blanket --entitlements/--deep loop) is no longer called.
+DANE_ARCH=universal DANE_APP_SRC=$U/x86_64/Dane.app DANE_NODE=$ND/build-pin-universal/greatdane-node $TREE/greatdane/tools/sign-only.sh > $G/universal-sign.log 2>&1
 st "buildinfo"
 $TREE/greatdane/tools/gd-buildinfo.sh $TREE/obj-gd/dist/gd-release/Dane-$VER-mac-universal.dmg $ND >> $G/universal.status 2>&1
 st "done"
