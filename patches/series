@@ -102,3 +102,4 @@
 0102-GreatDANE-declare-the-Dane-update-check-under-OtherD.patch
 0103-GreatDANE-finish-the-update-check-declaration-pepeco.patch
 0104-GreatDANE-privacy-wording-The-server-logs-Analytics-.patch
+0105-GreatDANE-harden-no_legacy_deep_sign_check.py-and-wi.patch

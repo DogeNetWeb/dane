@@ -117,6 +117,80 @@ def run(name, args, expect_rc, must=(), mustnot=(), env=None, cwd=None):
         print("    " + out.strip().replace("\n", "\n    "))
     return out
 
+GUARD = os.path.join(TREE, "greatdane", "tests", "no_legacy_deep_sign_check.py")
+# Fixture text uses placeholders that are substituted at runtime, so these lines never look like commands to the
+# guard when it scans greatdane/tests itself.
+PH = {"@D@": "-" * 2 + "deep", "@V@": "-" * 2 + "verify", "@SO@": "".join(["sign-", "only.sh"]),
+      "@BU@": "".join(["build-", "universal.sh"]), "@NO@": "".join(["notar", "ize.sh"]),
+      "@BEP@": ".".join(["browser", "entitlements", "plist"])}
+
+
+def fx(text):
+    for k, v in PH.items():
+        text = text.replace(k, v)
+    return text
+
+
+def guard_tree(root, files):
+    for rel, body in files.items():
+        p = os.path.join(root, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "w").write(fx(body))
+    return root
+
+
+def run_guard(name, root, expect_rc, must=(), mustnot=()):
+    p = subprocess.run([sys.executable, "-B", GUARD, "--root", root], capture_output=True, text=True)
+    out = p.stdout + p.stderr
+    ok = p.returncode == expect_rc and all(re.search(m, out) for m in must) and not any(
+        re.search(m, out) for m in mustnot)
+    results.append((name, ok, p.returncode, expect_rc))
+    print("%s %-62s rc=%d (want %d)" % ("PASS" if ok else "FAIL", name, p.returncode, expect_rc))
+    if VERBOSE or not ok:
+        print("    " + out.strip().replace("\n", "\n    "))
+
+
+def legacy_guard_cases(tmp):
+    run_guard("L0 guard PASSES on this tree", TREE, 0, [r"legacy-signing check: PASS"])
+    bad = [
+        ("L1 sh line continuation", "greatdane/tools/a.sh", "codesign --force --sign - \\\n    @D@ a.app\n", r"a\.sh:1: codesign"),
+        ("L2 sh wrapper variable $CS @D@", "greatdane/tools/a.sh", 'CS="codesign --force --sign -"\n$CS @D@ a.app\n', r"a\.sh:2: codesign"),
+        ("L3 sh flag variable DEEP=@D@ / $DEEP", "greatdane/tools/a.sh", "DEEP=@D@\ncodesign --force $DEEP --sign - a\n", r"(?s)a\.sh:1:.*a\.sh:2:"),
+        ("L4 sh verify and sign on one line", "greatdane/tools/a.sh", "codesign @V@ @D@ a; codesign --force @D@ --sign - a\n", r"a\.sh:1: codesign .*--sign"),
+        ("L5 py '+' concatenation", "greatdane/tools/a.py", 'import subprocess\nsubprocess.run(["codesign", "--force", "--de" + "ep", "-s", "-", "a"])\n', r"a\.py:2: --deep in a Python string"),
+        ("L6 py implicit concatenation", "greatdane/tools/a.py", 'cmd = ["codesign", "--de" "ep", "-s", "-", "a"]\n', r"a\.py:1: --deep"),
+        ("L7 py command string", "greatdane/tools/a.py", 'import os\nos.system("codesign --force @D@ --sign - a.app")\n', r"a\.py:2: --deep"),
+        ("L8 $G/@SO@", "greatdane/tools/a.sh", "$G/@SO@ arm64\n", r"legacy sign.only\.sh outside greatdane/tools/: \$G/"),
+        ("L9 absolute legacy path", "greatdane/tools/a.sh", "/Volumes/Storage/build/greatdane/@SO@\n", r"outside greatdane/tools/: /Volumes"),
+        ("L10 relative legacy path", "greatdane/tools/a.sh", "./@SO@\n", r"outside greatdane/tools/: \./"),
+        ("L11 @BU@", "greatdane/tools/a.sh", "bash ../@BU@\n", r"legacy build.universal\.sh"),
+        ("L12 @NO@ legacy mode", "greatdane/tools/a.sh", "./@NO@ --dry-run\n", r"legacy notar.ze\.sh mode"),
+        ("L13 YAML deep: true", "greatdane/ci/a.yml", "mac-signing:\n  - deep: true\n", r"a\.yml:2: YAML deep: true"),
+        ("L14 YAML flow style, quoted key, yes", "taskcluster/config.yml", 'x: {"deep": yes}\n', r"config\.yml:1: YAML deep"),
+        ("L15 non-.sh/.py file", "greatdane/macos/notes.conf", "codesign --force @D@ --sign - a\n", r"notes\.conf:1: codesign"),
+        ("L16 Markdown fenced block", "greatdane/DOC.md", "Prose.\n```\ncodesign --force @D@ --sign - a\n```\n", r"DOC\.md:3: codesign"),
+        ("L17 greatdane/tests is scanned", "greatdane/tests/x.sh", "codesign --force @D@ --sign - a\n", r"tests/x\.sh:1"),
+        ("L18 py legacy path in a call", "greatdane/tools/a.py", 'import subprocess\nsubprocess.run(["bash", "/x/greatdane/@SO@"])\n', r"a\.py:2: legacy sign.only"),
+        ("L19 blanket entitlements", "greatdane/tools/a.sh", "codesign --force --entitlements @BEP@ --sign - a\n", r"blanket browser"),
+    ]
+    for i, (name, rel, body, must) in enumerate(bad):
+        root = guard_tree(os.path.join(tmp, "lg-bad%d" % i), {rel: body})
+        run_guard(name + " flagged", root, 1, [must, r"legacy-signing check: FAIL"])
+    good = guard_tree(os.path.join(tmp, "lg-good"), {
+        "greatdane/tools/ok.sh": "codesign @V@ @D@ --strict a.app\n# codesign @D@ in a comment\necho \"no @D@ here\"\n"
+                                 "$TREE/greatdane/tools/@SO@\n./@NO@ --submit-existing x.dmg abc\n",
+        "greatdane/tools/ok.py": '"""Doc: never codesign @D@ to sign."""\nimport os, subprocess\nline = ""\nok = "@D@" not in line\n'
+                                 'subprocess.run(["codesign", "@V@", "@D@", "a"])\n'
+                                 'p = os.path.join("T", "greatdane", "tools", "@SO@")\n',
+        "greatdane/README.md": "The old `$G/@SO@` used `@D@` (prose is fine).\n",
+        "greatdane/ci/ok.yml": "mac:\n  - deep: false\n",
+    })
+    run_guard("L20 allowed forms (verify, comments, docstring, prose, tools path) PASS", good, 0,
+              [r"legacy-signing check: PASS \(0 hits"])
+    waive = guard_tree(os.path.join(tmp, "lg-waive"), {
+        "greatdane/tools/w.sh": "codesign --force @D@ --sign - a  # nolegacy: fixture\n"})
+    run_guard("L21 nolegacy waiver passes but is listed", waive, 0, [r"WAIVED \(nolegacy\) greatdane/tools/w\.sh:1"])
+
 
 def main():
     tmp = tempfile.mkdtemp(prefix="dane-signtest-")
@@ -133,7 +207,7 @@ def main():
         run("P1 plan OK (framework symlinks, symlinked Mach-O ignored)", ["plan", good], 0, [r"PLAN OK"],
             [r"XUL-link", r"PROBLEM"])
         run("P2 sign --dry-run OK", ["sign", good, "--dry-run"], 0, [r"DRY RUN: nothing signed",
-            r"<identity redacted; team %s>" % TEAM], [r"--deep"])
+            r"<identity redacted; team %s>" % TEAM], [r"--deep"])  # nolegacy: regex that must NOT match the output
         run("P3 check PASS with mock codesign", ["check", good], 0, [r"CHECK PASS"], env=mock)
         jpath = os.path.join(tmp, "ent.json")
         run("P4 check --json writes report", ["check", good, "--json", jpath], 0, [r"CHECK PASS"], env=mock)
@@ -330,6 +404,8 @@ def main():
             print("%s %-62s %s" % ("PASS" if ok else "FAIL", "T3 update-programs.configure OU == signing.conf", ous))
         else:
             print("SKIP T3 update-programs.configure not in this tree")
+        # --- round 4 L-a: the legacy-signing guard, on this tree and on fixtures ---
+        legacy_guard_cases(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     failed = [r for r in results if not r[1]]
