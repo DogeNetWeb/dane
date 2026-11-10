@@ -1,0 +1,33 @@
+# Dane per-binary signing map (production, Developer ID, team MNL79V994R).
+# Consumed by greatdane/tools/sign_dane_macos.py. Rows are signed TOP TO BOTTOM, inside-out, the app last.
+# Columns (TAB-separated):
+#   glob         path inside Dane.app ("." = the app itself); fnmatch-style, no "**"
+#   entitlements leaf name in security/mac/hardenedruntime/production/, or "-" for none (hardened runtime only)
+#   need         required = at least one match must exist; optional = may be absent
+# Every Mach-O under Contents/ must match exactly one row, or the tool refuses to sign.
+# Mozilla source of truth: taskcluster/config.yml mac-signing.hardened-sign-config.production.
+#
+# --- no entitlements: hardened runtime with defaults (same as Mozilla production) ---
+Contents/MacOS/*.dylib	-	required
+Contents/Resources/gmp-clearkey/*/*.dylib	-	optional
+Contents/MacOS/XUL	-	required
+Contents/MacOS/greatdane-node*	-	required
+Contents/MacOS/pingsender	-	optional
+Contents/MacOS/nmhproxy	-	optional
+Contents/MacOS/crashhelper	-	optional
+Contents/MacOS/crashreporter.app	-	optional
+Contents/MacOS/updater.app/Contents/Frameworks/UpdateSettings.framework	-	optional
+Contents/MacOS/updater.app	-	optional
+Contents/Library/LaunchServices/surf.dogecoin.dane.updater	-	optional
+Contents/Library/LaunchServices/surf.dogecoin.dane.dmgInstallHelper	-	required
+Contents/Frameworks/ChannelPrefs.framework	-	optional
+Contents/MacOS/gpu-helper.app	-	required
+# --- child processes with entitlements (Mozilla production files, unchanged) ---
+# Content/utility processes: JIT only.
+Contents/MacOS/plugin-container.app	plugin-container.xml	required
+# GMP process: loads Google-signed Widevine CDM and Cisco OpenH264 => needs disable-library-validation.
+Contents/MacOS/media-plugin-helper.app	media-plugin-helper.xml	required
+# Nightly-only (absent on ESR); listed so an unexpected copy is never signed with the wrong set.
+Contents/MacOS/security-module-helper.app	security-module-helper.xml	optional
+# --- the app (last) ---
+.	dane.browser.xml	required

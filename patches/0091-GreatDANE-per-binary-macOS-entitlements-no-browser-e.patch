@@ -1,0 +1,503 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 15:45:33 -0600
+Subject: [PATCH 091/144] GreatDANE: per-binary macOS entitlements; no browser
+ entitlements on helpers; Dane signing map + tool
+
+Fixes the Oct 29 sweep finding: every helper carried the full browser set (DLV, allow-jit,
+camera/mic/usb/location/smartcard), because the out-of-tree signing step signed helpers with
+`--entitlements <browser set> --deep`.
+
+- security/mac/hardenedruntime/production/dane.browser.xml: firefox.browser.xml minus
+  com.apple.application-identifier and com.apple.developer.web-browser.public-key-credential
+  (they wait for Apple's grant). Keeps disable-library-validation, Mozilla's "Allow loading third
+  party libraries to support pkcs11 modules": ESR loads PKCS#11 modules in the parent
+  (security-module-helper is NIGHTLY_BUILD-only).
+- dane.browser.no-dlv.xml: stricter alternative without DLV (breaks third-party PKCS#11 modules).
+- media-plugin-helper.app keeps Mozilla's media-plugin-helper.xml (DLV only, "Allow loading third
+  party CDM libraries"). The GMP process loads Widevine/OpenH264 there
+  (GeckoChildProcessHost.cpp, media.plugin_helper_process.enabled=true).
+- plugin-container.app keeps plugin-container.xml (allow-jit only).
+- gpu-helper, updater.app, UpdateSettings.framework, the LaunchServices updater and dmgInstallHelper,
+  crashreporter, crashhelper, pingsender, nmhproxy, XUL, dylibs, ChannelPrefs and greatdane-node*:
+  no entitlements (hardened runtime defaults), the same as Mozilla production.
+- greatdane/macos/sign-map.tsv + greatdane/tools/sign_dane_macos.py (plan/sign/check): inside-out,
+  --timestamp --options runtime, never --deep for signing. Refuses unmapped Mach-O, restricted
+  entitlements without embedded.provisionprofile, and the owner's /Volumes/Dane and DaneNotarized paths.
+- taskcluster/config.yml mac-signing: Dane LaunchServices names, greatdane-node*, dane.browser.xml.
+
+Prepared only. Not built, signed, notarized or published.
+---
+ greatdane/README.md                           |  21 ++
+ greatdane/macos/sign-map.tsv                  |  33 +++
+ greatdane/tools/sign_dane_macos.py            | 246 ++++++++++++++++++
+ .../production/dane.browser.no-dlv.xml        |  39 +++
+ .../production/dane.browser.xml               |  41 +++
+ taskcluster/config.yml                        |  16 +-
+ 6 files changed, 391 insertions(+), 5 deletions(-)
+ create mode 100644 greatdane/macos/sign-map.tsv
+ create mode 100755 greatdane/tools/sign_dane_macos.py
+ create mode 100644 security/mac/hardenedruntime/production/dane.browser.no-dlv.xml
+ create mode 100644 security/mac/hardenedruntime/production/dane.browser.xml
+
+diff --git a/greatdane/README.md b/greatdane/README.md
+index 3f6bad795e..4344dd68ae 100644
+--- a/greatdane/README.md
++++ b/greatdane/README.md
+@@ -43,3 +43,24 @@ Decision: per the coordinator's record of its Oct 27 2026 conversation with nowo
+ - The crash reporter is enabled again (`--disable-crashreporter` was removed from both mozconfigs), but it is **local-only**. application.ini has an empty `[Crash Reporter] ServerURL`, so there is no Mozilla or other submit endpoint. Auto-submit (`browser.crashReports.unsubmittedCheck.autoSubmit2`), the unsubmitted-report prompt and tab-crash "send report" are all off by default (branding prefs). Minidumps stay in the profile's "Crash Reports" folder.
+ - Known issue: the x86_64 (Intel) slice running under Rosetta 2 on Apple silicon can intermittently abort with `assertion failed [arm_interval().contains(address)]: code fragment does not contain the given arm address`. This is a Rosetta 2 fault, also reproduced on stock Firefox ESR (153.6.0esr), and the rate varies a lot between sessions (about 0–28%). It is not a GreatDANE regression.
+ - Native-Intel gate: x86_64 release sign-off has to come from runs on a native Intel Mac. Rosetta runs on Apple silicon don't count as passing or failing that gate.
++
++## macOS signing: per-binary entitlements (Apple fixes, 2026-11-10)
++
++- Map: `greatdane/macos/sign-map.tsv`. Tool: `greatdane/tools/sign_dane_macos.py plan|sign|check <Dane.app>`.
++  It signs inside-out with `--force --timestamp --options runtime` and never uses `--deep` to sign. It refuses any
++  Mach-O not covered by the map, refuses restricted entitlements without an embedded provisioning profile, and
++  refuses /Volumes/Dane and DaneNotarized paths. `check` is read-only and compares `codesign -d --entitlements -`
++  for each row against the map, then runs `codesign --verify --deep --strict`.
++- Entitlements by binary (Mozilla production config: taskcluster/config.yml mac-signing):
++  - **Dane.app:** `production/dane.browser.xml`, which is firefox.browser.xml minus application-identifier and
++    public-key-credential (they wait for Apple's grant). It keeps disable-library-validation, because ESR loads
++    third-party PKCS#11 modules in the parent process. `dane.browser.no-dlv.xml` is the stricter alternative
++    (`DANE_BROWSER_ENTITLEMENTS=dane.browser.no-dlv.xml`).
++  - **plugin-container.app:** `plugin-container.xml` (allow-jit only).
++  - **media-plugin-helper.app:** `media-plugin-helper.xml` (disable-library-validation only). It loads the
++    Google-signed Widevine CDM and the OpenH264 GMP.
++  - **No entitlements, hardened runtime only:** gpu-helper.app, updater.app (+ UpdateSettings.framework), the
++    LaunchServices surf.dogecoin.dane.updater and surf.dogecoin.dane.dmgInstallHelper, crashreporter.app,
++    crashhelper, pingsender, nmhproxy, XUL, *.dylib, gmp-clearkey, ChannelPrefs.framework and greatdane-node*.
++- `mach macos-sign` reads taskcluster/config.yml. It now uses the Dane LaunchServices names, includes
++  greatdane-node*, and uses dane.browser.xml for the app.
+diff --git a/greatdane/macos/sign-map.tsv b/greatdane/macos/sign-map.tsv
+new file mode 100644
+index 0000000000..813aa420b6
+--- /dev/null
++++ b/greatdane/macos/sign-map.tsv
+@@ -0,0 +1,33 @@
++# Dane per-binary signing map (production, Developer ID, team MNL79V994R).
++# Consumed by greatdane/tools/sign_dane_macos.py. Rows are signed TOP TO BOTTOM, inside-out, the app last.
++# Columns (TAB-separated):
++#   glob         path inside Dane.app ("." = the app itself); fnmatch-style, no "**"
++#   entitlements leaf name in security/mac/hardenedruntime/production/, or "-" for none (hardened runtime only)
++#   need         required = at least one match must exist; optional = may be absent
++# Every Mach-O under Contents/ must match exactly one row, or the tool refuses to sign.
++# Mozilla source of truth: taskcluster/config.yml mac-signing.hardened-sign-config.production.
++#
++# --- no entitlements: hardened runtime with defaults (same as Mozilla production) ---
++Contents/MacOS/*.dylib	-	required
++Contents/Resources/gmp-clearkey/*/*.dylib	-	optional
++Contents/MacOS/XUL	-	required
++Contents/MacOS/greatdane-node*	-	required
++Contents/MacOS/pingsender	-	optional
++Contents/MacOS/nmhproxy	-	optional
++Contents/MacOS/crashhelper	-	optional
++Contents/MacOS/crashreporter.app	-	optional
++Contents/MacOS/updater.app/Contents/Frameworks/UpdateSettings.framework	-	optional
++Contents/MacOS/updater.app	-	optional
++Contents/Library/LaunchServices/surf.dogecoin.dane.updater	-	optional
++Contents/Library/LaunchServices/surf.dogecoin.dane.dmgInstallHelper	-	required
++Contents/Frameworks/ChannelPrefs.framework	-	optional
++Contents/MacOS/gpu-helper.app	-	required
++# --- child processes with entitlements (Mozilla production files, unchanged) ---
++# Content/utility processes: JIT only.
++Contents/MacOS/plugin-container.app	plugin-container.xml	required
++# GMP process: loads Google-signed Widevine CDM and Cisco OpenH264 => needs disable-library-validation.
++Contents/MacOS/media-plugin-helper.app	media-plugin-helper.xml	required
++# Nightly-only (absent on ESR); listed so an unexpected copy is never signed with the wrong set.
++Contents/MacOS/security-module-helper.app	security-module-helper.xml	optional
++# --- the app (last) ---
++.	dane.browser.xml	required
+diff --git a/greatdane/tools/sign_dane_macos.py b/greatdane/tools/sign_dane_macos.py
+new file mode 100755
+index 0000000000..980cdb1205
+--- /dev/null
++++ b/greatdane/tools/sign_dane_macos.py
+@@ -0,0 +1,246 @@
++#!/usr/bin/env python3
++"""Per-binary Developer ID signing and entitlement check for Dane.app.
++
++    sign_dane_macos.py plan  <Dane.app>                 # print the plan; runs anywhere, no codesign
++    sign_dane_macos.py sign  <Dane.app> [--dry-run]     # codesign inside-out (macOS); needs DANE_SIGN_IDENTITY
++    sign_dane_macos.py check <Dane.app> [--json OUT]    # read-only: per row, entitlements == map, hardened
++                                                        # runtime flag, TeamIdentifier MNL79V994R, secure
++                                                        # timestamp; then codesign --verify --deep --strict
++
++Map: greatdane/macos/sign-map.tsv. Entitlements: security/mac/hardenedruntime/production/.
++Never uses `codesign --deep` to SIGN (only to verify), so no helper inherits the browser's entitlements.
++Never notarizes. Refuses the owner's installed app (/Volumes/Dane/...) and any DaneNotarized path.
++Optional env: DANE_BROWSER_ENTITLEMENTS=dane.browser.no-dlv.xml selects the stricter main-app alternative.
++"""
++import fnmatch, json, os, plistlib, subprocess, sys
++
++TREE = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
++MAP = os.path.join(TREE, "greatdane", "macos", "sign-map.tsv")
++ENTDIR = os.path.join(TREE, "security", "mac", "hardenedruntime", "production")
++RESTRICTED = {"com.apple.application-identifier",
++              "com.apple.developer.web-browser.public-key-credential",
++              "com.apple.developer.team-identifier"}
++FORBIDDEN = {"com.apple.security.get-task-allow",
++             "com.apple.security.cs.allow-dyld-environment-variables",
++             "com.apple.security.cs.allow-unsigned-executable-memory",
++             "com.apple.security.cs.disable-executable-page-protection"}
++MACHO = {b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",
++         b"\xfe\xed\xfa\xcf", b"\xfe\xed\xfa\xce"}
++TEAM = "MNL79V994R"
++
++
++def die(msg):
++    print("REFUSE: " + msg, file=sys.stderr)
++    sys.exit(2)
++
++
++def guard(app):
++    real = os.path.realpath(app)
++    if real.startswith("/Volumes/Dane/") or real == "/Volumes/Dane" or "DaneNotarized" in real:
++        die("owner's installed/notarized app is off-limits: " + real)
++    if not os.path.isfile(os.path.join(real, "Contents", "Info.plist")):
++        die("not an app bundle: " + real)
++    return real
++
++
++def load_map():
++    rows = []
++    for ln, line in enumerate(open(MAP, encoding="utf-8"), 1):
++        if not line.strip() or line.startswith("#"):
++            continue
++        parts = line.rstrip("\n").split("\t")
++        if len(parts) != 3 or parts[2] not in ("required", "optional"):
++            die("bad map line %d: %r" % (ln, line))
++        glob, ent, need = parts
++        if ent == "-":
++            ent = None
++        elif glob == "." and os.environ.get("DANE_BROWSER_ENTITLEMENTS"):
++            ent = os.environ["DANE_BROWSER_ENTITLEMENTS"]
++        rows.append({"glob": glob, "ent": ent, "need": need})
++    return rows
++
++
++def ent_dict(leaf):
++    if leaf is None:
++        return {}
++    p = os.path.join(ENTDIR, leaf)
++    if not os.path.isfile(p):
++        die("missing entitlements file " + p)
++    return plistlib.load(open(p, "rb"))
++
++
++def seg_match(path, glob):
++    """fnmatch per path segment, so '*' never crosses '/'."""
++    a, b = path.split("/"), glob.split("/")
++    return len(a) == len(b) and all(fnmatch.fnmatchcase(x, y) for x, y in zip(a, b))
++
++
++def is_macho(p):
++    try:
++        with open(p, "rb") as f:
++            return f.read(4) in MACHO
++    except OSError:
++        return False
++
++
++def owner_bundle(app, rel):
++    """Return the deepest enclosing .app/.framework (relative), or rel itself for a bare file."""
++    parts = rel.split("/")
++    best = None
++    for i in range(1, len(parts)):
++        if parts[i - 1].endswith((".app", ".framework")):
++            best = "/".join(parts[:i])
++    return best or rel
++
++
++def plan(app):
++    rows = load_map()
++    contents = os.path.join(app, "Contents")
++    for r in rows:
++        if r["glob"] == ".":
++            r["matches"] = ["."]
++        else:
++            r["matches"] = []
++    # Candidate signable units: bundles (.app/.framework, not the top app) and bare Mach-O files.
++    units = set()
++    for dp, dns, fns in os.walk(contents):
++        for d in dns:
++            if d.endswith((".app", ".framework")):
++                units.add(os.path.relpath(os.path.join(dp, d), app))
++        for fn in fns:
++            fp = os.path.join(dp, fn)
++            if not os.path.islink(fp) and is_macho(fp):
++                rel = os.path.relpath(fp, app)
++                units.add(rel)
++    # Bare Mach-O that live inside a nested bundle are covered by that bundle's signature
++    # (its main executable) unless a row names them explicitly.
++    claimed = {}
++    for r in rows:
++        if r["glob"] == ".":
++            continue
++        for u in sorted(units):
++            if seg_match(u, r["glob"]):
++                if u in claimed:
++                    die("%s matches two rows: %s and %s" % (u, claimed[u], r["glob"]))
++                claimed[u] = r["glob"]
++                r["matches"].append(u)
++    main_exe = plistlib.load(open(os.path.join(contents, "Info.plist"), "rb")).get("CFBundleExecutable")
++    if main_exe:
++        claimed["Contents/MacOS/" + main_exe] = "."  # signed as part of the app (last row)
++    unclaimed = []
++    for u in sorted(units):
++        if u in claimed:
++            continue
++        enc = owner_bundle(app, u)
++        if enc != u and (enc in claimed):
++            continue  # inside a bundle that is signed as a unit
++        unclaimed.append(u)
++    problems = []
++    for r in rows:
++        if r["need"] == "required" and not r["matches"]:
++            problems.append("required row has no match: " + r["glob"])
++    if unclaimed:
++        problems += ["Mach-O/bundle not covered by the map: " + u for u in unclaimed]
++    has_profile = os.path.isfile(os.path.join(contents, "embedded.provisionprofile"))
++    for r in rows:
++        e = ent_dict(r["ent"])
++        bad = FORBIDDEN & set(e)
++        if bad:
++            problems.append("%s: forbidden entitlements %s" % (r["ent"], sorted(bad)))
++        if (RESTRICTED & set(e)) and not has_profile:
++            problems.append("%s: restricted entitlements %s without Contents/embedded.provisionprofile"
++                            % (r["ent"], sorted(RESTRICTED & set(e))))
++        if (RESTRICTED & set(e)) and r["glob"] != ".":
++            problems.append("%s: restricted entitlements allowed on the main app only" % r["glob"])
++    return rows, problems
++
++
++def print_plan(rows):
++    for r in rows:
++        ent = r["ent"] or "(none)"
++        keys = sorted(ent_dict(r["ent"]))
++        for m in r["matches"]:
++            print("%-70s ent=%-28s %s" % (m, ent, ",".join(k.replace("com.apple.security.", "") for k in keys)))
++
++
++def codesign_ent(path):
++    out = subprocess.run(["codesign", "-d", "--entitlements", "-", "--xml", path],
++                         capture_output=True).stdout
++    out = out.strip()
++    return plistlib.loads(out) if out else {}
++
++
++def codesign_info(path):
++    """(hardened_runtime, team_id, timestamped) from `codesign -dvv`."""
++    err = subprocess.run(["codesign", "-dvv", path], capture_output=True, text=True).stderr
++    runtime = any(l.startswith("CodeDirectory") and "(runtime)" in l for l in err.splitlines())
++    team = next((l.split("=", 1)[1] for l in err.splitlines() if l.startswith("TeamIdentifier=")), None)
++    stamped = any(l.startswith("Timestamp=") for l in err.splitlines())
++    return runtime, team, stamped
++
++
++def main():
++    if len(sys.argv) < 3 or sys.argv[1] not in ("plan", "sign", "check"):
++        print(__doc__)
++        sys.exit(2)
++    mode, app = sys.argv[1], guard(sys.argv[2])
++    dry = "--dry-run" in sys.argv
++    rows, problems = plan(app)
++    print("tree:", TREE)
++    print("app: ", app)
++    print_plan(rows)
++    if problems:
++        for p in problems:
++            print("PROBLEM:", p)
++        if mode != "check":
++            die("%d problem(s); nothing signed" % len(problems))
++    if mode == "plan":
++        print("PLAN OK")
++        return
++    if mode == "sign":
++        ident = os.environ.get("DANE_SIGN_IDENTITY", "")
++        if not dry and ("(%s)" % TEAM) not in ident:
++            die("set DANE_SIGN_IDENTITY to the Developer ID Application identity for team " + TEAM)
++        for r in rows:
++            for m in r["matches"]:
++                cmd = ["codesign", "--force", "--timestamp", "--options", "runtime", "--sign", ident or "<identity>"]
++                if r["ent"]:
++                    cmd += ["--entitlements", os.path.join(ENTDIR, r["ent"])]
++                cmd.append(app if m == "." else os.path.join(app, m))
++                print("$", " ".join(cmd))
++                if not dry:
++                    subprocess.run(cmd, check=True)
++        if dry:
++            print("DRY RUN: nothing signed")
++            return
++    # check (also runs after sign)
++    fails, report = [], []
++    for r in rows:
++        want = ent_dict(r["ent"])
++        for m in r["matches"]:
++            p = app if m == "." else os.path.join(app, m)
++            got = codesign_ent(p)
++            runtime, team, stamped = codesign_info(p)
++            ok = got == want and runtime and team == TEAM and stamped
++            report.append({"path": m, "expected": r["ent"], "ok": ok, "got": sorted(got),
++                           "runtime": runtime, "team": team, "timestamp": stamped})
++            print("%s %-70s runtime=%s team=%s ts=%s got=%s" % ("OK  " if ok else "FAIL", m, runtime, team,
++                                                             stamped, sorted(got)))
++            if not ok:
++                fails.append(m)
++    v = subprocess.run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", app],
++                       capture_output=True, text=True)
++    print(v.stderr.strip())
++    if v.returncode != 0:
++        fails.append("codesign --verify --deep --strict")
++    if "--json" in sys.argv:
++        json.dump({"app": app, "rows": report, "verify_rc": v.returncode, "problems": problems},
++                  open(sys.argv[sys.argv.index("--json") + 1], "w"), indent=1)
++    if fails or problems:
++        print("CHECK FAIL:", fails + problems)
++        sys.exit(1)
++    print("CHECK PASS")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/security/mac/hardenedruntime/production/dane.browser.no-dlv.xml b/security/mac/hardenedruntime/production/dane.browser.no-dlv.xml
+new file mode 100644
+index 0000000000..d351b44b98
+--- /dev/null
++++ b/security/mac/hardenedruntime/production/dane.browser.no-dlv.xml
+@@ -0,0 +1,39 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<!--
++     ALTERNATIVE, not the default. Same as dane.browser.xml, but without
++     disable-library-validation. Use it only if nowon accepts that third-party
++     PKCS#11 modules (Security Devices > Load) stop loading in the parent process.
++     Widevine/OpenH264 are unaffected: they load in media-plugin-helper.app.
++
++     REMOVED until Apple grants them and a Developer ID provisioning profile is
++     embedded (signing with them earlier makes macOS kill the app at launch):
++       com.apple.application-identifier
++       com.apple.developer.web-browser.public-key-credential
++
++     DROPPED here (kept in dane.browser.xml): disable-library-validation. Mozilla's reason is "Allow loading third
++     party libraries to support pkcs11 modules". On ESR, PKCS#11 security devices
++     (smartcards, OpenSC, vendor tokens) load into the parent process, because the
++     security-module-helper is built only when NIGHTLY_BUILD is set
++     (ipc/app/Makefile.in, ipc/glue/GeckoChildProcessHost.cpp,
++     security/manager/ssl/PKCS11ModuleDB.cpp). Dropping it would break
++     Settings > Privacy & Security > Security Devices for third-party modules.
++
++     No get-task-allow, no allow-unsigned-executable-memory, no
++     allow-dyld-environment-variables. Every privacy key has an Info.plist usage string.
++-->
++<plist version="1.0">
++  <dict>
++    <!-- JS/wasm JIT: executable pages with MAP_JIT -->
++    <key>com.apple.security.cs.allow-jit</key><true/>
++
++    <!-- Microphone, camera, WebSerial/USB, geolocation, on sites the user allows -->
++    <key>com.apple.security.device.audio-input</key><true/>
++    <key>com.apple.security.device.camera</key><true/>
++    <key>com.apple.security.device.usb</key><true/>
++    <key>com.apple.security.personal-information.location</key><true/>
++
++    <!-- SmartCardServices(7): client certificates on smartcards -->
++    <key>com.apple.security.smartcard</key><true/>
++  </dict>
++</plist>
+diff --git a/security/mac/hardenedruntime/production/dane.browser.xml b/security/mac/hardenedruntime/production/dane.browser.xml
+new file mode 100644
+index 0000000000..e762067480
+--- /dev/null
++++ b/security/mac/hardenedruntime/production/dane.browser.xml
+@@ -0,0 +1,41 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
++<!--
++     Dane (surf.dogecoin.dane, team MNL79V994R): entitlements for the main browser
++     executable (Dane.app) in production signing. Derived from firefox.browser.xml.
++
++     REMOVED until Apple grants them and a Developer ID provisioning profile is
++     embedded (signing with them earlier makes macOS kill the app at launch):
++       com.apple.application-identifier
++       com.apple.developer.web-browser.public-key-credential
++
++     KEPT: disable-library-validation. Mozilla's reason is "Allow loading third
++     party libraries to support pkcs11 modules". On ESR, PKCS#11 security devices
++     (smartcards, OpenSC, vendor tokens) load into the parent process, because the
++     security-module-helper is built only when NIGHTLY_BUILD is set
++     (ipc/app/Makefile.in, ipc/glue/GeckoChildProcessHost.cpp,
++     security/manager/ssl/PKCS11ModuleDB.cpp). Dropping it would break
++     Settings > Privacy & Security > Security Devices for third-party modules.
++     See dane.browser.no-dlv.xml for the stricter alternative.
++
++     No get-task-allow, no allow-unsigned-executable-memory, no
++     allow-dyld-environment-variables. Every privacy key has an Info.plist usage string.
++-->
++<plist version="1.0">
++  <dict>
++    <!-- Third-party PKCS#11 modules load in the parent process on ESR -->
++    <key>com.apple.security.cs.disable-library-validation</key><true/>
++
++    <!-- JS/wasm JIT: executable pages with MAP_JIT -->
++    <key>com.apple.security.cs.allow-jit</key><true/>
++
++    <!-- Microphone, camera, WebSerial/USB, geolocation, on sites the user allows -->
++    <key>com.apple.security.device.audio-input</key><true/>
++    <key>com.apple.security.device.camera</key><true/>
++    <key>com.apple.security.device.usb</key><true/>
++    <key>com.apple.security.personal-information.location</key><true/>
++
++    <!-- SmartCardServices(7): client certificates on smartcards -->
++    <key>com.apple.security.smartcard</key><true/>
++  </dict>
++</plist>
+diff --git a/taskcluster/config.yml b/taskcluster/config.yml
+index d59f155489..4d6ee1405f 100644
+--- a/taskcluster/config.yml
++++ b/taskcluster/config.yml
+@@ -959,9 +959,11 @@ mac-signing:
+                       - "/Contents/MacOS/updater.app/Contents/Frameworks/UpdateSettings.framework"
+                       - "/Contents/MacOS/updater.app"
+                       - "/Contents/MacOS/gpu-helper.app"
+-                      - "/Contents/Library/LaunchServices/org.mozilla.updater"
+-                      - "/Contents/Library/LaunchServices/org.mozilla.dmgInstallHelper"
++                      - "/Contents/Library/LaunchServices/surf.dogecoin.dane.updater"
++                      - "/Contents/Library/LaunchServices/surf.dogecoin.dane.dmgInstallHelper"
+                       - "/Contents/MacOS/XUL"
++                      # GreatDANE: embedded chain node(s), hardened runtime, no entitlements
++                      - "/Contents/MacOS/greatdane-node*"
+                       - "/Contents/MacOS/pingsender"
+                       - "/Contents/MacOS/nmhproxy"
+                       - "/Contents/MacOS/*.dylib"
+@@ -977,7 +979,9 @@ mac-signing:
+                           default:
+                               by-project:
+                                   mozilla-central: public/build/security/nightly.browser.xml
+-                                  default: public/build/security/firefox.browser.xml
++                                  # GreatDANE: Dane main-app set (no application-identifier /
++                                  # public-key-credential until Apple grants them; see the file header)
++                                  default: public/build/security/dane.browser.xml
+                   globs:
+                       - "/"  # The .app
+ 
+@@ -1014,8 +1018,8 @@ mac-signing:
+                       - "/Contents/MacOS/updater.app/Contents/Frameworks/UpdateSettings.framework"
+                       - "/Contents/MacOS/updater.app"
+                       - "/Contents/MacOS/gpu-helper.app"
+-                      - "/Contents/Library/LaunchServices/org.mozilla.updater"
+-                      - "/Contents/Library/LaunchServices/org.mozilla.dmgInstallHelper"
++                      - "/Contents/Library/LaunchServices/surf.dogecoin.dane.updater"
++                      - "/Contents/Library/LaunchServices/surf.dogecoin.dane.dmgInstallHelper"
+                       - "/Contents/MacOS/pingsender"
+                       - "/Contents/MacOS/nmhproxy"
+                       - "/Contents/Frameworks/ChannelPrefs.framework"
+@@ -1026,6 +1030,8 @@ mac-signing:
+                   # These files are signed without entitlements
+                   globs:
+                       - "/Contents/MacOS/XUL"
++                      # GreatDANE: embedded chain node(s)
++                      - "/Contents/MacOS/greatdane-node*"
+                       - "/Contents/MacOS/*.dylib"
+                       - "/Contents/Resources/gmp-clearkey/*/*.dylib"
+ 

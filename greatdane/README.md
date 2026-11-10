@@ -43,3 +43,24 @@ Decision: per the coordinator's record of its Oct 27 2026 conversation with nowo
 - The crash reporter is enabled again (`--disable-crashreporter` was removed from both mozconfigs), but it is **local-only**. application.ini has an empty `[Crash Reporter] ServerURL`, so there is no Mozilla or other submit endpoint. Auto-submit (`browser.crashReports.unsubmittedCheck.autoSubmit2`), the unsubmitted-report prompt and tab-crash "send report" are all off by default (branding prefs). Minidumps stay in the profile's "Crash Reports" folder.
 - Known issue: the x86_64 (Intel) slice running under Rosetta 2 on Apple silicon can intermittently abort with `assertion failed [arm_interval().contains(address)]: code fragment does not contain the given arm address`. This is a Rosetta 2 fault, also reproduced on stock Firefox ESR (153.6.0esr), and the rate varies a lot between sessions (about 0–28%). It is not a GreatDANE regression.
 - Native-Intel gate: x86_64 release sign-off has to come from runs on a native Intel Mac. Rosetta runs on Apple silicon don't count as passing or failing that gate.
+
+## macOS signing: per-binary entitlements (Apple fixes, 2026-11-10)
+
+- Map: `greatdane/macos/sign-map.tsv`. Tool: `greatdane/tools/sign_dane_macos.py plan|sign|check <Dane.app>`.
+  It signs inside-out with `--force --timestamp --options runtime` and never uses `--deep` to sign. It refuses any
+  Mach-O not covered by the map, refuses restricted entitlements without an embedded provisioning profile, and
+  refuses /Volumes/Dane and DaneNotarized paths. `check` is read-only and compares `codesign -d --entitlements -`
+  for each row against the map, then runs `codesign --verify --deep --strict`.
+- Entitlements by binary (Mozilla production config: taskcluster/config.yml mac-signing):
+  - **Dane.app:** `production/dane.browser.xml`, which is firefox.browser.xml minus application-identifier and
+    public-key-credential (they wait for Apple's grant). It keeps disable-library-validation, because ESR loads
+    third-party PKCS#11 modules in the parent process. `dane.browser.no-dlv.xml` is the stricter alternative
+    (`DANE_BROWSER_ENTITLEMENTS=dane.browser.no-dlv.xml`).
+  - **plugin-container.app:** `plugin-container.xml` (allow-jit only).
+  - **media-plugin-helper.app:** `media-plugin-helper.xml` (disable-library-validation only). It loads the
+    Google-signed Widevine CDM and the OpenH264 GMP.
+  - **No entitlements, hardened runtime only:** gpu-helper.app, updater.app (+ UpdateSettings.framework), the
+    LaunchServices surf.dogecoin.dane.updater and surf.dogecoin.dane.dmgInstallHelper, crashreporter.app,
+    crashhelper, pingsender, nmhproxy, XUL, *.dylib, gmp-clearkey, ChannelPrefs.framework and greatdane-node*.
+- `mach macos-sign` reads taskcluster/config.yml. It now uses the Dane LaunchServices names, includes
+  greatdane-node*, and uses dane.browser.xml for the app.
