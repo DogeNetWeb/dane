@@ -56,7 +56,7 @@ L10N_FIXTURES = ("de", "fr", "ja", "zh-CN", "en-GB", "ar")
 # ESR153 browser/locales/l10n-changesets.json records this revision for every
 # locale, including the six fixtures (NGD L3).
 L10N_CHANGESETS = os.path.join(ROOT, "browser/locales/l10n-changesets.json")
-ESR153_L10N_REVISION = "3ae91662ee285b44f21ef31b9cae722d132e28ea"
+ESR153_L10N_REVISION = "4e2e25a0b94740a84c357e93346ec4f4c94521e3"
 
 
 def read_locales(path):
@@ -226,14 +226,29 @@ def check_fixtures(bad):
             except OSError:
                 pass
         dane_val = (maint_value(dane_crlf) or "").rstrip("\r")
+        maint_lines = [
+            ln for ln in dane_crlf.split("\n") if ln.startswith("MozillaMaintenanceDescription=")
+        ]
+        # The maintenance line itself, not just some other line, must end in CRLF.
+        maint_line_crlf = (
+            len(maint_lines) == 1
+            and maint_lines[0].endswith("\r")
+            and "MozillaMaintenanceDescription=" + dane_val + "\r\n" in dane_crlf
+        )
         if "\r\n" not in dane_crlf:
             fail("CRLF + Dane: generator dropped CR, output has no CRLF", bad)
         elif dane_val != DANE_MAINT:
             fail("CRLF + Dane: maintenance value mismatch: %r" % dane_val, bad)
         elif FORBIDDEN_MAINT.search(dane_val):
             fail("CRLF + Dane: leftover Firefox in maintenance value", bad)
+        elif not maint_line_crlf:
+            fail(
+                "CRLF + Dane: MozillaMaintenanceDescription line itself does not end in CRLF: %r"
+                % maint_lines,
+                bad,
+            )
         else:
-            pass_("CRLF + Dane: MozillaMaintenanceDescription replaced and CRLF preserved")
+            pass_("CRLF + Dane: MozillaMaintenanceDescription line itself ends in CRLF")
 
 
 def ftl_value(text, key):
