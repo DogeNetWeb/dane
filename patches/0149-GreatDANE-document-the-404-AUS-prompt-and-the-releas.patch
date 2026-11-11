@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 21:01:55 -0600
+Subject: [PATCH 149/155] GreatDANE: document the 404 AUS prompt and the
+ /releases/ redirect (round 5b)
+
+5A-M2: the firefox.js comment no longer says dane.surf returns a
+"no update" answer. /update/ and /update/update.xml are 404, nothing
+is published, and this unofficial build does not serve an empty
+<updates/>. After app.update.backgroundMaxErrors (10) failed
+background checks, unofficial builds show the manual-update prompt
+pointing at https://dane.surf/download/. No server change is made.
+
+5A-I1: https://dane.surf/releases/ 301s to /download/; stop calling it
+404. Also note that app.update.url is dead (Bug 1568994) and
+application.ini is authoritative, and that no DisableAppUpdate policy
+is set in this tree.
+---
+ browser/app/profile/firefox.js | 17 ++++++++++++-----
+ greatdane/README.md            | 12 +++++++++---
+ 2 files changed, 21 insertions(+), 8 deletions(-)
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index 487de0b..109e4d7 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -3710,11 +3710,18 @@ pref("browser.startup.homepage", "about:home");
+ pref("browser.newtabpage.enabled", true);
+ pref("browser.newtabpage.activity-stream.enabled", true);
+ // Updates: Dane's own self-hosted, MAR-signed ESR channel (UPDATE-PLAN.md,
+-// Option A). Static update.xml; nginx/R2 rewrites unknown paths to a
+-// "no update" answer. Mozilla's AUS is never contacted. MAR signatures are
+-// verified against Dane's own certs embedded at build time
+-// (../updates/embed-mar-cert.sh); the distribution policy keeps
+-// DisableAppUpdate until that step and --enable-update-channel=esr land.
++// Option A). Mozilla's AUS is never contacted. dane.surf /update/ and
++// /update/update.xml return 404 (nothing is published; this unofficial
++// build does not serve an empty <updates/> document). Each failed
++// background check counts toward app.update.backgroundMaxErrors (10).
++// After that, unofficial builds show the manual-update prompt (badge and
++// doorhanger) pointing at app.update.url.manual (https://dane.surf/download/).
++// At the 24-hour branding interval that is about 10 days. No
++// DisableAppUpdate policy is set in this tree, so the checks do run.
++// The app.update.url pref below is dead (Bug 1568994); the compiled-in
++// application.ini URL (MOZ_APPUPDATE_HOST) is what UpdateService uses.
++// MAR signatures are verified against Dane's own certs embedded at build
++// time (../updates/embed-mar-cert.sh).
+ pref("app.update.auto", true);
+ pref("app.update.url", "https://dane.surf/update/3/%PRODUCT%/%VERSION%/%BUILD_ID%/%BUILD_TARGET%/%LOCALE%/%CHANNEL%/update.xml");
+ pref("browser.fixup.domainsuffixwhitelist.pepe", true);
+diff --git a/greatdane/README.md b/greatdane/README.md
+index 8c97242..86154d7 100644
+--- a/greatdane/README.md
++++ b/greatdane/README.md
+@@ -31,9 +31,15 @@ Decision: per the coordinator's record of its Oct 27 2026 conversation with nowo
+   named GreatDANE.app), delete GreatDANE.app from Applications first, then drag Dane in. The profile isn't affected.
+   The greatdane.doge start page has this note. Later updates are expected to install in-app once Dane's own update
+   signing (MAR key and update server) is in place; until then, updates are manual downloads.
+-  The compiled-in and pref AUS URL is https://dane.surf/update/3/... and the details link is
+-  https://dane.surf/releases/. Those paths are not on the site yet (404 as of 2026-11-10);
+-  this change only retargets the URLs and does not publish update.xml or a releases page.
++  The compiled-in AUS URL is https://dane.surf/update/3/... (`app.update.url` in firefox.js
++  is dead, Bug 1568994; application.ini / MOZ_APPUPDATE_HOST is authoritative).
++  https://dane.surf/update/ and /update/update.xml are 404 as of 2026-11-10; nothing
++  is published, and this unofficial build does not serve an empty <updates/>.
++  After app.update.backgroundMaxErrors (10) failed background checks (~10 days at
++  the 24-hour interval), unofficial builds show a manual-update prompt that points
++  at https://dane.surf/download/. The details link is https://dane.surf/releases/,
++  which 301s to /download/ (as of 2026-11-10). This change only retargets the URLs
++  and does not publish update.xml or a releases page.
+ - **Optional cleanup**, only needed if the old app was ever run from its dmg and its privileged installer was allowed
+   (upstream dmgInstallHelper.md, old name):
+ 
