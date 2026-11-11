@@ -140,3 +140,4 @@
 0140-GreatDANE-prefer-the-ESR-Preprocessor-and-mirror-ins.patch
 0141-GreatDANE-allowlist-branding.nsi-lines-and-hash-the-.patch
 0142-GreatDANE-tighten-NSIS-continuation-joining-and-stop.patch
+0143-GreatDANE-retarget-product-URLs-and-the-default-top-.patch

@@ -7,7 +7,7 @@ TT = "browser/components/topsites/content/tippytop"
 sites = json.load(open(os.path.join(TT, "top_sites.json")))
 by = {d: s for s in sites for d in s["domains"]}
 fx = "browser/app/profile/firefox.js"
-hosts = ["youtube.com", "pepecoin.surf", "amazon.com", "dogecoin.surf", "grokipedia.com", "x.com", "greatdane.doge"]
+hosts = ["youtube.com", "dane.surf", "amazon.com", "grokipedia.com", "x.com", "greatdane.doge"]
 if os.path.exists(fx):
     m = re.search(r'pref\("browser\.newtabpage\.activity-stream\.default\.sites",\s*"([^"]*)"', open(fx).read())
     if m:

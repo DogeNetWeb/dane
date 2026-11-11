@@ -94,7 +94,7 @@ try:
       sponsored: Services.prefs.getBoolPref("browser.newtabpage.activity-stream.showSponsoredTopSites", true),
       contile: Services.prefs.getBoolPref("browser.topsites.contile.enabled", true),
     };""", sandbox=None)
-    expect = "https://www.youtube.com/,https://pepecoin.surf/,https://www.amazon.com/,https://dogecoin.surf/,https://grokipedia.com/,https://x.com/,https://greatdane.doge/"
+    expect = "https://www.youtube.com/,https://dane.surf/,https://www.amazon.com/,https://grokipedia.com/,https://x.com/,https://greatdane.doge/"
     check("default top-site tiles", r["sites"] == expect, r)
     check("remote/region default sites off", r["remote"] is False, r)
     check("sponsored top sites off", r["sponsored"] is False and r["contile"] is False, r)

@@ -542,7 +542,7 @@ def check_filenames(bad):
             pass_("package-manifest.in ships @MOZ_APP_NAME@.VisualElementsManifest.xml")
 
 
-# Windows publisher/company metadata. pepecoin.surf update URLs and other
+# Windows publisher/company metadata. dane.surf update URLs and other
 # existing site / bundle-id references are not publisher strings.
 PUBLISHER_FILES = (
     "browser/app/module.ver",

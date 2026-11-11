@@ -14,7 +14,7 @@ Reason-code wording below is quoted from Apple's NSPrivacyAccessedAPITypeReasons
 
 ## Collected data types (conservative)
 Every entry is a stock Firefox service that Dane keeps, with Mozilla receiving the data, with one exception: **Dane
-(pepecoin.surf) receives the update-check data**, declared under OtherDiagnosticData (see "Update check" below). Each
+(dane.surf) receives the update-check data**, declared under OtherDiagnosticData (see "Update check" below). Each
 entry has Tracking=false.
 If a feature only collects after the user turns it on, it's still declared.
 
@@ -23,18 +23,17 @@ If a feature only collects after the user turns it on, it's still declared.
   OtherDiagnosticData entry: Linked=false, Tracking=false, purpose AppFunctionality.
   For the Dane update check the purpose is AppFunctionality only; the entry also carries Analytics because of Mozilla's opt-in telemetry.
 
-  The automatic update check sends product, version, build ID, target, locale and channel to Dane's update server (pepecoin.surf). The server logs only product, version, platform and channel, plus the request status, the user agent and a masked IP (/24 for IPv4, /48 for IPv6). Build ID, locale, query strings and referrers are not logged. Logs are kept about 14 days, are not linked to an account or device, and are not shared. Entries from before Nov 10, 2026 hold full IPs until they rotate out around Nov 25. No check happens while the DisableAppUpdate policy is on.
+  The automatic update check sends product, version, build ID, target, locale and channel to Dane's update server (dane.surf). The server logs only product, version, platform and channel, plus the request status, the user agent and a masked IP (/24 for IPv4, /48 for IPv6). Build ID, locale, query strings and referrers are not logged. Logs are kept about 14 days, are not linked to an account or device, and are not shared. Entries from before Nov 10, 2026 hold full IPs until they rotate out around Nov 25. No check happens while the DisableAppUpdate policy is on.
 
   Plainly: log entries written before Nov 10, 2026 kept full client IPs, and they stay on the server until they
-  rotate out around Nov 25, 2026. The update URL is https://pepecoin.surf/dane/update/3/... (dogecoin.surf only
-  301-redirects and isn't an update server).
+  rotate out around Nov 25, 2026. The update URL is https://dane.surf/update/3/.... This unofficial build does not publish update.xml.
 
   (DisableAppUpdate makes `UpdateServiceStub.updateDisabled` true: toolkit/mozapps/update/UpdateServiceStub.sys.mjs:209-215.)
-- **Default new-tab tiles:** the icons for pepecoin.surf, dogecoin.surf, greatdane.doge and grokipedia.com are bundled
+- **Default new-tab tiles:** the icons for dane.surf, greatdane.doge and grokipedia.com are bundled
   through tippytop (browser/components/topsites/content/tippytop, see greatdane/tippytop-ICON-SOURCES.md; grokipedia.com
   uses our own generated letter tile, not the site's mark). Showing
   the new-tab page doesn't fetch from those sites, so there's no favicon or screenshot request.
-- **User-initiated loads** of pepecoin.surf, dogecoin.surf or greatdane.doge (clicking a tile, typing the address, the
+- **User-initiated loads** of dane.surf or greatdane.doge (clicking a tile, typing the address, the
   manual-download and release-notes links) are ordinary browsing. That site's operator sees a normal web request,
   the same as for any other site.
 
@@ -45,7 +44,7 @@ If a feature only collects after the user turns it on, it's still declared.
 | CoarseLocation | no | AppFunctionality | Stock region (country) lookup: `browser.region.network.url` = location.services.mozilla.com/v1/country (all.js), used for region defaults. |
 | ProductInteraction | no | Analytics | Only if the user turns data collection ON. Dane ships it OFF (`datareporting.healthreport.uploadEnabled=false`, `toolkit.telemetry.enabled=false`, `toolkit.telemetry.server="data:,"`), but Glean's endpoint is compiled in as incoming.telemetry.mozilla.org (toolkit/components/glean/src/init/mod.rs). Patch 0028 keeps the opt-in visible. |
 | PerformanceData | no | Analytics | Same opt-in as above (Glean/legacy telemetry performance metrics). |
-| OtherDiagnosticData | no | AppFunctionality, Analytics | **Not opt-in only** (corrects round 2). The default-on GMP plugin update check (`media.gmp-provider.enabled=true`, firefox.js:2448; OpenH264/Widevine enabled, :2400/:2378) fetches `media.gmp-manager.url` = aus5.mozilla.org/update/3/GMP/%VERSION%/%BUILD_ID%/%BUILD_TARGET%/%LOCALE%/%CHANNEL%/%OS_VERSION%/%DISTRIBUTION%/%DISTRIBUTION_VERSION%/update.xml (modules/libpref/init/all.js:3474). That sends app version, build ID, build target (OS + CPU arch), locale, channel, OS version and distribution ID/version to Mozilla (AppFunctionality: to serve the right plugin). **Declared** here too: the Dane update-check log at pepecoin.surf (receiver: Dane; AppFunctionality only; see "Update check" above). **Analytics** stays only for the opt-in telemetry diagnostics, where it has been since patch 0058, and not for GMP or the update logs. |
+| OtherDiagnosticData | no | AppFunctionality, Analytics | **Not opt-in only** (corrects round 2). The default-on GMP plugin update check (`media.gmp-provider.enabled=true`, firefox.js:2448; OpenH264/Widevine enabled, :2400/:2378) fetches `media.gmp-manager.url` = aus5.mozilla.org/update/3/GMP/%VERSION%/%BUILD_ID%/%BUILD_TARGET%/%LOCALE%/%CHANNEL%/%OS_VERSION%/%DISTRIBUTION%/%DISTRIBUTION_VERSION%/update.xml (modules/libpref/init/all.js:3474). That sends app version, build ID, build target (OS + CPU arch), locale, channel, OS version and distribution ID/version to Mozilla (AppFunctionality: to serve the right plugin). **Declared** here too: the Dane update-check log at dane.surf (receiver: Dane; AppFunctionality only; see "Update check" above). **Analytics** stays only for the opt-in telemetry diagnostics, where it has been since patch 0058, and not for GMP or the update logs. |
 
 Deliberately not declared:
 - **CrashData:** the crash reporter is local-only. application.ini has an empty `[Crash Reporter] ServerURL`, and
