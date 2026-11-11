@@ -1,0 +1,97 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 18:04:34 -0600
+Subject: [PATCH 123/144] GreatDANE: retarget the Sync promo off "Download
+ Firefox"; leave Sync itself enabled (round 4f)
+
+Frank leftover 9. Change only the promo wording and link. Sync, FxA, and the
+connect-another-device flow are not disabled.
+
+sync-mobile-promo no longer says "Download Firefox for Android or iOS". Dane
+has no mobile app (https://dane.surf/download/ is Mac + Windows only). The
+string now points at that download page: "To use Dane on another computer,
+get it from the download page."
+
+identity.mobilepromo.android and identity.mobilepromo.ios are set in
+firefox-branding.js to https://dane.surf/download/?ref= so the existing
+sync.js suffix "sync-preferences" yields a valid query. sync.js itself is
+not edited. The promo markup drops the Android/iOS store icons and the
+second store link; the remaining android-link class is still filled by
+sync.js.
+
+Prepared only. Not built, signed, notarized or published.
+---
+ .../branding/greatdane/pref/firefox-branding.js    |  6 ++++++
+ browser/components/preferences/sync.inc.xhtml      | 13 -------------
+ .../en-US/browser/preferences/preferences.ftl      | 14 +++++---------
+ 3 files changed, 11 insertions(+), 22 deletions(-)
+
+diff --git a/browser/branding/greatdane/pref/firefox-branding.js b/browser/branding/greatdane/pref/firefox-branding.js
+index 2c2992257c..c6e2a001c0 100644
+--- a/browser/branding/greatdane/pref/firefox-branding.js
++++ b/browser/branding/greatdane/pref/firefox-branding.js
+@@ -35,6 +35,12 @@ pref("devtools.selfxss.count", 5);
+ // (the card's brand string already says Dane, but the store links are Firefox).
+ pref("browser.contentblocking.report.show_mobile_app", false);
+ 
++// GreatDANE: Sync promo hrefs. Dane has no Android/iOS app. sync.js appends
++// "sync-preferences" to these values, so they end with a query parameter.
++// Result: https://dane.surf/download/?ref=sync-preferences
++pref("identity.mobilepromo.android", "https://dane.surf/download/?ref=");
++pref("identity.mobilepromo.ios", "https://dane.surf/download/?ref=");
++
+ // GreatDANE: hide Monitor / Relay / VPN "from Mozilla" CTAs in the FxA /
+ // app menu. Pref-only; the services themselves are not disabled.
+ pref("identity.fxaccounts.toolbar.pxiToolbarEnabled", false);
+diff --git a/browser/components/preferences/sync.inc.xhtml b/browser/components/preferences/sync.inc.xhtml
+index c379e1a5f8..8b5391920f 100644
+--- a/browser/components/preferences/sync.inc.xhtml
++++ b/browser/components/preferences/sync.inc.xhtml
+@@ -37,22 +37,9 @@
+       </vbox>
+     </hbox>
+     <label class="fxaMobilePromo" data-l10n-id="sync-mobile-promo">
+-      <html:img
+-        role="none"
+-        src="chrome://browser/skin/logo-android.svg"
+-        data-l10n-name="android-icon"
+-        class="androidIcon"/>
+       <html:a
+         data-l10n-name="android-link"
+         class="fxaMobilePromo-android text-link" target="_blank"/>
+-      <html:img
+-        role="none"
+-        src="chrome://browser/skin/logo-ios.svg"
+-        data-l10n-name="ios-icon"
+-        class="iOSIcon"/>
+-      <html:a
+-        data-l10n-name="ios-link"
+-        class="fxaMobilePromo-ios text-link" target="_blank"/>
+     </label>
+   </groupbox>
+ 
+diff --git a/browser/locales/en-US/browser/preferences/preferences.ftl b/browser/locales/en-US/browser/preferences/preferences.ftl
+index d6dacbb4ab..a79ba99803 100644
+--- a/browser/locales/en-US/browser/preferences/preferences.ftl
++++ b/browser/locales/en-US/browser/preferences/preferences.ftl
+@@ -1298,15 +1298,11 @@ sync-signedout-account-short =
+     .label = Sign in
+     .accesskey = i
+ 
+-# This message contains two links and two icon images.
+-#   `<img data-l10n-name="android-icon"/>` - Android logo icon
+-#   `<a data-l10n-name="android-link">` - Link to Android Download
+-#   `<img data-l10n-name="ios-icon">` - iOS logo icon
+-#   `<a data-l10n-name="ios-link">` - Link to iOS Download
+-#
+-# They can be moved within the sentence as needed to adapt
+-# to your language, but should not be changed or translated.
+-sync-mobile-promo = Download Firefox for <img data-l10n-name="android-icon"/> <a data-l10n-name="android-link">Android</a> or <img data-l10n-name="ios-icon"/> <a data-l10n-name="ios-link">iOS</a> to sync with your mobile device.
++# Dane has no Android or iOS app (the public download page is Mac + Windows
++# only). This promo must not say "Download Firefox". Sync itself is unchanged.
++# The href is set from identity.mobilepromo.* (branding prefs) plus the
++# "sync-preferences" suffix in sync.js, and points at dane.surf/download/.
++sync-mobile-promo = To use Dane on another computer, get it from the <a data-l10n-name="android-link">download page</a>.
+ 
+ ## Firefox account - Signed in
+ 
