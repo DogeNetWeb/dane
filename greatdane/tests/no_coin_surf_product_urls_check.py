@@ -43,6 +43,8 @@ EXCLUDE_PREFIXES = (
 EXCLUDE_FILES = (
     # This check names the leftover hosts in its own comments and messages.
     "greatdane/tests/no_coin_surf_product_urls_check.py",
+    # The tests README documents those same leftover hosts and phrases.
+    "greatdane/tests/README.md",
 )
 # Author-email token only (5A-L3 a): strip the match and re-test the rest
 # of the line. A URL on the same line is not hidden by the email.
@@ -54,6 +56,12 @@ ALLOWED_TOKEN_RES = (
     re.compile(r"(?i)(?<![\w.-])seed\.dogecoin\.surf(?![\w.-])"),
     re.compile(r"(?i)(?<![\w.-])seed\.pepecoin\.surf(?![\w.-])"),
     re.compile(r"(?i)https://pepecoin\.surf/releases/?"),
+    # Historical privacy-manifest wording (5A-H1 / 5A-M1): shipped text must
+    # name pepecoin.surf as the old update host. Strip only these phrases
+    # and re-test the rest of the line so a URL on the same line still fails.
+    re.compile(r"(?i)update checks went to pepecoin\.surf"),
+    re.compile(r"(?i)update-check log entries on pepecoin\.surf"),
+    re.compile(r"(?i)older pepecoin\.surf entries"),
 )
 
 SKIP_DIR_NAMES = {

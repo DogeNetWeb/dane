@@ -1,0 +1,56 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 21:03:18 -0600
+Subject: [PATCH 152/155] GreatDANE: allow the historical pepecoin.surf log
+ mention in the privacy text (round 5b)
+
+The 5A-H1 wording has to name pepecoin.surf as the old update-check
+log host. The leftover-URL checker now strips only those historical
+phrases (and still re-tests the rest of the line, so a URL next to
+the phrase still fails). greatdane/tests/README.md is excluded
+because it documents the same leftover hosts, like the checker
+itself.
+---
+ greatdane/tests/README.md                          | 2 +-
+ greatdane/tests/no_coin_surf_product_urls_check.py | 8 ++++++++
+ 2 files changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/greatdane/tests/README.md b/greatdane/tests/README.md
+index 001d8a2..25bf0a9 100644
+--- a/greatdane/tests/README.md
++++ b/greatdane/tests/README.md
+@@ -18,7 +18,7 @@ passkey_check.py: `passkey_check.py <Dane.app> <arm64|x86_64> [--static-only]`.
+ sign_dane_macos_selftest.py: `python3 greatdane/tests/sign_dane_macos_selftest.py [-v]`. A self-test of greatdane/tools/sign_dane_macos.py that runs on Linux or macOS and never really signs anything. It builds fake Dane.app layouts in a temp dir, including real-style framework symlinks, and puts a MOCK `codesign` first on PATH. Cases: plan, dry-run and mock sign (the identity is never printed, `--deep` is never used, the app is signed last); refusal of non-main Mach-O inside mapped bundles (minidump-analyzer in crashreporter.app, evil.dylib in plugin-container.app, framework helpers, nested bundles); restricted entitlements without a profile; the path guard (/Volumes/Dane, " N" and "-N" variants, case variants, the /System/Volumes/Data alias, danenotarized, the GreatDANE profile dir, the /Volumes allowlist); and `check` failing on a missing hardened runtime, a wrong team, a missing timestamp, wrong helper entitlements, or a team in signing.conf that doesn't match. When build/moz.configure/update-programs.configure is present, it also checks that the configure OU equals TEAM_ID in greatdane/macos/signing.conf.
+ 
+ - `tippytop_default_sites_check.py`: every default.sites host has a bundled tippytop icon (run from tree root).
+-- `no_coin_surf_product_urls_check.py`: fail if a non-excluded `*coin.surf` product URL remains (run from tree root). Scans the whole tree with explicit excludes (evidence/, publisher fixtures, the check script). `.svg` is scanned as text. Files over 2 MB fail loudly rather than being skipped. An author-email match (`nowon@noreply.pepecoin.surf`) strips only that token and re-tests the rest of the line. Allowed leftover tokens in a full tree, also stripped per-token: `seed.dogecoin.surf`, `seed.pepecoin.surf`, and the PepeNet desktop `https://pepecoin.surf/releases` URL. The greatdane.doge tile is not a `*coin.surf` host.
++- `no_coin_surf_product_urls_check.py`: fail if a non-excluded `*coin.surf` product URL remains (run from tree root). Scans the whole tree with explicit excludes (evidence/, publisher fixtures, the check script). `.svg` is scanned as text. Files over 2 MB fail loudly rather than being skipped. An author-email match (`nowon@noreply.pepecoin.surf`) strips only that token and re-tests the rest of the line. Allowed leftover tokens in a full tree, also stripped per-token: `seed.dogecoin.surf`, `seed.pepecoin.surf`, and the PepeNet desktop `https://pepecoin.surf/releases` URL. Historical privacy-manifest phrases that name pepecoin.surf as the old update-check log host are also stripped per-phrase, then the rest of the line is re-tested. The greatdane.doge tile is not a `*coin.surf` host.
+ - `sign_only_selftest.py`: sign-only.sh with stub tools + mock codesign (DANE_ARCH allowlist, dmg refusal, realpath owner guards, ad-hoc and Developer ID runs). No real signing.
+ - `no_legacy_deep_sign_check.py [--root DIR] [-v]`: round 4 (L-a). Scans every text file under greatdane/ (tests and non-.sh/.py files too; Markdown fenced blocks only) plus taskcluster/config.yml. It flags the deep flag outside a verify-only command (no sign flag in it, so a `--verify` elsewhere in a signing command does not exempt it): line continuations, `$CS --deep`, `DEEP=`/`$DEEP` flag variables, file-local variables expanded (`${F}ep`), any token containing "deep" in a codesign command, eval and `bash -c`/`sh -c` strings parsed as shell, and Python strings folded from `+`, `*`, f-strings and assigned names (`D="--deep"`, `"-"*2+"deep"`, `CS+" --deep"`). It also flags browser.entitlements.plist and legacy script names (sign-only.sh unless it is `$TREE/greatdane/tools/sign-only.sh`, including via a variable, a glob or a fake path; build-universal.sh; notarize.sh without --submit-existing). YAML is checked with or without PyYAML: `deep: true` behind anchors, aliases or tags, plain and block-scalar `run:` values as shell, and no comment can hide a hit. Markdown fenced and indented code blocks are checked (round 4c L2). There is no waiver (round 4c L1): the `nolegacy:` comment mechanism is removed, and the selftest builds its must-not-match regex at runtime instead. sign_dane_macos_selftest.py runs it on this tree (L0: PASS with 0 hits and no waivers) and on fixtures (L1-L45; L21 checks that a `nolegacy:` comment no longer waives anything).
+ - `locale_branding_check.py`: source-level check (no build) that `generate_ini.py` overrides `MozillaMaintenanceDescription` for every locale in all-locales and shipped-locales (fixtures for de, fr, ja, zh-CN, en-GB, ar, plus synthetic leftover/missing-key cases; official Firefox wording is left alone), and that the proposed About attribution lives in greatdane brand.ftl, is shipped to every locale via locales/jar.mn, and is wired from aboutDialog.xhtml when MOZ_OFFICIAL_BRANDING is not set.
+diff --git a/greatdane/tests/no_coin_surf_product_urls_check.py b/greatdane/tests/no_coin_surf_product_urls_check.py
+index 958be60..0231a9c 100755
+--- a/greatdane/tests/no_coin_surf_product_urls_check.py
++++ b/greatdane/tests/no_coin_surf_product_urls_check.py
+@@ -43,6 +43,8 @@ EXCLUDE_PREFIXES = (
+ EXCLUDE_FILES = (
+     # This check names the leftover hosts in its own comments and messages.
+     "greatdane/tests/no_coin_surf_product_urls_check.py",
++    # The tests README documents those same leftover hosts and phrases.
++    "greatdane/tests/README.md",
+ )
+ # Author-email token only (5A-L3 a): strip the match and re-test the rest
+ # of the line. A URL on the same line is not hidden by the email.
+@@ -54,6 +56,12 @@ ALLOWED_TOKEN_RES = (
+     re.compile(r"(?i)(?<![\w.-])seed\.dogecoin\.surf(?![\w.-])"),
+     re.compile(r"(?i)(?<![\w.-])seed\.pepecoin\.surf(?![\w.-])"),
+     re.compile(r"(?i)https://pepecoin\.surf/releases/?"),
++    # Historical privacy-manifest wording (5A-H1 / 5A-M1): shipped text must
++    # name pepecoin.surf as the old update host. Strip only these phrases
++    # and re-test the rest of the line so a URL on the same line still fails.
++    re.compile(r"(?i)update checks went to pepecoin\.surf"),
++    re.compile(r"(?i)update-check log entries on pepecoin\.surf"),
++    re.compile(r"(?i)older pepecoin\.surf entries"),
+ )
+ 
+ SKIP_DIR_NAMES = {
