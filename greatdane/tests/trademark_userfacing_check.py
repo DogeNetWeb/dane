@@ -29,6 +29,8 @@ from pepecoin_publisher import (
     mentions_pepecoin,
     module_ver_company,
     module_ver_copyright,
+    module_ver_parser_kind,
+    module_ver_parser_report,
     shared_nsh_has_pepecoin,
 )
 
@@ -617,8 +619,12 @@ PEPECOIN_BYPASS_FIXTURES = (
     ("L7-N4", "branding.nsi", "L7-N4-spaces.branding.nsi", "pepecoin"),
     ("L8-foundation", "branding.nsi", "L8-mozilla-foundation.branding.nsi", "empty-or-mozilla"),
     ("L8-corporation", "branding.nsi", "L8-mozilla-corporation.branding.nsi", "empty-or-mozilla"),
-    # 4k F1–F4
-    ("F1-if", "module.ver", "F1-if.module.ver", "forbidden-directive"),
+    # 4k F1–F4. F1-if: the upstream Preprocessor evaluates `%if 1` and
+    # the company is Pepecoin (verdict "pepecoin"). The fallback
+    # reimplementation refuses any % directive other than define/include
+    # (verdict "forbidden-directive").
+    ("F1-if", "module.ver", "F1-if.module.ver",
+     "pepecoin" if module_ver_parser_kind() == "mozbuild.preprocessor" else "forbidden-directive"),
     ("F1-undefined-at", "module.ver", "F1-undefined-at.module.ver", "undefined-subst"),
     ("F2-system", "branding.nsi", "F2-system.branding.nsi", "forbidden-command"),
     ("F2-appendfile", "branding.nsi", "F2-appendfile.branding.nsi", "forbidden-command"),
@@ -645,7 +651,7 @@ def fixture_violations(name, kind, rel, expect):
             empty = is_empty_or_mozilla_publisher(company) or is_empty_or_mozilla_publisher(publisher)
             non_ascii = not is_printable_ascii(company) or not is_printable_ascii(publisher)
     except ModuleVerError as exc:
-        msg = str(exc)
+        msg = str(exc).lower()
         if "undefined" in msg:
             return "undefined-subst"
         return "forbidden-directive"
@@ -674,6 +680,7 @@ def fixture_violations(name, kind, rel, expect):
 
 
 def check_pepecoin_bypass_fixtures(bad):
+    pass_("module.ver parser: %s" % module_ver_parser_report())
     report = makensis_report()
     if not makensis_path():
         fail(

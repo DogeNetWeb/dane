@@ -7,11 +7,15 @@
 This is test tooling only. It is not shipped in the product.
 
 NSIS values come from makensis -PPO on a tiny wrapper that sets
-`Unicode true`, !includes the branding file, and echoes ${CompanyName}
-and ${ARPPublisher}. The binary is chosen in this order: $MAKENSISU,
-then ~/.mozbuild/nsis/bin/makensis (the bootstrapped build tool), then
-PATH as a labelled fallback. If makensis is missing, callers must FAIL
-— never PASS. This is not a full build-environment mirror.
+`Unicode true`, mirrors installer.nsi's pre-branding defines
+(NO_STARTMENU_DIR, NONADMIN_ELEVATE, and AbortSurveyURL with the
+stock kampyle URL), !includes the branding file, and echoes
+${CompanyName} and ${ARPPublisher}. The binary is chosen in this
+order: $MAKENSISU, then ~/.mozbuild/nsis/bin/makensis (the
+bootstrapped build tool), then PATH as a labelled fallback. If
+makensis is missing, callers must FAIL — never PASS. This is not a
+full build-environment mirror (AB_CD, Manifest*, FileFunc and the
+rest of installer.nsi stay unset).
 
 Before makensis is invoked, every file in the include set is refused if
 it contains !system, !execute, !appendfile, !delfile, !makensis,
@@ -19,12 +23,21 @@ it contains !system, !execute, !appendfile, !delfile, !makensis,
 branding.nsi is also refused if it contains any !if / !ifdef / !ifndef
 (or other !if* command).
 
-module.ver is parsed by a reimplementation of the small
-create_rc.parse_module_ver loop from Firefox ESR 153.7.0
-config/create_rc.py (lines 89–97), plus a marker-% expander that only
-allows %define and %include. Any other % directive, or an undefined @X@
-in a company or copyright value, is a failure. This is not a vendored
-copy of mozbuild.preprocessor.
+module.ver is parsed with mozbuild.preprocessor.Preprocessor
+(marker='%') from the Firefox ESR 153.7.0 tree when that package is
+importable (this box: /workspace/dane-windows/firefox-esr153/python/mozbuild;
+preprocessor.py sha256 378dcc667104271a22eedd58cba175fa35debeb29b431f022ac39ef879b25166),
+then the small create_rc.parse_module_ver loop (config/create_rc.py
+lines 89–97). Set DANE_ESR_MOZBUILD to the python/mozbuild directory
+to point at another checkout. If the import fails, a minimal
+reimplementation is used that only allows %define and %include; any
+other % directive is a failure. Either way, an undefined @X@ in a
+company or copyright value is a failure. MOZ_APP_WINVERSION,
+MOZ_APP_VERSION, and MOZ_APP_DISPLAYNAME are pre-defined as
+placeholders so the snapshot module.ver (which still carries those
+build substitutions on non-company keys) can be parsed; any other
+undefined @X@ still fails. This helper is not a vendored copy of
+the preprocessor when the fallback path is in use.
 
 Values are normalized before matching: NFKC, casefold, Cyrillic/Greek
 (and common Latin-accent) lookalikes mapped to Latin, then zero-width
@@ -36,10 +49,12 @@ only when ARPPublisher is undefined.
 """
 from __future__ import annotations
 
+import io
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unicodedata
 from pathlib import Path
@@ -233,14 +248,108 @@ def is_empty_or_mozilla_publisher(value):
 
 
 # ---------------------------------------------------------------------------
-# module.ver: reimplementation of create_rc.parse_module_ver
-# (Firefox ESR 153.7.0 config/create_rc.py lines 89–97), with a marker-%
-# expander that only accepts %define / %include. Not a vendored copy of
-# mozbuild.preprocessor; %if / %ifdef and friends are a failure, as is an
-# undefined @X@ in a company or copyright value.
+# module.ver: prefer mozbuild.preprocessor.Preprocessor(marker="%") from
+# Firefox ESR 153.7.0 (python/mozbuild/mozbuild/preprocessor.py, file
+# sha256 378dcc667104271a22eedd58cba175fa35debeb29b431f022ac39ef879b25166
+# on this box at /workspace/dane-windows/firefox-esr153), then the
+# create_rc.parse_module_ver loop (config/create_rc.py lines 89–97).
+# Fallback: a minimal reimplementation that only accepts %define /
+# %include. Not a vendored copy of the preprocessor when falling back.
+# %if / %ifdef and friends fail on the fallback path; an undefined @X@
+# in a company or copyright value fails on either path.
 # ---------------------------------------------------------------------------
 
 _AT_SUBST = re.compile(r"@(\w+)@")
+
+# Build-time substitutions the real create_rc.py receives from the build.
+# They appear in the snapshot module.ver on non-company keys. Pre-defining
+# them as placeholders lets the upstream Preprocessor parse the real tree;
+# any other undefined @X@ still fails.
+MODULE_VER_BUILD_PLACEHOLDERS = {
+    "MOZ_APP_WINVERSION": "0.0.0.0",
+    "MOZ_APP_VERSION": "0.0.0",
+    "MOZ_APP_DISPLAYNAME": "Dane",
+}
+
+UPSTREAM_PREPROCESSOR_SHA256 = (
+    "378dcc667104271a22eedd58cba175fa35debeb29b431f022ac39ef879b25166"
+)
+_DEFAULT_ESR_MOZBUILD = "/workspace/dane-windows/firefox-esr153/python/mozbuild"
+
+_PREPROCESSOR_CLS = None
+_PARSER_KIND = "minimal-reimplementation"
+_PARSER_SOURCE = (
+    "minimal reimplementation of create_rc.parse_module_ver "
+    "(Firefox ESR 153.7.0 config/create_rc.py:89-97); only %define / %include"
+)
+
+
+def _try_import_preprocessor():
+    """Prefer the ESR tree's Preprocessor; leave the fallback in place if it is missing."""
+    global _PREPROCESSOR_CLS, _PARSER_KIND, _PARSER_SOURCE
+    candidates = []
+    env = os.environ.get("DANE_ESR_MOZBUILD")
+    if env:
+        candidates.append(env)
+    candidates.append(_DEFAULT_ESR_MOZBUILD)
+    try:
+        from mozbuild.preprocessor import Preprocessor
+
+        _PREPROCESSOR_CLS = Preprocessor
+        _PARSER_KIND = "mozbuild.preprocessor"
+        try:
+            import mozbuild.preprocessor as _mpp
+            loc = os.path.abspath(_mpp.__file__)
+        except Exception:
+            loc = "sys.path"
+        _PARSER_SOURCE = (
+            "mozbuild.preprocessor.Preprocessor(marker='%%') from %s "
+            "(Firefox ESR 153.7.0; preprocessor.py sha256 %s)"
+            % (loc, UPSTREAM_PREPROCESSOR_SHA256)
+        )
+        return
+    except ImportError:
+        pass
+    for cand in candidates:
+        if not cand:
+            continue
+        cand = os.path.abspath(cand)
+        if not os.path.isdir(os.path.join(cand, "mozbuild")):
+            continue
+        inserted = cand not in sys.path
+        if inserted:
+            sys.path.insert(0, cand)
+        try:
+            from mozbuild.preprocessor import Preprocessor
+
+            _PREPROCESSOR_CLS = Preprocessor
+            _PARSER_KIND = "mozbuild.preprocessor"
+            _PARSER_SOURCE = (
+                "mozbuild.preprocessor.Preprocessor(marker='%%') from %s "
+                "(Firefox ESR 153.7.0; preprocessor.py sha256 %s)"
+                % (cand, UPSTREAM_PREPROCESSOR_SHA256)
+            )
+            return
+        except ImportError:
+            if inserted and cand in sys.path:
+                sys.path.remove(cand)
+    _PREPROCESSOR_CLS = None
+    _PARSER_KIND = "minimal-reimplementation"
+    _PARSER_SOURCE = (
+        "minimal reimplementation of create_rc.parse_module_ver "
+        "(Firefox ESR 153.7.0 config/create_rc.py:89-97); only %define / %include"
+    )
+
+
+_try_import_preprocessor()
+
+
+def module_ver_parser_kind():
+    return _PARSER_KIND
+
+
+def module_ver_parser_report():
+    return "%s: %s" % (_PARSER_KIND, _PARSER_SOURCE)
 
 
 def _expand_at(text, defines, *, require_defined=False):
@@ -285,12 +394,41 @@ def _preprocess_module_ver(path, defines):
     return out_lines, defines
 
 
+def _preprocess_module_ver_upstream(path, defines):
+    """Run the ESR Preprocessor(marker='%') over path; return output lines."""
+    pp = _PREPROCESSOR_CLS(defines=defines, marker="%")
+    pp.context.update(defines)
+    pp.out = io.StringIO()
+    pp.do_filter("substitution")
+    try:
+        with open(path, encoding="latin1") as fh:
+            pp.do_include(fh)
+    except Exception as exc:
+        # Preprocessor.Error str() is a tuple repr such as
+        # ('file', 1, 'UNDEFINED_VAR', 'NOPE') — rewrite so callers can
+        # match "undefined" case-insensitively.
+        key = getattr(exc, "key", None)
+        detail = str(exc)
+        if key == "UNDEFINED_VAR" or "UNDEFINED_VAR" in detail:
+            name = exc.args[0][3] if getattr(exc, "args", None) and exc.args and isinstance(exc.args[0], tuple) and len(exc.args[0]) >= 4 else key
+            raise ModuleVerError(
+                "%s: undefined substitution @%s@" % (path, name or "X")
+            ) from exc
+        raise ModuleVerError("%s: preprocessor error: %s" % (path, detail)) from exc
+    pp.out.seek(0)
+    return pp.out.readlines()
+
+
 def parse_module_ver(path, defines=None):
     """Parse module.ver. Raises ModuleVerError on forbidden % or undefined @X@
     in company or copyright values."""
-    defines = dict(defines or {})
+    merged = dict(MODULE_VER_BUILD_PLACEHOLDERS)
+    merged.update(defines or {})
     result = {}
-    lines, _defs = _preprocess_module_ver(path, defines)
+    if _PREPROCESSOR_CLS is not None:
+        lines = _preprocess_module_ver_upstream(os.fspath(path), merged)
+    else:
+        lines, _defs = _preprocess_module_ver(path, merged)
     for line in lines:
         content, *_comment = line.split("#", 1)
         if not content.strip():
@@ -408,8 +546,14 @@ def resolve_branding_nsi(branding_path):
         if branding_path.name != "branding.nsi":
             shutil.copy2(branding_path, td / "branding.nsi")
         wrapper = td / "wrapper.nsi"
+        # Unicode true plus installer.nsi's pre-branding defines (ESR
+        # 153.7.0 browser/installer/windows/nsis/installer.nsi lines
+        # 34, 74, 78, 80). Not a full build-environment mirror.
         wrapper.write_text(
             "Unicode true\n"
+            "!define NO_STARTMENU_DIR\n"
+            "!define NONADMIN_ELEVATE\n"
+            '!define AbortSurveyURL "http://www.kampyle.com/feedback_form/ff-feedback-form.php?site_code=8166124&form_id=12116&url="\n'
             '!include "branding.nsi"\n'
             '!echo "PPO_CompanyName=${CompanyName}"\n'
             '!echo "PPO_ARPPublisher=${ARPPublisher}"\n',
