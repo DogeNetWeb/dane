@@ -53,6 +53,10 @@ def pass_(msg):
     print("PASS " + msg)
 
 
+def skip(msg):
+    print("SKIP " + msg)
+
+
 def read(path):
     with open(path, encoding="utf-8") as f:
         return f.read()
@@ -131,7 +135,7 @@ def check_no_duplicate_file(bad):
 
 def check_official_untouched(bad):
     if not os.path.isfile(OFFICIAL_WM):
-        pass_("official firefox-wordmark.svg is not in this tree (snapshot); official branding was not imported or changed")
+        skip("official firefox-wordmark.svg is not in this tree (snapshot); official branding was not imported or changed")
         return
     text = read(OFFICIAL_WM)
     if OFFICIAL_PATH_FRAG not in text:
@@ -153,7 +157,7 @@ def check_stock_css_untouched(bad):
         else:
             pass_("%s still loads %s (stock file not rewritten)" % (rel, STOCK_WORDMARK_URL))
     if found == 0:
-        pass_("stock new-tab / private-browsing CSS not in this snapshot; expected URL is %s" % STOCK_WORDMARK_URL)
+        skip("stock new-tab / private-browsing CSS not in this snapshot; expected URL is %s" % STOCK_WORDMARK_URL)
     about = os.path.join(ROOT, ABOUT_CSS)
     if os.path.isfile(about):
         text = read(about)
@@ -162,7 +166,7 @@ def check_stock_css_untouched(bad):
         else:
             pass_("aboutDialog.css still loads %s" % ABOUT_WORDMARK_URL)
     else:
-        pass_("aboutDialog.css not in this snapshot; expected URL is %s" % ABOUT_WORDMARK_URL)
+        skip("aboutDialog.css not in this snapshot; expected URL is %s" % ABOUT_WORDMARK_URL)
 
 
 def check_inventory(bad):

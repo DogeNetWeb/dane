@@ -33,6 +33,18 @@ EXPECTED_ATTR = (
 EXPECTED_TRADEMARK = (
     "Firefox and Mozilla are trademarks of Mozilla.org in the U.S. and other countries."
 )
+# Upstream ESR153 en-US aboutDialog.ftl (NGD L1). Official branding uses these IDs.
+UPSTREAM_COMMUNITY_EXP = (
+    '<label data-l10n-name="community-exp-mozillaLink">{ -vendor-short-name }</label> '
+    'is a <label data-l10n-name="community-exp-creditsLink">global community</label> '
+    "working together to keep the Web open, public and accessible to all."
+)
+UPSTREAM_COMMUNITY_2 = (
+    "{ -brand-short-name } is designed by "
+    '<label data-l10n-name="community-mozillaLink">{ -vendor-short-name }</label>, a '
+    '<label data-l10n-name="community-creditsLink">global community</label> '
+    "working together to keep the Web open, public and accessible to all."
+)
 DANE_MAINT = generate_ini.branded_maintenance_description("Dane")
 # Product names that must not remain in the overridden maintenance value.
 FORBIDDEN_MAINT = re.compile(r"Mozilla Firefox|(?<![A-Za-z])Firefox(?![A-Za-z])")
@@ -40,6 +52,11 @@ FORBIDDEN_MAINT = re.compile(r"Mozilla Firefox|(?<![A-Za-z])Firefox(?![A-Za-z])"
 # Locale codes used as fixtures, all of which must also appear in the shipped list
 # except the synthetic xx-* cases.
 L10N_FIXTURES = ("de", "fr", "ja", "zh-CN", "en-GB", "ar")
+
+# ESR153 browser/locales/l10n-changesets.json records this revision for every
+# locale, including the six fixtures (NGD L3).
+L10N_CHANGESETS = os.path.join(ROOT, "browser/locales/l10n-changesets.json")
+ESR153_L10N_REVISION = "3ae91662ee285b44f21ef31b9cae722d132e28ea"
 
 
 def read_locales(path):
@@ -184,6 +201,23 @@ def check_fixtures(bad):
     else:
         pass_("xx-MISSING + Firefox: no maintenance line added")
 
+    # NGD L4: CRLF input must keep CR on the replaced line.
+    crlf_path = os.path.join(FIXTURES, "xx-CRLF.ini")
+    crlf_raw = open(crlf_path, "rb").read()
+    if b"\r\n" not in crlf_raw or b"MozillaMaintenanceDescription=" not in crlf_raw:
+        fail("xx-CRLF.ini fixture is missing CRLF endings or the maintenance key", bad)
+    else:
+        dane_crlf = run_generate(crlf_path, "Dane")
+        dane_val = (maint_value(dane_crlf) or "").rstrip("\r")
+        if "\r\n" not in dane_crlf:
+            fail("xx-CRLF + Dane: generator dropped CR, output has no CRLF", bad)
+        elif dane_val != DANE_MAINT:
+            fail("xx-CRLF + Dane: maintenance value mismatch: %r" % dane_val, bad)
+        elif FORBIDDEN_MAINT.search(dane_val):
+            fail("xx-CRLF + Dane: leftover Firefox in maintenance value", bad)
+        else:
+            pass_("xx-CRLF + Dane: MozillaMaintenanceDescription replaced and CRLF preserved")
+
 
 def ftl_value(text, key):
     # Single-line Fluent messages only (these are).
@@ -217,12 +251,31 @@ def check_about(bad):
     else:
         pass_("trademarkInfo attributes Firefox and Mozilla to Mozilla.org")
 
-    for key in ("community-2", "community-exp"):
+    # NGD L1: stock en-US IDs must stay upstream so an official-branding build
+    # does not say "Firefox is not officially associated with Mozilla".
+    expected_stock = {"community-exp": UPSTREAM_COMMUNITY_EXP, "community-2": UPSTREAM_COMMUNITY_2}
+    for key, expected in expected_stock.items():
         val = ftl_value(about, key)
-        if not val or EXPECTED_ATTR not in val:
-            fail("en-US aboutDialog.ftl %s is not in sync with the proposal" % key, bad)
+        if val != expected:
+            fail("en-US aboutDialog.ftl %s is not the upstream ESR153 stock string: %r" % (key, val), bad)
+        elif EXPECTED_ATTR in (val or ""):
+            fail("en-US aboutDialog.ftl %s still carries the Dane disassociation" % key, bad)
         else:
-            pass_("en-US aboutDialog.ftl %s is in sync" % key)
+            pass_("en-US aboutDialog.ftl %s is the upstream stock string (NGD L1)" % key)
+
+    helpus = ftl_value(about, "helpus")
+    if not helpus or "helpus-donateLink" not in helpus:
+        fail("en-US aboutDialog.ftl helpus should stay the stock donate/get-involved string for official builds", bad)
+    else:
+        pass_("en-US aboutDialog.ftl helpus stays stock for official branding")
+
+    dane_helpus = ftl_value(brand, "dane-helpus")
+    if not dane_helpus or "helpus-getInvolvedLink" not in dane_helpus:
+        fail("brand.ftl missing dane-helpus (unofficial About help line)", bad)
+    elif "helpus-donateLink" in dane_helpus or "donation" in dane_helpus.lower():
+        fail("brand.ftl dane-helpus still mentions a donation", bad)
+    else:
+        pass_("brand.ftl dane-helpus has no donate link")
 
     if 'branding                                          (en-US/**/*.ftl)' not in jar and "en-US/**/*.ftl" not in jar:
         fail("greatdane locales/jar.mn does not ship en-US FTL to every locale", bad)
@@ -252,12 +305,76 @@ def check_about(bad):
             pass_("brand.ftl keeps %s" % label)
 
 
+def check_l10n_pin(bad):
+    """NGD L3: fixtures are pinned to the ESR153 l10n-changesets revision."""
+    if not os.path.isfile(L10N_CHANGESETS):
+        print("SKIP l10n-changesets.json is not in this tree; expected pin is %s" % ESR153_L10N_REVISION)
+        return
+    import json
+
+    data = json.loads(open(L10N_CHANGESETS, encoding="utf-8").read())
+    missing = [loc for loc in L10N_FIXTURES if loc not in data]
+    if missing:
+        fail("l10n-changesets.json is missing fixture locale(s): " + ", ".join(missing), bad)
+        return
+    revisions = {loc: data[loc].get("revision") for loc in L10N_FIXTURES}
+    unexpected = {loc: rev for loc, rev in revisions.items() if rev != ESR153_L10N_REVISION}
+    if unexpected:
+        fail("fixture locale revisions are not the ESR153 pin %s: %s" % (ESR153_L10N_REVISION, unexpected), bad)
+    else:
+        pass_(
+            "l10n fixtures de/fr/ja/zh-CN/en-GB/ar are pinned to ESR153 revision %s"
+            % ESR153_L10N_REVISION
+        )
+
+    checkout = os.environ.get("GREATDANE_L10N_CHECKOUT")
+    if not checkout:
+        print(
+            "SKIP no GREATDANE_L10N_CHECKOUT; not iterating a live l10n tree "
+            "(fixtures are pinned to %s)" % ESR153_L10N_REVISION
+        )
+        return
+    if not os.path.isdir(checkout):
+        fail("GREATDANE_L10N_CHECKOUT is set but not a directory: %s" % checkout, bad)
+        return
+    replaced = 0
+    appended = 0
+    missing_ini = 0
+    leftover = []
+    for loc, meta in sorted(data.items()):
+        ini = os.path.join(checkout, loc, "browser", "updater", "updater.ini")
+        if not os.path.isfile(ini):
+            missing_ini += 1
+            continue
+        raw_val = maint_value(open(ini, encoding="utf-8").read())
+        dane = run_generate(ini, "Dane")
+        official = run_generate(ini, "Firefox")
+        dane_val = maint_value(dane)
+        if dane_val != DANE_MAINT or FORBIDDEN_MAINT.search(dane_val or ""):
+            leftover.append(loc)
+            continue
+        if raw_val is None:
+            appended += 1
+        else:
+            replaced += 1
+        if maint_value(official) != raw_val:
+            leftover.append(loc + " (official changed)")
+    if leftover:
+        fail("l10n checkout: unexpected maintenance output for: " + ", ".join(leftover[:20]), bad)
+    else:
+        pass_(
+            "l10n checkout %s: %d replaced, %d appended, %d with no updater.ini, 0 leftovers"
+            % (checkout, replaced, appended, missing_ini)
+        )
+
+
 def main():
     bad = []
     print("locale_branding_check: root %s" % ROOT)
     check_locale_lists(bad)
     check_en_us_source(bad)
     check_fixtures(bad)
+    check_l10n_pin(bad)
     check_about(bad)
     print()
     if bad:
