@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 18:12:21 -0600
+Subject: [PATCH 128/144] GreatDANE: relabel the unofficial About Terms link to
+ Support (round 4g)
+
+Coordinator ruling: unofficial builds should not keep a "Terms of Use" label
+pointing at https://dane.surf/support/ (dane.surf/terms/ is 404). The bottom
+link now uses a new Dane-specific Fluent ID, dane-bottom-links-support =
+"Support", still pointing at https://dane.surf/support/.
+
+en-US aboutDialog.ftl bottom-links-terms stays "Terms of Use" for official
+branding, and the official About link still uses that ID and the Firefox
+terms URL.
+
+The unofficial "Get involved!" helpus link also goes to
+https://dane.surf/support/, but it does not say Support, so this is not a
+duplicated Support label. The donate link stays absent on unofficial builds;
+official branding still has helpus with the Foundation donate URL.
+
+Prepared only. Not built, signed, notarized or published.
+---
+ browser/base/content/aboutDialog.xhtml             | 2 +-
+ browser/branding/greatdane/locales/en-US/brand.ftl | 4 ++++
+ 2 files changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/browser/base/content/aboutDialog.xhtml b/browser/base/content/aboutDialog.xhtml
+index e930fedaa0..2f31c7f0c5 100644
+--- a/browser/base/content/aboutDialog.xhtml
++++ b/browser/base/content/aboutDialog.xhtml
+@@ -165,7 +165,7 @@
+       <hbox pack="center">
+         <label is="text-link" class="bottom-link" useoriginprincipal="true" href="about:license" data-l10n-id="bottomLinks-license"/>
+ #ifndef MOZ_OFFICIAL_BRANDING
+-        <label is="text-link" class="bottom-link" href="https://dane.surf/support/" data-l10n-id="bottom-links-terms"/>
++        <label is="text-link" class="bottom-link" href="https://dane.surf/support/" data-l10n-id="dane-bottom-links-support"/>
+         <label is="text-link" class="bottom-link" href="https://dane.surf/privacy/" data-l10n-id="bottom-links-privacy"/>
+ #else
+         <label is="text-link" class="bottom-link" href="https://www.mozilla.org/about/legal/terms/firefox/" data-l10n-id="bottom-links-terms"/>
+diff --git a/browser/branding/greatdane/locales/en-US/brand.ftl b/browser/branding/greatdane/locales/en-US/brand.ftl
+index 567b94a84a..6f1e36125b 100644
+--- a/browser/branding/greatdane/locales/en-US/brand.ftl
++++ b/browser/branding/greatdane/locales/en-US/brand.ftl
+@@ -41,3 +41,7 @@ dane-community-2 = { -brand-short-name } is built from Mozilla's open source Fir
+ # Unofficial About "Want to help?" line. Official branding keeps helpus, including
+ # the donate link. Dane has no donate page, so unofficial builds drop it.
+ dane-helpus = Want to help? <label data-l10n-name="helpus-getInvolvedLink">Get involved!</label>
++
++# Unofficial About bottom link, in place of stock "Terms of Use" (dane.surf has
++# no /terms page). Official branding keeps bottom-links-terms = Terms of Use.
++dane-bottom-links-support = Support
