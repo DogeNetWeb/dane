@@ -1,0 +1,201 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 18:12:58 -0600
+Subject: [PATCH 130/144] GreatDANE: fail the trademark check on Pepecoin
+ publisher strings and require the Support label (round 4g)
+
+trademark_userfacing_check.py now asserts:
+
+- unofficial About uses dane-bottom-links-support = "Support" at
+  https://dane.surf/support/
+- official branding keeps bottom-links-terms = "Terms of Use" and the
+  Firefox terms URL
+- unofficial donate stays absent; official helpus donate stays
+- module.ver company is Dane and copyright is Dane contributors, with the
+  Mozilla.org trademark credit
+- branding.nsi CompanyName is Dane, and CertNameDownload / CertIssuerDownload
+  are the TODO-NO-WINDOWS-SIGNING-IDENTITY-YET placeholders with the comment
+  that no Windows signing identity exists yet and the publisher name is the
+  owner's decision
+- any Pepecoin publisher/company string in Windows metadata (module.ver,
+  manifests, branding.nsi) is a failure
+
+pepecoin.surf update URLs are not treated as publisher strings. No build, no
+signing, no network.
+
+Prepared only. Not built, signed, notarized or published.
+---
+ greatdane/tests/trademark_userfacing_check.py | 91 +++++++++++++++----
+ 1 file changed, 74 insertions(+), 17 deletions(-)
+
+diff --git a/greatdane/tests/trademark_userfacing_check.py b/greatdane/tests/trademark_userfacing_check.py
+index fbc811b9d2..d4bef928d9 100755
+--- a/greatdane/tests/trademark_userfacing_check.py
++++ b/greatdane/tests/trademark_userfacing_check.py
+@@ -109,32 +109,37 @@ def check_about(bad):
+         return
+     xhtml = read(ABOUT_XHTML)
+ 
+-    # Unofficial Terms / Privacy (Frank 1-2, NGD M1)
+-    unofficial_has_terms = False
++    # Unofficial Support / Privacy (round 4g: Terms relabeled Support)
++    unofficial_has_support = False
+     unofficial_has_privacy = False
+     official_keeps_terms = False
+     official_keeps_privacy = False
++    unofficial_still_says_terms = False
+     for unoff, off in unofficial_block(xhtml):
+-        if 'data-l10n-id="bottom-links-terms"' in unoff and SUPPORT_URL in unoff:
+-            unofficial_has_terms = True
++        if 'data-l10n-id="dane-bottom-links-support"' in unoff and SUPPORT_URL in unoff:
++            unofficial_has_support = True
++        if 'data-l10n-id="bottom-links-terms"' in unoff:
++            unofficial_still_says_terms = True
+         if 'data-l10n-id="bottom-links-privacy"' in unoff and PRIVACY_URL in unoff:
+             unofficial_has_privacy = True
+         if "terms/firefox/" in off and 'data-l10n-id="bottom-links-terms"' in off:
+             official_keeps_terms = True
+         if "privacy/firefox/" in off and 'data-l10n-id="bottom-links-privacy"' in off:
+             official_keeps_privacy = True
+-    if not unofficial_has_terms:
+-        fail("unofficial About Terms link is not %s" % SUPPORT_URL, bad)
++    if unofficial_still_says_terms:
++        fail("unofficial About still uses bottom-links-terms; it should be dane-bottom-links-support", bad)
++    elif not unofficial_has_support:
++        fail("unofficial About Support link is not %s with dane-bottom-links-support" % SUPPORT_URL, bad)
+     else:
+-        pass_("unofficial About Terms link is %s (dane.surf/terms/ 404; support used)" % SUPPORT_URL)
++        pass_("unofficial About Support link is %s (dane-bottom-links-support)" % SUPPORT_URL)
+     if not unofficial_has_privacy:
+         fail("unofficial About Privacy link is not %s" % PRIVACY_URL, bad)
+     else:
+         pass_("unofficial About Privacy link is %s" % PRIVACY_URL)
+     if not official_keeps_terms or not official_keeps_privacy:
+-        fail("official About Terms/Privacy URLs were not preserved", bad)
++        fail("official About Terms/Privacy URLs or IDs were not preserved", bad)
+     else:
+-        pass_("official About Terms/Privacy URLs are unchanged")
++        pass_("official About Terms/Privacy URLs and Terms of Use ID are unchanged")
+ 
+     # Donate dropped unofficial only (Frank 3, NGD M1)
+     unofficial_donate = False
+@@ -221,6 +226,17 @@ def check_ftl_wording(bad):
+     else:
+         pass_("brand.ftl dane-helpus has no donate wording")
+ 
++    support = ftl_value(brand, "dane-bottom-links-support")
++    if support != "Support":
++        fail("brand.ftl dane-bottom-links-support is %r, expected 'Support'" % support, bad)
++    else:
++        pass_("brand.ftl dane-bottom-links-support is Support")
++    official_terms = ftl_value(about, "bottom-links-terms")
++    if official_terms != "Terms of Use":
++        fail("aboutDialog.ftl bottom-links-terms is %r, official Terms of Use must stay intact" % official_terms, bad)
++    else:
++        pass_("aboutDialog.ftl bottom-links-terms stays 'Terms of Use' for official branding")
++
+ 
+ def check_module_ver(bad):
+     found = 0
+@@ -232,20 +248,23 @@ def check_module_ver(bad):
+         found += 1
+         raw = open(path, "rb").read()
+         text = raw.decode("latin-1")
+-        if "WIN32_MODULE_COMPANYNAME=Pepecoin" not in text:
+-            fail("%s company is not Pepecoin" % rel, bad)
++        copyright = text.split("WIN32_MODULE_COPYRIGHT=", 1)[1].splitlines()[0] if "WIN32_MODULE_COPYRIGHT=" in text else ""
++        if "Pepecoin" in text:
++            fail("%s still has a Pepecoin publisher/company string" % rel, bad)
++        elif "WIN32_MODULE_COMPANYNAME=Dane" not in text:
++            fail("%s company is not Dane" % rel, bad)
+         elif "Mozilla Corporation" in text:
+             fail("%s still names Mozilla Corporation" % rel, bad)
+         elif "Firefox is a Trademark of The Mozilla Foundation" in text:
+             fail("%s still uses the Firefox-product trademark line" % rel, bad)
+         elif "Firefox and Mozilla are trademarks of Mozilla.org" not in text:
+             fail("%s is missing the Mozilla.org trademark credit" % rel, bad)
+-        elif "WIN32_MODULE_COPYRIGHT=" not in text or "Pepecoin" not in text.split("WIN32_MODULE_COPYRIGHT=", 1)[1].splitlines()[0]:
+-            fail("%s copyright is not Pepecoin" % rel, bad)
++        elif "Dane contributors" not in copyright:
++            fail("%s copyright is not Dane contributors: %r" % (rel, copyright), bad)
+         elif b"\xa9" not in raw:
+             fail("%s copyright is missing the Latin-1 copyright sign" % rel, bad)
+         else:
+-            pass_("%s company/copyright are Pepecoin with a Mozilla.org trademark credit" % rel)
++            pass_("%s company is Dane, copyright is Dane contributors, Mozilla.org trademark credit kept" % rel)
+     if found == 0:
+         skip("module.ver files are not in this snapshot")
+ 
+@@ -289,8 +308,9 @@ def check_branding_nsi(bad):
+         ('URLStubDownloadAArch64', DOWNLOAD_URL),
+         ('URLManualDownload', DOWNLOAD_URL),
+         ('URLSystemRequirements', SUPPORT_URL),
+-        ('CertNameDownload', 'Pepecoin'),
+-        ('CertIssuerDownload', 'Pepecoin'),
++        ('CompanyName', 'Dane'),
++        ('CertNameDownload', 'TODO-NO-WINDOWS-SIGNING-IDENTITY-YET'),
++        ('CertIssuerDownload', 'TODO-NO-WINDOWS-SIGNING-IDENTITY-YET'),
+     ]
+     missing = []
+     for key, val in checks:
+@@ -311,8 +331,12 @@ def check_branding_nsi(bad):
+         fail("branding.nsi still uses Mozilla Corporation as CertNameDownload", bad)
+     elif "support.mozilla.org" in defines or "mozilla.org/firefox/system-requirements" in defines:
+         fail("branding.nsi still points help/requirements at Mozilla Firefox pages", bad)
++    elif "Pepecoin" in defines:
++        fail("branding.nsi still has a Pepecoin publisher/company define", bad)
++    elif "TODO(windows-signing)" not in text or "owner's decision" not in text.lower():
++        fail("branding.nsi is missing the TODO comment that no Windows signing identity exists yet and the publisher name is the owner's decision", bad)
+     else:
+-        pass_("branding.nsi HelpLink/stub/manual/requirements use dane.surf; cert name is Pepecoin")
++        pass_("branding.nsi CompanyName is Dane; stub certs are TODO placeholders; dane.surf URLs kept")
+ 
+ 
+ def check_sync_promo(bad):
+@@ -440,6 +464,38 @@ def check_filenames(bad):
+             pass_("package-manifest.in ships @MOZ_APP_NAME@.VisualElementsManifest.xml")
+ 
+ 
++# Windows publisher/company metadata. pepecoin.surf update URLs and other
++# existing site / bundle-id references are not publisher strings.
++PUBLISHER_FILES = (
++    "browser/app/module.ver",
++    "browser/app/pbproxy/module.ver",
++    "browser/app/firefox.exe.manifest",
++    "browser/app/desktop-launcher/desktop-launcher.exe.manifest",
++    "browser/branding/greatdane/branding.nsi",
++)
++
++
++def check_no_pepecoin_publisher(bad):
++    found = 0
++    for rel in PUBLISHER_FILES:
++        path = os.path.join(ROOT, rel)
++        if not os.path.isfile(path):
++            skip("%s is not in this tree (Pepecoin publisher scan)" % rel)
++            continue
++        found += 1
++        raw = open(path, "rb").read()
++        try:
++            text = raw.decode("utf-8")
++        except UnicodeDecodeError:
++            text = raw.decode("latin-1")
++        if "Pepecoin" in text:
++            fail("%s still contains a Pepecoin publisher/company string" % rel, bad)
++        else:
++            pass_("%s has no Pepecoin publisher/company string" % rel)
++    if found == 0:
++        skip("no Windows publisher metadata files in this snapshot")
++
++
+ def main():
+     bad = []
+     print("trademark_userfacing_check: root %s" % ROOT)
+@@ -448,6 +504,7 @@ def main():
+     check_module_ver(bad)
+     check_manifests(bad)
+     check_branding_nsi(bad)
++    check_no_pepecoin_publisher(bad)
+     check_sync_promo(bad)
+     check_bookmarks(bad)
+     check_filenames(bad)
