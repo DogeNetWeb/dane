@@ -141,3 +141,4 @@
 0141-GreatDANE-allowlist-branding.nsi-lines-and-hash-the-.patch
 0142-GreatDANE-tighten-NSIS-continuation-joining-and-stop.patch
 0143-GreatDANE-retarget-product-URLs-and-the-default-top-.patch
+0144-GreatDANE-fail-if-a-non-excluded-coin.surf-product-U.patch
