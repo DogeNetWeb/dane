@@ -1,0 +1,92 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 18:12:31 -0600
+Subject: [PATCH 129/144] GreatDANE: use Dane, not Pepecoin, as the Windows
+ publisher; stub certs are TODO (round 4g)
+
+Coordinator ruling: the Pepecoin company/publisher strings introduced in
+round 4f are replaced.
+
+Both module.ver files (browser/app and pbproxy):
+- Company is Dane
+- Copyright is Dane contributors, with a factual Mozilla.org credit and the
+  MPL 2 notice
+- Trademarks still credit Firefox and Mozilla to Mozilla.org
+
+branding.nsi CompanyName is Dane (it was Pepecoin even before 4f; Windows
+metadata should match). CertNameDownload and CertIssuerDownload are the
+placeholder TODO-NO-WINDOWS-SIGNING-IDENTITY-YET, with a comment that no
+Windows signing identity exists yet and that the publisher name is the
+owner's decision before release. The defines stay syntactically valid NSIS.
+The stub's PE trust check is still expected to fail until a real identity
+is set.
+
+pepecoin.surf update URLs and other existing site/bundle-id references are
+unchanged; those are not publisher metadata.
+
+Prepared only. Not built, signed, notarized or published.
+---
+ browser/app/module.ver                  |  4 ++--
+ browser/app/pbproxy/module.ver          |  4 ++--
+ browser/branding/greatdane/branding.nsi | 17 +++++++++--------
+ 3 files changed, 13 insertions(+), 12 deletions(-)
+
+diff --git a/browser/app/module.ver b/browser/app/module.ver
+index 4785bb26be..02871d0968 100644
+--- a/browser/app/module.ver
++++ b/browser/app/module.ver
+@@ -1,5 +1,5 @@
+-WIN32_MODULE_COMPANYNAME=Pepecoin
+-WIN32_MODULE_COPYRIGHT=© Pepecoin. Includes Mozilla.org contributions; available under the MPL 2 license.
++WIN32_MODULE_COMPANYNAME=Dane
++WIN32_MODULE_COPYRIGHT=© Dane contributors. Includes Mozilla.org contributions; available under the MPL 2 license.
+ WIN32_MODULE_PRODUCTVERSION=@MOZ_APP_WINVERSION@
+ WIN32_MODULE_PRODUCTVERSION_STRING=@MOZ_APP_VERSION@
+ WIN32_MODULE_TRADEMARKS=Firefox and Mozilla are trademarks of Mozilla.org in the U.S. and other countries.
+diff --git a/browser/app/pbproxy/module.ver b/browser/app/pbproxy/module.ver
+index 4785bb26be..02871d0968 100644
+--- a/browser/app/pbproxy/module.ver
++++ b/browser/app/pbproxy/module.ver
+@@ -1,5 +1,5 @@
+-WIN32_MODULE_COMPANYNAME=Pepecoin
+-WIN32_MODULE_COPYRIGHT=© Pepecoin. Includes Mozilla.org contributions; available under the MPL 2 license.
++WIN32_MODULE_COMPANYNAME=Dane
++WIN32_MODULE_COPYRIGHT=© Dane contributors. Includes Mozilla.org contributions; available under the MPL 2 license.
+ WIN32_MODULE_PRODUCTVERSION=@MOZ_APP_WINVERSION@
+ WIN32_MODULE_PRODUCTVERSION_STRING=@MOZ_APP_VERSION@
+ WIN32_MODULE_TRADEMARKS=Firefox and Mozilla are trademarks of Mozilla.org in the U.S. and other countries.
+diff --git a/browser/branding/greatdane/branding.nsi b/browser/branding/greatdane/branding.nsi
+index c3da93563b..0cd1267c31 100644
+--- a/browser/branding/greatdane/branding.nsi
++++ b/browser/branding/greatdane/branding.nsi
+@@ -10,7 +10,7 @@
+ # instead of BrandFullName and typically should not be modified.
+ !define BrandFullNameInternal "Dane"
+ !define BrandFullName         "Dane"
+-!define CompanyName           "Pepecoin"
++!define CompanyName           "Dane"
+ !define URLInfoAbout          "https://dane.surf/"
+ !define HelpLink              "https://dane.surf/support/"
+ 
+@@ -25,13 +25,14 @@
+ !define URLSystemRequirements "https://dane.surf/support/"
+ !define Channel "unofficial"
+ 
+-# Do not keep Mozilla Corporation / Mozilla's DigiCert CA: Dane is not signed
+-# as Mozilla, and the live Windows installer is not code-signed yet. These
+-# values must be updated to the real subject CN and issuer when signing starts.
+-# Until then the stub's PE trust check is expected to fail and fall back to
+-# URLManualDownload (the Dane download page).
+-!define CertNameDownload   "Pepecoin"
+-!define CertIssuerDownload "Pepecoin"
++# TODO(windows-signing): no Windows signing identity exists yet. The publisher
++# name used here (CertNameDownload subject CN and CertIssuerDownload issuer)
++# is the owner's decision before release. These placeholders are syntactically
++# valid NSIS string defines and must be replaced with the real identity before
++# any signed stub is shipped. Until then the stub's PE trust check is expected
++# to fail and fall back to URLManualDownload (the Dane download page).
++!define CertNameDownload   "TODO-NO-WINDOWS-SIGNING-IDENTITY-YET"
++!define CertIssuerDownload "TODO-NO-WINDOWS-SIGNING-IDENTITY-YET"
+ 
+ # Dialog units are used so the UI displays correctly with the system's DPI
+ # settings.
