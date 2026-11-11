@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 21:02:25 -0600
+Subject: [PATCH 151/155] GreatDANE: stronger dane.surf update-log claim, gated
+ on dane_update_masked evidence (round 5b)
+
+GATED. The coordinator approved option (a): Curb Appeal is adding a
+dane.surf /update/ location that logs with dane_update_masked (path
+reduced so build ID and locale are '-', plus status, UA and a masked
+IP), a separate dane.surf access log, and a www.dane.surf redirect.
+
+This commit restores the stronger wording for dane.surf's own
+update-check logs only: those lines do not log build ID or locale,
+and IPs are truncated (/24 IPv4, /48 IPv6). It does not claim
+anything about the server's default log. Rare server-error logs can
+contain a full IP. "Full IPs before November 10, 2026" remains
+scoped to pepecoin.surf.
+
+Do not treat this wording as proven until Curb Appeal's
+dane_update_masked /update/ location plus a masked sample line
+are in place. If that does not land, restore the previous commit
+(honest option-b wording).
+---
+ greatdane/macos/PRIVACY-MANIFEST.md   |  4 ++--
+ greatdane/macos/PrivacyInfo.xcprivacy | 24 +++++++++++++-----------
+ 2 files changed, 15 insertions(+), 13 deletions(-)
+
+diff --git a/greatdane/macos/PRIVACY-MANIFEST.md b/greatdane/macos/PRIVACY-MANIFEST.md
+index b72ab78..838b229 100644
+--- a/greatdane/macos/PRIVACY-MANIFEST.md
++++ b/greatdane/macos/PRIVACY-MANIFEST.md
+@@ -23,9 +23,9 @@ If a feature only collects after the user turns it on, it's still declared.
+   OtherDiagnosticData entry: Linked=false, Tracking=false, purpose AppFunctionality.
+   For the Dane update check the purpose is AppFunctionality only; the entry also carries Analytics because of Mozilla's opt-in telemetry.
+ 
+-  The automatic update check sends product, version, build ID, target, locale and channel to Dane's update server (dane.surf), as parts of the request path. The dane.surf vhost's own access-log lines record that request path (without any query string), the request status, the user agent and a masked IP address (/24 for IPv4, /48 for IPv6). Referrers are not logged. This wording describes only dane.surf's own log lines, not the server's default log. Rare server-error logs can contain a full IP. Logs are kept about 14 days, are not linked to an account or device, and are not shared. Before November 10, 2026, update checks went to pepecoin.surf, whose logs kept full client IP addresses until then; those older pepecoin.surf entries rotate out around November 25, 2026. No check happens while the DisableAppUpdate policy is on.
++  The automatic update check sends product, version, build ID, target, locale and channel to Dane's update server (dane.surf). For dane.surf's own update-check logs (the dane.surf /update/ location, format dane_update_masked), the server logs only product, version, platform and channel, plus the request status, the user agent and a masked IP (/24 for IPv4, /48 for IPv6). Build ID, locale, query strings and referrers are not logged in those dane.surf update-check log lines. This wording describes only dane.surf's own log lines, not the server's default log. Rare server-error logs can contain a full IP. Logs are kept about 14 days, are not linked to an account or device, and are not shared. Before November 10, 2026, update-check log entries on pepecoin.surf kept full client IP addresses; they rotate out around November 25, 2026. No check happens while the DisableAppUpdate policy is on.
+ 
+-  The update URL is https://dane.surf/update/3/.... This unofficial build does not publish update.xml. https://dane.surf/releases/ 301s to /download/ (as of 2026-11-10).
++  The update URL is https://dane.surf/update/3/.... This unofficial build does not publish update.xml. https://dane.surf/releases/ 301s to /download/ (as of 2026-11-10). This stronger update-log claim is gated on Curb Appeal evidence of the dane.surf /update/ location with dane_update_masked (build ID and locale replaced with '-') plus a masked sample line.
+ 
+   (DisableAppUpdate makes `UpdateServiceStub.updateDisabled` true: toolkit/mozapps/update/UpdateServiceStub.sys.mjs:209-215.)
+ - **Default new-tab tiles:** the icons for dane.surf, greatdane.doge and grokipedia.com are bundled
+diff --git a/greatdane/macos/PrivacyInfo.xcprivacy b/greatdane/macos/PrivacyInfo.xcprivacy
+index deefdd5..fe98e86 100644
+--- a/greatdane/macos/PrivacyInfo.xcprivacy
++++ b/greatdane/macos/PrivacyInfo.xcprivacy
+@@ -10,18 +10,20 @@
+   Dane update check: declared under OtherDiagnosticData (not linked, not tracking; used for app
+   functionality only). Requests go to https://dane.surf/update/.... For the Dane update check the
+   purpose is AppFunctionality only; the entry also carries Analytics because of Mozilla's opt-in
+-  telemetry. Ruling text (honest / option b; records the request path, including build ID and locale):
++  telemetry. Ruling text (stronger / option a; gated on Curb Appeal dane_update_masked evidence):
+     The automatic update check sends product, version, build ID, target, locale and channel to Dane's
+-    update server (dane.surf), as parts of the request path. The dane.surf vhost's own access-log lines
+-    record that request path (without any query string), the request status, the user agent and a
+-    masked IP address (/24 for IPv4, /48 for IPv6). Referrers are not logged. This wording describes
+-    only dane.surf's own log lines, not the server's default log. Rare server-error logs can contain
+-    a full IP. Logs are kept about 14 days, are not linked to an account or device, and are not shared.
+-    Before November 10, 2026, update checks went to pepecoin.surf, whose logs kept full client IP
+-    addresses until then; those older pepecoin.surf entries rotate out around November 25, 2026. No
+-    check happens while the DisableAppUpdate policy is on.
+-    The update URL is https://dane.surf/update/3/.... This unofficial build does not publish update.xml.
+-    https://dane.surf/releases/ 301s to /download/ (as of 2026-11-10).
++    update server (dane.surf). For dane.surf's own update-check logs (the dane.surf /update/ location,
++    format dane_update_masked), the server logs only product, version, platform and channel, plus the
++    request status, the user agent and a masked IP (/24 for IPv4, /48 for IPv6). Build ID, locale,
++    query strings and referrers are not logged in those dane.surf update-check log lines. This wording
++    describes only dane.surf's own log lines, not the server's default log. Rare server-error logs can
++    contain a full IP. Logs are kept about 14 days, are not linked to an account or device, and are
++    not shared. Before November 10, 2026, update-check log entries on pepecoin.surf kept full client
++    IP addresses; they rotate out around November 25, 2026. No check happens while the DisableAppUpdate
++    policy is on. The update URL is https://dane.surf/update/3/.... This unofficial build does not
++    publish update.xml. https://dane.surf/releases/ 301s to /download/ (as of 2026-11-10). This
++    stronger update-log claim is gated on Curb Appeal evidence of the dane.surf /update/ location
++    with dane_update_masked (build ID and locale replaced with '-') plus a masked sample line.
+   Dane's servers otherwise see only pages the user chooses to open.
+   Default new-tab tile icons for dane.surf, greatdane.doge and grokipedia.com are
+   bundled (tippytop; grokipedia.com uses our own letter tile), so showing the new-tab page contacts
