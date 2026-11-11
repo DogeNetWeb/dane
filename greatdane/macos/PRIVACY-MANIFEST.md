@@ -23,10 +23,9 @@ If a feature only collects after the user turns it on, it's still declared.
   OtherDiagnosticData entry: Linked=false, Tracking=false, purpose AppFunctionality.
   For the Dane update check the purpose is AppFunctionality only; the entry also carries Analytics because of Mozilla's opt-in telemetry.
 
-  The automatic update check sends product, version, build ID, target, locale and channel to Dane's update server (dane.surf). The server logs only product, version, platform and channel, plus the request status, the user agent and a masked IP (/24 for IPv4, /48 for IPv6). Build ID, locale, query strings and referrers are not logged. Logs are kept about 14 days, are not linked to an account or device, and are not shared. Entries from before Nov 10, 2026 hold full IPs until they rotate out around Nov 25. No check happens while the DisableAppUpdate policy is on.
+  The automatic update check sends product, version, build ID, target, locale and channel to Dane's update server (dane.surf), as parts of the request path. The dane.surf vhost's own access-log lines record that request path (without any query string), the request status, the user agent and a masked IP address (/24 for IPv4, /48 for IPv6). Referrers are not logged. This wording describes only dane.surf's own log lines, not the server's default log. Rare server-error logs can contain a full IP. Logs are kept about 14 days, are not linked to an account or device, and are not shared. Before November 10, 2026, update checks went to pepecoin.surf, whose logs kept full client IP addresses until then; those older pepecoin.surf entries rotate out around November 25, 2026. No check happens while the DisableAppUpdate policy is on.
 
-  Plainly: log entries written before Nov 10, 2026 kept full client IPs, and they stay on the server until they
-  rotate out around Nov 25, 2026. The update URL is https://dane.surf/update/3/.... This unofficial build does not publish update.xml.
+  The update URL is https://dane.surf/update/3/.... This unofficial build does not publish update.xml. https://dane.surf/releases/ 301s to /download/ (as of 2026-11-10).
 
   (DisableAppUpdate makes `UpdateServiceStub.updateDisabled` true: toolkit/mozapps/update/UpdateServiceStub.sys.mjs:209-215.)
 - **Default new-tab tiles:** the icons for dane.surf, greatdane.doge and grokipedia.com are bundled
