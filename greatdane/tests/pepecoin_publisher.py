@@ -18,21 +18,25 @@ full build-environment mirror (AB_CD, Manifest*, FileFunc and the
 rest of installer.nsi stay unset).
 
 Before makensis is invoked, every logical line of branding.nsi and of
-the files it includes (backslash continuations joined first) must be
-blank, a comment, a simple `!define NAME value` (optional quoted value;
-no flags such as /redef or /file), or an `!include` of a relative
-sibling with no wildcard and no `..`. Anything else, including a line
-starting with `${`, is refused. This replaced the earlier command
-denylist, which missed absolute/wildcard !include, !addincludedir,
-continued !sys + tem, and define-expanded ${C} commands.
+the files it includes must be blank, a comment, a simple `!define NAME
+value` (optional quoted value; no flags such as /redef or /file), or an
+`!include` of a relative sibling with no wildcard and no `..`. Anything
+else, including a line starting with `${`, is refused. A trailing backslash is a continuation only after
+stripping ASCII space, tab, and CR (not other Unicode whitespace).
+Any line that contains NUL, a C0 control other than tab, or
+non-ASCII whitespace is refused, so a comment that ends in a
+backslash plus a Unicode space, or a NUL before the backslash,
+cannot hide the next line from the checker.
 
 module.ver is parsed with mozbuild.preprocessor.Preprocessor
 (marker='%') from the Firefox ESR 153.7.0 tree when that package is
 importable (this box: /workspace/dane-windows/firefox-esr153/python/mozbuild;
 preprocessor.py sha256 378dcc667104271a22eedd58cba175fa35debeb29b431f022ac39ef879b25166),
 then the small create_rc.parse_module_ver loop (config/create_rc.py
-lines 89–97). Set DANE_ESR_MOZBUILD to the python/mozbuild directory
-to point at another checkout. If the import fails, a minimal
+lines 89–97). Import order: $DANE_ESR_MOZBUILD (the python/mozbuild directory)
+if set, then a mozbuild already on sys.path, then the boxed
+/workspace/dane-windows/firefox-esr153/python/mozbuild. If the import
+fails, a minimal
 reimplementation is used that only allows %define and %include; any
 other % directive is a failure. Either way, an undefined @X@ in a
 company or copyright value is a failure. MOZ_APP_WINVERSION,
@@ -139,6 +143,8 @@ G4_SENTINEL = "/tmp/dane-4l-g4-sentinel"
 G5_SENTINEL = "/tmp/dane-4l-g5-sentinel"
 G10_SENTINEL = "/tmp/dane-4l-g10-sentinel"
 G7_TEMPFILE_SENTINEL = "/tmp/dane-4l-tempfile-sentinel"
+H1_SENTINEL = "/tmp/dane-4m-h1-sentinel"
+H8_SENTINEL = "/tmp/dane-4m-h8-sentinel"
 G2_OUTSIDE_TMP = "/tmp/dane-4l-g2-outside.nsh"
 G3_INCLUDEDIR_TMP = "/tmp/dane-4l-g3-inc"
 G10_INCLUDEDIR_TMP = "/tmp/dane-4l-g10-inc"
@@ -152,6 +158,8 @@ ALL_COMMAND_SENTINELS = (
     G5_SENTINEL,
     G10_SENTINEL,
     G7_TEMPFILE_SENTINEL,
+    H1_SENTINEL,
+    H8_SENTINEL,
 )
 
 
@@ -333,14 +341,45 @@ def _record_preprocessor(cls, loc):
     )
 
 
+def _evict_mozbuild():
+    """Drop cached mozbuild/mozpack modules so a later path can win."""
+    for key in list(sys.modules):
+        if key == "mozbuild" or key.startswith("mozbuild."):
+            del sys.modules[key]
+        elif key == "mozpack" or key.startswith("mozpack."):
+            del sys.modules[key]
+
+
+def _import_preprocessor_from_dir(cand):
+    """Load Preprocessor from cand/mozbuild. Return True on success."""
+    if not cand:
+        return False
+    cand = os.path.abspath(cand)
+    loc = os.path.join(cand, "mozbuild", "preprocessor.py")
+    if not os.path.isfile(loc):
+        return False
+    if cand in sys.path:
+        sys.path.remove(cand)
+    sys.path.insert(0, cand)
+    _evict_mozbuild()
+    try:
+        from mozbuild.preprocessor import Preprocessor
+        import mozbuild.preprocessor as _mpp
+
+        _record_preprocessor(Preprocessor, os.path.abspath(_mpp.__file__))
+        return True
+    except ImportError:
+        if cand in sys.path:
+            sys.path.remove(cand)
+        return False
+
+
 def _try_import_preprocessor():
-    """Prefer the ESR tree's Preprocessor; leave the fallback in place if it is missing."""
+    """Import order: $DANE_ESR_MOZBUILD, then sys.path, then the boxed ESR tree."""
     global _PREPROCESSOR_CLS, _PARSER_KIND, _PARSER_SOURCE
-    candidates = []
     env = os.environ.get("DANE_ESR_MOZBUILD")
-    if env:
-        candidates.append(env)
-    candidates.append(_DEFAULT_ESR_MOZBUILD)
+    if env and _import_preprocessor_from_dir(env):
+        return
     try:
         from mozbuild.preprocessor import Preprocessor
 
@@ -353,28 +392,8 @@ def _try_import_preprocessor():
         return
     except ImportError:
         pass
-    for cand in candidates:
-        if not cand:
-            continue
-        cand = os.path.abspath(cand)
-        if not os.path.isdir(os.path.join(cand, "mozbuild")):
-            continue
-        inserted = cand not in sys.path
-        if inserted:
-            sys.path.insert(0, cand)
-        try:
-            from mozbuild.preprocessor import Preprocessor
-
-            try:
-                import mozbuild.preprocessor as _mpp
-                loc = os.path.abspath(_mpp.__file__)
-            except Exception:
-                loc = os.path.join(cand, "mozbuild", "preprocessor.py")
-            _record_preprocessor(Preprocessor, loc)
-            return
-        except ImportError:
-            if inserted and cand in sys.path:
-                sys.path.remove(cand)
+    if _import_preprocessor_from_dir(_DEFAULT_ESR_MOZBUILD):
+        return
     _PREPROCESSOR_CLS = None
     _PARSER_KIND = "minimal-reimplementation"
     _PARSER_SOURCE = (
@@ -536,12 +555,52 @@ _INCLUDE_RE = re.compile(
 )
 
 
+_ASCII_CONTINUE_STRIP = " \t\r"
+
+
+def _ends_with_continuation(line):
+    """True when the last character after stripping ASCII space, tab, and CR is \\."""
+    return line.rstrip(_ASCII_CONTINUE_STRIP).endswith("\\")
+
+
+def _drop_continuation_backslash(line):
+    return line.rstrip(_ASCII_CONTINUE_STRIP)[:-1]
+
+
+def _forbidden_line_reason(line):
+    """Return a short reason if the physical line has NUL, a non-tab C0 control, or non-ASCII whitespace."""
+    for ch in line:
+        if ch == "\t":
+            continue
+        o = ord(ch)
+        if o == 0:
+            return "NUL"
+        if o < 32:
+            return "control character U+%04X" % o
+        if o > 127 and ch.isspace():
+            return "non-ASCII whitespace U+%04X" % o
+    return None
+
+
+def check_physical_lines(text, path):
+    """Refuse a file whose physical lines contain NUL, non-tab C0 controls, or non-ASCII whitespace."""
+    for lineno, line in enumerate(text.splitlines(), 1):
+        reason = _forbidden_line_reason(line)
+        if reason:
+            raise MakensisError(
+                "refused to invoke makensis: %s:%s: line contains %s"
+                % (path, lineno, reason)
+            )
+
+
 def logical_lines(text):
     """Yield (lineno, logical_line) after joining backslash continuations.
 
     lineno is 1-based and points at the first physical line of the logical
-    line. A physical line whose last non-space character is `\\` is joined
-    to the next, without inserting a space (so `!sys\\` + `tem` is `!system`).
+    line. A physical line is continued only when its last character, after
+    stripping ASCII space, tab, and CR, is `\\`. Unicode whitespace is
+    not stripped for this test. Joining does not insert a space (so
+    `!sys\\` + `tem` is `!system`).
     """
     physical = text.splitlines()
     i = 0
@@ -549,8 +608,8 @@ def logical_lines(text):
     while i < n:
         start = i + 1
         part = physical[i]
-        while part.rstrip().endswith("\\"):
-            part = part.rstrip()[:-1]
+        while _ends_with_continuation(part):
+            part = _drop_continuation_backslash(part)
             i += 1
             if i >= n:
                 break
@@ -630,6 +689,7 @@ def include_set(branding_path):
         seen.add(resolved)
         files.append(resolved)
         text = resolved.read_text(encoding="utf-8", errors="replace")
+        check_physical_lines(text, resolved)
         for lineno, logical in logical_lines(text):
             stripped = logical.strip()
             if not stripped or stripped.startswith("#") or stripped.startswith(";"):
@@ -657,6 +717,7 @@ def refuse_unsafe_nsis(branding_path):
             continue
         seen.add(resolved)
         text = resolved.read_text(encoding="utf-8", errors="replace")
+        check_physical_lines(text, resolved)
         for lineno, logical in logical_lines(text):
             kind, detail = classify_nsis_line(logical, resolved, lineno)
             if kind == "include":
@@ -695,6 +756,9 @@ def sentinels_that_exist():
 
 
 def remove_command_sentinels():
+    """Manual cleanup only. The check must not call this before a run:
+    a pre-existing sentinel is evidence of an earlier escape and must FAIL.
+    """
     for path in ALL_COMMAND_SENTINELS:
         try:
             os.remove(path)

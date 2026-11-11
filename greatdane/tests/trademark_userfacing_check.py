@@ -36,7 +36,6 @@ from pepecoin_publisher import (
     module_ver_preprocessor_sha256,
     module_ver_preprocessor_sha_ok,
     prepare_4l_bypass_payloads,
-    remove_command_sentinels,
     sentinels_that_exist,
     shared_nsh_has_pepecoin,
     UPSTREAM_PREPROCESSOR_SHA256,
@@ -650,6 +649,9 @@ PEPECOIN_BYPASS_FIXTURES = (
     ("G5-expanded-command", "branding.nsi", "G5-expanded-command.branding.nsi", "not-allowlisted"),
     ("G10-wildcard-include", "branding.nsi", "G10-wildcard-include.branding.nsi", "not-allowlisted"),
     ("G7-tempfile", "branding.nsi", "G7-tempfile.branding.nsi", "not-allowlisted"),
+    # 4m H1/H8: continuation mismatch (Unicode space / NUL)
+    ("H1-unicode-space", "branding.nsi", "H1-unicode-space-continuation.branding.nsi", "forbidden-char"),
+    ("H8-nul", "branding.nsi", "H8-nul-continuation.branding.nsi", "forbidden-char"),
 )
 
 
@@ -677,6 +679,8 @@ def fixture_violations(name, kind, rel, expect):
         return "forbidden-directive"
     except MakensisError as exc:
         msg = str(exc)
+        if "refused to invoke makensis" in msg and "line contains" in msg:
+            return "forbidden-char"
         if "refused to invoke makensis" in msg and (
             "allowlist" in msg or "not a relative sibling" in msg
         ):
@@ -736,8 +740,15 @@ def check_pepecoin_bypass_fixtures(bad):
             "makensis is the PATH fallback: %s (not $MAKENSISU or ~/.mozbuild v3.07)"
             % report
         )
+    existing = sentinels_that_exist()
+    if existing:
+        fail(
+            "command sentinel already exists (not deleted; inspect and remove by hand): %s"
+            % existing,
+            bad,
+        )
+        return
     prepare_4l_bypass_payloads(FIXTURE_DIR)
-    remove_command_sentinels()
     try:
         for name, kind, rel, expect in PEPECOIN_BYPASS_FIXTURES:
             path = os.path.join(FIXTURE_DIR, rel)

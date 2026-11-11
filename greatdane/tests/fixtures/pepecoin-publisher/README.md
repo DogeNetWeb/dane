@@ -66,3 +66,12 @@ falls back to the minimal reimplementation.
 | G5-expanded-command.branding.nsi | G5 `!define C "!system"` then `${C}` | a line starting with `${` is not on the allowlist; `/tmp/dane-4l-g5-sentinel` must not be created |
 | G10-wildcard-include.branding.nsi | G10 wildcard `!include` | wildcard / absolute include refused; `/tmp/dane-4l-g10-sentinel` must not be created |
 | G7-tempfile.branding.nsi | `!tempfile` | not on the allowlist; `/tmp/dane-4l-tempfile-sentinel` must not be created |
+
+Round 4m joins a trailing backslash only after stripping ASCII space,
+tab, and CR, and refuses any line containing NUL, a C0 control other
+than tab, or non-ASCII whitespace.
+
+| File | Case | Must fail because |
+|---|---|---|
+| H1-unicode-space-continuation.branding.nsi | H1 comment `\` + NBSP, then `!system` | non-ASCII whitespace; `/tmp/dane-4m-h1-sentinel` must not be created |
+| H8-nul-continuation.branding.nsi | H8 comment with NUL before `\`, then `!system` | NUL; `/tmp/dane-4m-h8-sentinel` must not be created |
