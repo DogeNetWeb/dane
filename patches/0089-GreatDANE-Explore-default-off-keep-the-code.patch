@@ -1,0 +1,116 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 20:44:27 -0600
+Subject: [PATCH 089/144] GreatDANE Explore: default-off, keep the code
+
+Ship Explore still, but turn it off by default:
+- greatdane.explore.enabled=false (product kill switch)
+- browser.newtabpage.activity-stream.feeds.section.daneexplore=false
+  so Activity Stream never constructs GreatDANEExploreFeed
+
+No modules, feed registration, or SectionsManager entries are removed.
+xpcshell does not load firefox-branding.js, so tests that call
+refreshCache now set the enabled pref true, and a new test proves the
+kill switch is a no-op.
+
+Applies on top of 418ba0e877 (Explore series tip). This work is not on
+apple-fixes-20261110.
+---
+ .../greatdane/pref/firefox-branding.js        |  8 +++--
+ .../test/unit/test_GreatDANEExplore.js        | 33 +++++++++++++++++++
+ 2 files changed, 38 insertions(+), 3 deletions(-)
+
+diff --git a/browser/branding/greatdane/pref/firefox-branding.js b/browser/branding/greatdane/pref/firefox-branding.js
+index 00cf5bb7ca..2c2992257c 100644
+--- a/browser/branding/greatdane/pref/firefox-branding.js
++++ b/browser/branding/greatdane/pref/firefox-branding.js
+@@ -60,9 +60,11 @@ pref("browser.tabs.crashReporting.sendReport", false);
+ pref("browser.tabs.crashReporting.includeURL", false);
+ 
+ // GreatDANE: Explore .doge & .pepe on the new-tab page (separate from recent
+-// visits). Sparse browser-side HTTPS checks through Dane TLS/TLSA (path A).
++// visits). Code is shipped but default-off: greatdane.explore.enabled and
++// feeds.section.daneexplore are false, so the feed is never constructed.
++// Sparse browser-side HTTPS checks through Dane TLS/TLSA (path A).
+ // Refresh probes are not IP-private; cadence is ≤1/site/week + small global budget.
+-pref("greatdane.explore.enabled", true);
++pref("greatdane.explore.enabled", false);
+ pref("greatdane.explore.perSiteIntervalSeconds", 604800); // 7 days
+ pref("greatdane.explore.globalBudgetPerWeek", 8);
+ pref("greatdane.explore.sampleSize", 8);
+@@ -72,6 +74,6 @@ pref("greatdane.explore.minRoundGapSeconds", 86400); // ≥1 day between sample
+ pref("greatdane.explore.probeTimeoutMs", 8000);
+ pref("greatdane.explore.dirPageLimit", 10);
+ pref("greatdane.explore.dirPagesPerRound", 4);
+-pref("browser.newtabpage.activity-stream.feeds.section.daneexplore", true);
++pref("browser.newtabpage.activity-stream.feeds.section.daneexplore", false);
+ pref("browser.newtabpage.activity-stream.section.daneexplore.rows", 1);
+ pref("browser.newtabpage.activity-stream.sectionOrder", "topsites,daneexplore,highlights,topstories");
+diff --git a/browser/components/greatdane/test/unit/test_GreatDANEExplore.js b/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
+index a52820b57e..69694eb1ce 100644
+--- a/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
++++ b/browser/components/greatdane/test/unit/test_GreatDANEExplore.js
+@@ -249,6 +249,8 @@ add_task(async function test_default8_round_restart_and_time_advance() {
+ 
+ add_task(async function test_round_not_stamped_before_node_sync() {
+   do_get_profile();
++  // Branding default is off; this test exercises the enabled path.
++  Services.prefs.setBoolPref("greatdane.explore.enabled", true);
+   const { refreshCache, writeCache, canStartSampleRound, anyChainReady } =
+     ChromeUtils.importESModule("resource:///modules/GreatDANEExplore.sys.mjs");
+   const { GreatDANE } = ChromeUtils.importESModule(
+@@ -265,6 +267,7 @@ add_task(async function test_round_not_stamped_before_node_sync() {
+     Assert.equal((c.probeLog || []).length, 0, "no budget spent pre-sync");
+     Assert.ok(canStartSampleRound(c), "SYSTEM_TICK may retry after sync");
+   } finally {
++    Services.prefs.clearUserPref("greatdane.explore.enabled");
+     GreatDANE._chains.clear();
+     for (let [k, v] of saved) GreatDANE._chains.set(k, v);
+   }
+@@ -330,6 +333,8 @@ add_task(async function test_sampler_reaches_both_namespaces_fixture() {
+ // gap left open (cold-start budget waste guard).
+ add_task(async function test_no_budget_on_hosts_without_local_tlsa() {
+   do_get_profile();
++  // Branding default is off; this test exercises the enabled path.
++  Services.prefs.setBoolPref("greatdane.explore.enabled", true);
+   const { refreshCache, writeCache, canStartSampleRound } =
+     ChromeUtils.importESModule("resource:///modules/GreatDANEExplore.sys.mjs");
+   const { GreatDANE } = ChromeUtils.importESModule(
+@@ -359,9 +364,37 @@ add_task(async function test_no_budget_on_hosts_without_local_tlsa() {
+     Assert.equal(Number(c.lastSampleAt) || 0, 0, "round gap stays open");
+     Assert.ok(canStartSampleRound(c));
+   } finally {
++    Services.prefs.clearUserPref("greatdane.explore.enabled");
+     GreatDANE.tlsaStatus = savedTs;
+     GreatDANE._chains.clear();
+     for (let [k, v] of saved) GreatDANE._chains.set(k, v);
+     await new Promise(r => srv.stop(r));
+   }
+ });
++
++
++// Branding defaults are false; xpcshell does not load firefox-branding.js, so
++// prefBool(PREF_ENABLED, true) still falls back to true when the pref is unset.
++// Set the pref explicitly to prove the kill switch is a no-op.
++add_task(async function test_disabled_refresh_and_rows_are_noop() {
++  do_get_profile();
++  Services.prefs.setBoolPref("greatdane.explore.enabled", false);
++  const { refreshCache, getExploreRows, exploreEnabled, writeCache } =
++    ChromeUtils.importESModule("resource:///modules/GreatDANEExplore.sys.mjs");
++  try {
++    Assert.ok(!exploreEnabled(), "kill switch off");
++    await writeCache({
++      live: [{ host: "century.pepe" }],
++      probeLog: [],
++      lastSampleAt: 0,
++    });
++    let c = await refreshCache();
++    Assert.equal((c.live || []).length, 0, "disabled refresh clears live");
++    Assert.equal((c.probeLog || []).length, 0, "disabled refresh spends no budget");
++    Assert.equal(Number(c.lastSampleAt) || 0, 0, "disabled refresh does not stamp a round");
++    let rows = await getExploreRows({ allowRefresh: true });
++    Assert.equal(rows.length, 0, "disabled getExploreRows is empty and does not refresh");
++  } finally {
++    Services.prefs.clearUserPref("greatdane.explore.enabled");
++  }
++});
