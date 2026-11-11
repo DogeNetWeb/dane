@@ -20,10 +20,11 @@
     describes those dane.surf update-check log lines; it does not describe the server's default log.
     Rare server-error logs can contain a full IP. Logs are kept about 14 days, are not linked to an
     account or device, and are not shared. Before November 10, 2026, update-check log entries on pepecoin.surf
-    kept full client IP addresses; they rotate out around November 25, 2026. dane.surf request logs
-    written before the November 10, 2026 logging change may contain full IPs (dane.surf went live on
-    November 10, and its lines briefly sat in a shared unmasked log); they rotate out within about 14
-    days. No check happens while the DisableAppUpdate policy is on. The update URL is
+    kept full client IP addresses; they rotate out around November 25, 2026. Before the November 10, 2026
+    logging change, dane.surf's own access-log lines already masked the IP address, but update-check lines
+    recorded the full request path, including build ID and locale; they sat in a shared server log that
+    also held unmasked lines from other hosts. Those logs rotate out within about 14 days. No check
+    happens while the DisableAppUpdate policy is on. The update URL is
     https://dane.surf/update/3/.... This unofficial build does not publish update.xml.
     https://dane.surf/releases/ 301s to /download/ (as of 2026-11-10). This update-log wording matches
     the live dane.surf /update/ location (format dane_update_masked; build ID and locale replaced
