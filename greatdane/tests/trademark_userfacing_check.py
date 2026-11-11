@@ -715,11 +715,11 @@ def check_module_ver_parser(bad):
     actual = module_ver_preprocessor_sha256()
     if module_ver_preprocessor_sha_ok():
         pass_(
-            "imported preprocessor.py sha256 %s matches ESR 153.7.0" % actual
+            "imported preprocessor.py sha256 %s matches pre-release esr153 snapshot 3bd39ccf6a (same digest as FIREFOX_153_7_0esr_RELEASE 9aecd40e)" % actual
         )
     else:
         fail(
-            "imported preprocessor.py sha256 %s does not match ESR 153.7.0 %s"
+            "imported preprocessor.py sha256 %s does not match pre-release esr153 snapshot 3bd39ccf6a %s"
             % (actual, UPSTREAM_PREPROCESSOR_SHA256),
             bad,
         )

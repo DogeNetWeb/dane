@@ -1,6 +1,6 @@
 # updater.ini fixtures for locale_branding_check.py
 
-Pinned to the 153.7.0esr `browser/locales/l10n-changesets.json` revision
+Pinned to the `browser/locales/l10n-changesets.json` revision recorded in pre-release esr153 snapshot `3bd39ccf6a` (and kept at our greatdane-esr153head tip `067014d89b`)
 
     4e2e25a0b94740a84c357e93346ec4f4c94521e3
 
@@ -12,7 +12,7 @@ same revision. The six real fixtures were fetched over public HTTPS from
 on 2026-11-10, America/Chicago (UTC-6). The six files are byte-identical to
 the previous 4f pin at 3ae91662ee285b44f21ef31b9cae722d132e28ea and to the
 copies previously taken from firefox-l10n `main` the same day. The pin is
-the 153.7.0esr l10n-changesets revision (full SHA above), not `main`. Licensed under MPL 2.0,
+that snapshot's l10n-changesets revision (full SHA above), not `main` and not a claim that the Mozilla base is the 153.7.0esr release tag. Licensed under MPL 2.0,
 same as the upstream files. They are test inputs only; they are not shipped in
 the product.
 

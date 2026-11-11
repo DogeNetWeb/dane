@@ -1,0 +1,132 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 21:01:55 -0600
+Subject: [PATCH 145/155] GreatDANE: dated erratum on the esr153 base label
+ (round 5b)
+
+Relabel the Mozilla base as pre-release esr153 snapshot 3bd39ccf6a
+(the public FIREFOX_153_7_0esr_RELEASE tag 9aecd40e is 135 commits
+later). Call 067014d89b our greatdane-esr153head tip.
+
+Test messages, the publisher check, and the updater-ini fixture
+README no longer say the base is "ESR 153.7.0" / "153.7.0esr". The
+preprocessor.py pin 378dcc66 is the 3bd39ccf6a file and has the same
+digest as the later release tag.
+
+Computed version strings and installer/dmg filenames are left alone,
+as are live-site strings for Curb Appeal (/download/, /source/).
+---
+ .../tests/fixtures/updater-ini/README.md      |  4 ++--
+ greatdane/tests/pepecoin_publisher.py         | 22 ++++++++++---------
+ greatdane/tests/trademark_userfacing_check.py |  4 ++--
+ 3 files changed, 16 insertions(+), 14 deletions(-)
+
+diff --git a/greatdane/tests/fixtures/updater-ini/README.md b/greatdane/tests/fixtures/updater-ini/README.md
+index a636552..82b31ff 100644
+--- a/greatdane/tests/fixtures/updater-ini/README.md
++++ b/greatdane/tests/fixtures/updater-ini/README.md
+@@ -1,6 +1,6 @@
+ # updater.ini fixtures for locale_branding_check.py
+ 
+-Pinned to the 153.7.0esr `browser/locales/l10n-changesets.json` revision
++Pinned to the `browser/locales/l10n-changesets.json` revision recorded in pre-release esr153 snapshot `3bd39ccf6a` (and kept at our greatdane-esr153head tip `067014d89b`)
+ 
+     4e2e25a0b94740a84c357e93346ec4f4c94521e3
+ 
+@@ -12,7 +12,7 @@ same revision. The six real fixtures were fetched over public HTTPS from
+ on 2026-11-10, America/Chicago (UTC-6). The six files are byte-identical to
+ the previous 4f pin at 3ae91662ee285b44f21ef31b9cae722d132e28ea and to the
+ copies previously taken from firefox-l10n `main` the same day. The pin is
+-the 153.7.0esr l10n-changesets revision (full SHA above), not `main`. Licensed under MPL 2.0,
++that snapshot's l10n-changesets revision (full SHA above), not `main` and not a claim that the Mozilla base is the 153.7.0esr release tag. Licensed under MPL 2.0,
+ same as the upstream files. They are test inputs only; they are not shipped in
+ the product.
+ 
+diff --git a/greatdane/tests/pepecoin_publisher.py b/greatdane/tests/pepecoin_publisher.py
+index 830e984..0e03f1f 100644
+--- a/greatdane/tests/pepecoin_publisher.py
++++ b/greatdane/tests/pepecoin_publisher.py
+@@ -29,9 +29,10 @@ backslash plus a Unicode space, or a NUL before the backslash,
+ cannot hide the next line from the checker.
+ 
+ module.ver is parsed with mozbuild.preprocessor.Preprocessor
+-(marker='%') from the Firefox ESR 153.7.0 tree when that package is
++(marker='%') from pre-release esr153 snapshot 3bd39ccf6a when that package is
+ importable (this box: /workspace/dane-windows/firefox-esr153/python/mozbuild;
+-preprocessor.py sha256 378dcc667104271a22eedd58cba175fa35debeb29b431f022ac39ef879b25166),
++preprocessor.py sha256 378dcc667104271a22eedd58cba175fa35debeb29b431f022ac39ef879b25166,
++which is the 3bd39ccf6a file and also matches FIREFOX_153_7_0esr_RELEASE 9aecd40e),
+ then the small create_rc.parse_module_ver loop (config/create_rc.py
+ lines 89–97). Import order: $DANE_ESR_MOZBUILD (the python/mozbuild directory)
+ if set, then a mozbuild already on sys.path, then the boxed
+@@ -273,9 +274,10 @@ def is_empty_or_mozilla_publisher(value):
+ 
+ # ---------------------------------------------------------------------------
+ # module.ver: prefer mozbuild.preprocessor.Preprocessor(marker="%") from
+-# Firefox ESR 153.7.0 (python/mozbuild/mozbuild/preprocessor.py, file
+-# sha256 378dcc667104271a22eedd58cba175fa35debeb29b431f022ac39ef879b25166
+-# on this box at /workspace/dane-windows/firefox-esr153), then the
++# pre-release esr153 snapshot 3bd39ccf6a (python/mozbuild/mozbuild/preprocessor.py,
++# file sha256 378dcc667104271a22eedd58cba175fa35debeb29b431f022ac39ef879b25166
++# on this box at /workspace/dane-windows/firefox-esr153; the same digest is
++# in FIREFOX_153_7_0esr_RELEASE 9aecd40e), then the
+ # create_rc.parse_module_ver loop (config/create_rc.py lines 89–97).
+ # Fallback: a minimal reimplementation that only accepts %define /
+ # %include. Not a vendored copy of the preprocessor when falling back.
+@@ -304,7 +306,7 @@ _PREPROCESSOR_CLS = None
+ _PARSER_KIND = "minimal-reimplementation"
+ _PARSER_SOURCE = (
+     "minimal reimplementation of create_rc.parse_module_ver "
+-    "(Firefox ESR 153.7.0 config/create_rc.py:89-97); only %define / %include"
++    "(pre-release esr153 snapshot 3bd39ccf6a config/create_rc.py:89-97); only %define / %include"
+ )
+ _PARSER_FILE = None
+ _PARSER_FILE_SHA256 = None
+@@ -331,9 +333,9 @@ def _record_preprocessor(cls, loc):
+         _PARSER_FILE_SHA256 = None
+     actual = _PARSER_FILE_SHA256 or "unreadable"
+     if _PARSER_FILE_SHA256 == UPSTREAM_PREPROCESSOR_SHA256:
+-        match = "matches ESR 153.7.0"
++        match = "matches pre-release esr153 snapshot 3bd39ccf6a (same digest as FIREFOX_153_7_0esr_RELEASE 9aecd40e)"
+     else:
+-        match = "MISMATCH expected ESR 153.7.0 %s" % UPSTREAM_PREPROCESSOR_SHA256
++        match = "MISMATCH expected pre-release esr153 snapshot 3bd39ccf6a (sha %s)" % UPSTREAM_PREPROCESSOR_SHA256
+     _PARSER_SOURCE = (
+         "mozbuild.preprocessor.Preprocessor(marker='%%') from %s "
+         "(preprocessor.py sha256 %s; %s)"
+@@ -398,7 +400,7 @@ def _try_import_preprocessor():
+     _PARSER_KIND = "minimal-reimplementation"
+     _PARSER_SOURCE = (
+         "minimal reimplementation of create_rc.parse_module_ver "
+-        "(Firefox ESR 153.7.0 config/create_rc.py:89-97); only %define / %include"
++        "(pre-release esr153 snapshot 3bd39ccf6a config/create_rc.py:89-97); only %define / %include"
+     )
+ 
+ 
+@@ -419,7 +421,7 @@ def module_ver_preprocessor_sha256():
+ 
+ 
+ def module_ver_preprocessor_sha_ok():
+-    """True when the imported file's sha256 matches the boxed ESR 153.7.0 preprocessor."""
++    """True when the imported file's sha256 matches the 3bd39ccf6a preprocessor (same digest as the 153.7.0esr tag)."""
+     return _PARSER_FILE_SHA256 == UPSTREAM_PREPROCESSOR_SHA256
+ 
+ 
+diff --git a/greatdane/tests/trademark_userfacing_check.py b/greatdane/tests/trademark_userfacing_check.py
+index 2d1d541..8f343f2 100755
+--- a/greatdane/tests/trademark_userfacing_check.py
++++ b/greatdane/tests/trademark_userfacing_check.py
+@@ -715,11 +715,11 @@ def check_module_ver_parser(bad):
+     actual = module_ver_preprocessor_sha256()
+     if module_ver_preprocessor_sha_ok():
+         pass_(
+-            "imported preprocessor.py sha256 %s matches ESR 153.7.0" % actual
++            "imported preprocessor.py sha256 %s matches pre-release esr153 snapshot 3bd39ccf6a (same digest as FIREFOX_153_7_0esr_RELEASE 9aecd40e)" % actual
+         )
+     else:
+         fail(
+-            "imported preprocessor.py sha256 %s does not match ESR 153.7.0 %s"
++            "imported preprocessor.py sha256 %s does not match pre-release esr153 snapshot 3bd39ccf6a %s"
+             % (actual, UPSTREAM_PREPROCESSOR_SHA256),
+             bad,
+         )

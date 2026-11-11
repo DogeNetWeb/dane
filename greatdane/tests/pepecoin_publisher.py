@@ -29,9 +29,10 @@ backslash plus a Unicode space, or a NUL before the backslash,
 cannot hide the next line from the checker.
 
 module.ver is parsed with mozbuild.preprocessor.Preprocessor
-(marker='%') from the Firefox ESR 153.7.0 tree when that package is
+(marker='%') from pre-release esr153 snapshot 3bd39ccf6a when that package is
 importable (this box: /workspace/dane-windows/firefox-esr153/python/mozbuild;
-preprocessor.py sha256 378dcc667104271a22eedd58cba175fa35debeb29b431f022ac39ef879b25166),
+preprocessor.py sha256 378dcc667104271a22eedd58cba175fa35debeb29b431f022ac39ef879b25166,
+which is the 3bd39ccf6a file and also matches FIREFOX_153_7_0esr_RELEASE 9aecd40e),
 then the small create_rc.parse_module_ver loop (config/create_rc.py
 lines 89–97). Import order: $DANE_ESR_MOZBUILD (the python/mozbuild directory)
 if set, then a mozbuild already on sys.path, then the boxed
@@ -273,9 +274,10 @@ def is_empty_or_mozilla_publisher(value):
 
 # ---------------------------------------------------------------------------
 # module.ver: prefer mozbuild.preprocessor.Preprocessor(marker="%") from
-# Firefox ESR 153.7.0 (python/mozbuild/mozbuild/preprocessor.py, file
-# sha256 378dcc667104271a22eedd58cba175fa35debeb29b431f022ac39ef879b25166
-# on this box at /workspace/dane-windows/firefox-esr153), then the
+# pre-release esr153 snapshot 3bd39ccf6a (python/mozbuild/mozbuild/preprocessor.py,
+# file sha256 378dcc667104271a22eedd58cba175fa35debeb29b431f022ac39ef879b25166
+# on this box at /workspace/dane-windows/firefox-esr153; the same digest is
+# in FIREFOX_153_7_0esr_RELEASE 9aecd40e), then the
 # create_rc.parse_module_ver loop (config/create_rc.py lines 89–97).
 # Fallback: a minimal reimplementation that only accepts %define /
 # %include. Not a vendored copy of the preprocessor when falling back.
@@ -304,7 +306,7 @@ _PREPROCESSOR_CLS = None
 _PARSER_KIND = "minimal-reimplementation"
 _PARSER_SOURCE = (
     "minimal reimplementation of create_rc.parse_module_ver "
-    "(Firefox ESR 153.7.0 config/create_rc.py:89-97); only %define / %include"
+    "(pre-release esr153 snapshot 3bd39ccf6a config/create_rc.py:89-97); only %define / %include"
 )
 _PARSER_FILE = None
 _PARSER_FILE_SHA256 = None
@@ -331,9 +333,9 @@ def _record_preprocessor(cls, loc):
         _PARSER_FILE_SHA256 = None
     actual = _PARSER_FILE_SHA256 or "unreadable"
     if _PARSER_FILE_SHA256 == UPSTREAM_PREPROCESSOR_SHA256:
-        match = "matches ESR 153.7.0"
+        match = "matches pre-release esr153 snapshot 3bd39ccf6a (same digest as FIREFOX_153_7_0esr_RELEASE 9aecd40e)"
     else:
-        match = "MISMATCH expected ESR 153.7.0 %s" % UPSTREAM_PREPROCESSOR_SHA256
+        match = "MISMATCH expected pre-release esr153 snapshot 3bd39ccf6a (sha %s)" % UPSTREAM_PREPROCESSOR_SHA256
     _PARSER_SOURCE = (
         "mozbuild.preprocessor.Preprocessor(marker='%%') from %s "
         "(preprocessor.py sha256 %s; %s)"
@@ -398,7 +400,7 @@ def _try_import_preprocessor():
     _PARSER_KIND = "minimal-reimplementation"
     _PARSER_SOURCE = (
         "minimal reimplementation of create_rc.parse_module_ver "
-        "(Firefox ESR 153.7.0 config/create_rc.py:89-97); only %define / %include"
+        "(pre-release esr153 snapshot 3bd39ccf6a config/create_rc.py:89-97); only %define / %include"
     )
 
 
@@ -419,7 +421,7 @@ def module_ver_preprocessor_sha256():
 
 
 def module_ver_preprocessor_sha_ok():
-    """True when the imported file's sha256 matches the boxed ESR 153.7.0 preprocessor."""
+    """True when the imported file's sha256 matches the 3bd39ccf6a preprocessor (same digest as the 153.7.0esr tag)."""
     return _PARSER_FILE_SHA256 == UPSTREAM_PREPROCESSOR_SHA256
 
 
