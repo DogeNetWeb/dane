@@ -1,0 +1,780 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 19:14:40 -0600
+Subject: [PATCH 141/144] GreatDANE: allowlist branding.nsi lines and hash the
+ imported preprocessor (round 4l)
+
+Replace the NSIS command denylist with an allowlist. Logical lines
+(backslash continuations joined first) of branding.nsi and its includes
+must be blank, a comment, a simple !define NAME value, or a relative
+sibling !include with no wildcard and no ... Anything else, including a
+line starting with ${, is refused before makensis runs. Add fixtures for
+the G2/G3/G4/G5/G10 denylist bypasses and for !tempfile, each with a
+/tmp sentinel that must not be created.
+
+Hash the preprocessor.py actually imported at runtime and FAIL if it
+does not match the boxed ESR 153.7.0 digest. Print a separate WARN line
+when makensis is the PATH 3.11 fallback.
+---
+ .../fixtures/pepecoin-publisher/G10-wild.nsh  |   2 +
+ .../G10-wildcard-include.branding.nsi         |   5 +
+ .../G2-abs-include.branding.nsi               |   5 +
+ .../pepecoin-publisher/G2-outside.nsh         |   2 +
+ .../G3-addincludedir.branding.nsi             |   6 +
+ .../fixtures/pepecoin-publisher/G3-x.nsh      |   2 +
+ .../G4-continuation.branding.nsi              |   5 +
+ .../G5-expanded-command.branding.nsi          |   5 +
+ .../G7-tempfile.branding.nsi                  |   6 +
+ .../fixtures/pepecoin-publisher/README.md     |  18 +
+ greatdane/tests/pepecoin_publisher.py         | 344 +++++++++++++-----
+ greatdane/tests/trademark_userfacing_check.py | 109 ++++--
+ 12 files changed, 398 insertions(+), 111 deletions(-)
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/G10-wild.nsh
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/G10-wildcard-include.branding.nsi
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/G2-abs-include.branding.nsi
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/G2-outside.nsh
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/G3-addincludedir.branding.nsi
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/G3-x.nsh
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/G4-continuation.branding.nsi
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/G5-expanded-command.branding.nsi
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/G7-tempfile.branding.nsi
+
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/G10-wild.nsh b/greatdane/tests/fixtures/pepecoin-publisher/G10-wild.nsh
+new file mode 100644
+index 0000000000..6db00600c4
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/G10-wild.nsh
+@@ -0,0 +1,2 @@
++; Payload for G10. Copied to /tmp/dane-4l-g10-inc/w1.nsh by the test runner.
++!system "touch /tmp/dane-4l-g10-sentinel"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/G10-wildcard-include.branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/G10-wildcard-include.branding.nsi
+new file mode 100644
+index 0000000000..dc951a9272
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/G10-wildcard-include.branding.nsi
+@@ -0,0 +1,5 @@
++; G10: wildcard !include of an absolute path.
++; If makensis ran this it would write /tmp/dane-4l-g10-sentinel.
++!include "/tmp/dane-4l-g10-inc/w*.nsh"
++!define CompanyName "Dane"
++!define ARPPublisher "Dane"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/G2-abs-include.branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/G2-abs-include.branding.nsi
+new file mode 100644
+index 0000000000..cd9d6edbc5
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/G2-abs-include.branding.nsi
+@@ -0,0 +1,5 @@
++; G2: absolute-path !include. If makensis ran this it would write
++; /tmp/dane-4l-g2-sentinel via /tmp/dane-4l-g2-outside.nsh.
++!include "/tmp/dane-4l-g2-outside.nsh"
++!define CompanyName "Dane"
++!define ARPPublisher "Dane"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/G2-outside.nsh b/greatdane/tests/fixtures/pepecoin-publisher/G2-outside.nsh
+new file mode 100644
+index 0000000000..502f7b1715
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/G2-outside.nsh
+@@ -0,0 +1,2 @@
++; Payload for G2. Only touched if the absolute !include is handed to makensis.
++!system "touch /tmp/dane-4l-g2-sentinel"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/G3-addincludedir.branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/G3-addincludedir.branding.nsi
+new file mode 100644
+index 0000000000..76fb64f680
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/G3-addincludedir.branding.nsi
+@@ -0,0 +1,6 @@
++; G3: !addincludedir of an absolute dir, then !include x.nsh.
++; If makensis ran this it would write /tmp/dane-4l-g3-sentinel.
++!addincludedir /tmp/dane-4l-g3-inc
++!include "x.nsh"
++!define CompanyName "Dane"
++!define ARPPublisher "Dane"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/G3-x.nsh b/greatdane/tests/fixtures/pepecoin-publisher/G3-x.nsh
+new file mode 100644
+index 0000000000..f4a644f822
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/G3-x.nsh
+@@ -0,0 +1,2 @@
++; Payload for G3. Copied to /tmp/dane-4l-g3-inc/x.nsh by the test runner.
++!system "touch /tmp/dane-4l-g3-sentinel"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/G4-continuation.branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/G4-continuation.branding.nsi
+new file mode 100644
+index 0000000000..119ff678fe
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/G4-continuation.branding.nsi
+@@ -0,0 +1,5 @@
++; G4: !system split across a backslash continuation.
++!sys\
++tem "touch /tmp/dane-4l-g4-sentinel"
++!define CompanyName "Dane"
++!define ARPPublisher "Dane"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/G5-expanded-command.branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/G5-expanded-command.branding.nsi
+new file mode 100644
+index 0000000000..c5357ca570
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/G5-expanded-command.branding.nsi
+@@ -0,0 +1,5 @@
++; G5: command hidden behind a define, then invoked as ${C}.
++!define C "!system"
++${C} "touch /tmp/dane-4l-g5-sentinel"
++!define CompanyName "Dane"
++!define ARPPublisher "Dane"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/G7-tempfile.branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/G7-tempfile.branding.nsi
+new file mode 100644
+index 0000000000..2fca7c4b66
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/G7-tempfile.branding.nsi
+@@ -0,0 +1,6 @@
++; G7: !tempfile (not on the allowlist). The !appendfile would write the
++; sentinel if makensis ran.
++!tempfile FOO
++!appendfile "/tmp/dane-4l-tempfile-sentinel" "x"
++!define CompanyName "Dane"
++!define ARPPublisher "Dane"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/README.md b/greatdane/tests/fixtures/pepecoin-publisher/README.md
+index d9903724c7..cca1b18ad3 100644
+--- a/greatdane/tests/fixtures/pepecoin-publisher/README.md
++++ b/greatdane/tests/fixtures/pepecoin-publisher/README.md
+@@ -48,3 +48,21 @@ it applies only when `ARPPublisher` is undefined, and it stays.
+ | F2-appendfile.branding.nsi | F2 `!appendfile` to `/tmp/dane-4k-f2-appendfile-sentinel` | refused before makensis; sentinel must not be created |
+ | F3-ifdef.branding.nsi | F3 `!ifdef` in branding.nsi | refused (!if*) |
+ | F4-non-ascii.branding.nsi | F4 Armenian օ in CompanyName | not printable ASCII after resolution |
++
++
++Round 4l replaces the NSIS command denylist with an allowlist. Logical
++lines (backslash continuations joined first) of branding.nsi and its
++includes must be blank, a comment, a simple `!define NAME value`, or a
++relative sibling `!include` with no wildcard and no `..`. Anything else
++fails, including a line starting with `${`. module.ver parsing still
++prefers the ESR Preprocessor (hash of the file actually imported) and
++falls back to the minimal reimplementation.
++
++| File | Case | Must fail because |
++|---|---|---|
++| G2-abs-include.branding.nsi | G2 absolute-path `!include` | not a relative sibling; `/tmp/dane-4l-g2-sentinel` must not be created |
++| G3-addincludedir.branding.nsi | G3 `!addincludedir` then `!include` | `!addincludedir` is not on the allowlist; `/tmp/dane-4l-g3-sentinel` must not be created |
++| G4-continuation.branding.nsi | G4 `!sys\` / `tem` | joined line is `!system`, not on the allowlist; `/tmp/dane-4l-g4-sentinel` must not be created |
++| G5-expanded-command.branding.nsi | G5 `!define C "!system"` then `${C}` | a line starting with `${` is not on the allowlist; `/tmp/dane-4l-g5-sentinel` must not be created |
++| G10-wildcard-include.branding.nsi | G10 wildcard `!include` | wildcard / absolute include refused; `/tmp/dane-4l-g10-sentinel` must not be created |
++| G7-tempfile.branding.nsi | `!tempfile` | not on the allowlist; `/tmp/dane-4l-tempfile-sentinel` must not be created |
+diff --git a/greatdane/tests/pepecoin_publisher.py b/greatdane/tests/pepecoin_publisher.py
+index f2b9b6a83f..668d0d1d4c 100644
+--- a/greatdane/tests/pepecoin_publisher.py
++++ b/greatdane/tests/pepecoin_publisher.py
+@@ -17,11 +17,14 @@ makensis is missing, callers must FAIL — never PASS. This is not a
+ full build-environment mirror (AB_CD, Manifest*, FileFunc and the
+ rest of installer.nsi stay unset).
+ 
+-Before makensis is invoked, every file in the include set is refused if
+-it contains !system, !execute, !appendfile, !delfile, !makensis,
+-!packhdr, !finalize, !uninstfinalize, !getdllversion, or !gettlbversion.
+-branding.nsi is also refused if it contains any !if / !ifdef / !ifndef
+-(or other !if* command).
++Before makensis is invoked, every logical line of branding.nsi and of
++the files it includes (backslash continuations joined first) must be
++blank, a comment, a simple `!define NAME value` (optional quoted value;
++no flags such as /redef or /file), or an `!include` of a relative
++sibling with no wildcard and no `..`. Anything else, including a line
++starting with `${`, is refused. This replaced the earlier command
++denylist, which missed absolute/wildcard !include, !addincludedir,
++continued !sys + tem, and define-expanded ${C} commands.
+ 
+ module.ver is parsed with mozbuild.preprocessor.Preprocessor
+ (marker='%') from the Firefox ESR 153.7.0 tree when that package is
+@@ -49,6 +52,7 @@ only when ARPPublisher is undefined.
+ """
+ from __future__ import annotations
+ 
++import hashlib
+ import io
+ import os
+ import re
+@@ -124,25 +128,31 @@ _LOOKALIKE = {
+     "ñ": "n",
+ }
+ 
+-# Compile-time NSIS commands that can touch the filesystem or run a process.
+-# Refuse these in the include set before invoking makensis (F2).
+-FORBIDDEN_NSIS_COMMANDS = (
+-    "!system",
+-    "!execute",
+-    "!appendfile",
+-    "!delfile",
+-    "!makensis",
+-    "!packhdr",
+-    "!finalize",
+-    "!uninstfinalize",
+-    "!getdllversion",
+-    "!gettlbversion",
+-)
+-
+-# Sentinels used by the F2 fixtures. The check must refuse those fixtures
+-# and must not create these paths.
++# Sentinels used by the F2 (4k) and G2–G10 / tempfile (4l) fixtures.
++# The check must refuse those fixtures and must not create these paths.
++# Bypass fixtures that could run commands only touch /tmp sentinels.
+ F2_SYSTEM_SENTINEL = "/tmp/dane-4k-f2-system-sentinel"
+ F2_APPENDFILE_SENTINEL = "/tmp/dane-4k-f2-appendfile-sentinel"
++G2_SENTINEL = "/tmp/dane-4l-g2-sentinel"
++G3_SENTINEL = "/tmp/dane-4l-g3-sentinel"
++G4_SENTINEL = "/tmp/dane-4l-g4-sentinel"
++G5_SENTINEL = "/tmp/dane-4l-g5-sentinel"
++G10_SENTINEL = "/tmp/dane-4l-g10-sentinel"
++G7_TEMPFILE_SENTINEL = "/tmp/dane-4l-tempfile-sentinel"
++G2_OUTSIDE_TMP = "/tmp/dane-4l-g2-outside.nsh"
++G3_INCLUDEDIR_TMP = "/tmp/dane-4l-g3-inc"
++G10_INCLUDEDIR_TMP = "/tmp/dane-4l-g10-inc"
++
++ALL_COMMAND_SENTINELS = (
++    F2_SYSTEM_SENTINEL,
++    F2_APPENDFILE_SENTINEL,
++    G2_SENTINEL,
++    G3_SENTINEL,
++    G4_SENTINEL,
++    G5_SENTINEL,
++    G10_SENTINEL,
++    G7_TEMPFILE_SENTINEL,
++)
+ 
+ 
+ class MakensisMissing(Exception):
+@@ -208,6 +218,12 @@ def makensis_report():
+     return "%s (%s, %s)" % (path, version, label)
+ 
+ 
++def makensis_is_path_fallback():
++    """True when the chosen binary is the labelled PATH fallback, not $MAKENSISU or ~/.mozbuild."""
++    _path, _version, label = makensis_choice()
++    return label == "PATH fallback"
++
++
+ def normalize_publisher(value):
+     """NFKC, casefold, lookalike fold, then drop zero-width and non-letters."""
+     if value is None:
+@@ -282,6 +298,39 @@ _PARSER_SOURCE = (
+     "minimal reimplementation of create_rc.parse_module_ver "
+     "(Firefox ESR 153.7.0 config/create_rc.py:89-97); only %define / %include"
+ )
++_PARSER_FILE = None
++_PARSER_FILE_SHA256 = None
++
++
++def _sha256_file(path):
++    digest = hashlib.sha256()
++    with open(path, "rb") as fh:
++        for chunk in iter(lambda: fh.read(65536), b""):
++            digest.update(chunk)
++    return digest.hexdigest()
++
++
++def _record_preprocessor(cls, loc):
++    """Record the Preprocessor class, the file it came from, and that file's sha256."""
++    global _PREPROCESSOR_CLS, _PARSER_KIND, _PARSER_SOURCE
++    global _PARSER_FILE, _PARSER_FILE_SHA256
++    _PREPROCESSOR_CLS = cls
++    _PARSER_KIND = "mozbuild.preprocessor"
++    _PARSER_FILE = loc
++    try:
++        _PARSER_FILE_SHA256 = _sha256_file(loc) if loc and os.path.isfile(loc) else None
++    except OSError:
++        _PARSER_FILE_SHA256 = None
++    actual = _PARSER_FILE_SHA256 or "unreadable"
++    if _PARSER_FILE_SHA256 == UPSTREAM_PREPROCESSOR_SHA256:
++        match = "matches ESR 153.7.0"
++    else:
++        match = "MISMATCH expected ESR 153.7.0 %s" % UPSTREAM_PREPROCESSOR_SHA256
++    _PARSER_SOURCE = (
++        "mozbuild.preprocessor.Preprocessor(marker='%%') from %s "
++        "(preprocessor.py sha256 %s; %s)"
++        % (loc, actual, match)
++    )
+ 
+ 
+ def _try_import_preprocessor():
+@@ -295,18 +344,12 @@ def _try_import_preprocessor():
+     try:
+         from mozbuild.preprocessor import Preprocessor
+ 
+-        _PREPROCESSOR_CLS = Preprocessor
+-        _PARSER_KIND = "mozbuild.preprocessor"
+         try:
+             import mozbuild.preprocessor as _mpp
+             loc = os.path.abspath(_mpp.__file__)
+         except Exception:
+-            loc = "sys.path"
+-        _PARSER_SOURCE = (
+-            "mozbuild.preprocessor.Preprocessor(marker='%%') from %s "
+-            "(Firefox ESR 153.7.0; preprocessor.py sha256 %s)"
+-            % (loc, UPSTREAM_PREPROCESSOR_SHA256)
+-        )
++            loc = None
++        _record_preprocessor(Preprocessor, loc)
+         return
+     except ImportError:
+         pass
+@@ -322,13 +365,12 @@ def _try_import_preprocessor():
+         try:
+             from mozbuild.preprocessor import Preprocessor
+ 
+-            _PREPROCESSOR_CLS = Preprocessor
+-            _PARSER_KIND = "mozbuild.preprocessor"
+-            _PARSER_SOURCE = (
+-                "mozbuild.preprocessor.Preprocessor(marker='%%') from %s "
+-                "(Firefox ESR 153.7.0; preprocessor.py sha256 %s)"
+-                % (cand, UPSTREAM_PREPROCESSOR_SHA256)
+-            )
++            try:
++                import mozbuild.preprocessor as _mpp
++                loc = os.path.abspath(_mpp.__file__)
++            except Exception:
++                loc = os.path.join(cand, "mozbuild", "preprocessor.py")
++            _record_preprocessor(Preprocessor, loc)
+             return
+         except ImportError:
+             if inserted and cand in sys.path:
+@@ -352,6 +394,16 @@ def module_ver_parser_report():
+     return "%s: %s" % (_PARSER_KIND, _PARSER_SOURCE)
+ 
+ 
++def module_ver_preprocessor_sha256():
++    """sha256 of the preprocessor.py actually imported, or None on the fallback path."""
++    return _PARSER_FILE_SHA256
++
++
++def module_ver_preprocessor_sha_ok():
++    """True when the imported file's sha256 matches the boxed ESR 153.7.0 preprocessor."""
++    return _PARSER_FILE_SHA256 == UPSTREAM_PREPROCESSOR_SHA256
++
++
+ def _expand_at(text, defines, *, require_defined=False):
+     def repl(m):
+         key = m.group(1)
+@@ -459,73 +511,195 @@ def module_ver_copyright(path):
+ 
+ 
+ # ---------------------------------------------------------------------------
+-# NSIS: refuse unsafe commands, then makensis -PPO
++# NSIS: allowlist branding.nsi and its includes, then makensis -PPO
+ # ---------------------------------------------------------------------------
+ 
+ _PPO_COMPANY = re.compile(r'^!echo "PPO_CompanyName=(.*)"\s*$')
+ _PPO_ARP = re.compile(r'^!echo "PPO_ARPPublisher=(.*)"\s*$')
+-_FORBIDDEN_SET = {cmd.lower() for cmd in FORBIDDEN_NSIS_COMMANDS}
+ 
++# Optional trailing ; or # comment on an otherwise-valid line.
++_TRAIL_COMMENT = r'(?:\s*(?:;|#).*)?'
++# Simple !define NAME value — no /redef, /file, /ifndef, or other flags.
++# Value is a double- or single-quoted string, or a bare token (numbers, 0x hex).
++_DEFINE_RE = re.compile(
++    r'^!define\s+([A-Za-z_][A-Za-z0-9_]*)\s+'
++    r'("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|(?:0x[0-9A-Fa-f]+|[A-Za-z0-9_.+-]+))'
++    + _TRAIL_COMMENT
++    + r'$',
++    re.IGNORECASE,
++)
++_INCLUDE_RE = re.compile(
++    r'^!include\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))'
++    + _TRAIL_COMMENT
++    + r'$',
++    re.IGNORECASE,
++)
+ 
+-def _nsis_command(line):
+-    s = line.strip()
+-    if not s or s.startswith(";") or s.startswith("#"):
+-        return None
+-    if not s.startswith("!"):
+-        return None
+-    return s.split()[0].lower()
++
++def logical_lines(text):
++    """Yield (lineno, logical_line) after joining backslash continuations.
++
++    lineno is 1-based and points at the first physical line of the logical
++    line. A physical line whose last non-space character is `\\` is joined
++    to the next, without inserting a space (so `!sys\\` + `tem` is `!system`).
++    """
++    physical = text.splitlines()
++    i = 0
++    n = len(physical)
++    while i < n:
++        start = i + 1
++        part = physical[i]
++        while part.rstrip().endswith("\\"):
++            part = part.rstrip()[:-1]
++            i += 1
++            if i >= n:
++                break
++            part = part + physical[i]
++        yield start, part
++        i += 1
++
++
++def _include_path_token(match):
++    return match.group(1) or match.group(2) or match.group(3) or ""
++
++
++def _is_allowed_sibling_include(raw, including_path):
++    """Relative bare filename, no wildcard, no `..`, existing same-directory sibling."""
++    if not raw or raw in (".", ".."):
++        return False
++    if any(ch in raw for ch in "*?[]"):
++        return False
++    if raw.startswith("/") or raw.startswith("\\") or re.match(r"^[A-Za-z]:[\\/]", raw):
++        return False
++    if "/" in raw or "\\" in raw or ".." in raw:
++        return False
++    parent = Path(including_path).resolve().parent
++    candidate = parent / raw
++    try:
++        if not candidate.is_file():
++            return False
++        if candidate.resolve().parent != parent:
++            return False
++    except OSError:
++        return False
++    return True
++
++
++def classify_nsis_line(logical, path, lineno):
++    """Return ('comment'|'blank'|'define'|'include', detail) or raise MakensisError."""
++    stripped = logical.strip()
++    if not stripped:
++        return "blank", None
++    if stripped.startswith("#") or stripped.startswith(";"):
++        return "comment", None
++    m = _DEFINE_RE.match(stripped)
++    if m:
++        return "define", m.group(1)
++    m = _INCLUDE_RE.match(stripped)
++    if m:
++        raw = _include_path_token(m)
++        if not _is_allowed_sibling_include(raw, path):
++            raise MakensisError(
++                "refused to invoke makensis: %s:%s: !include is not a relative "
++                "sibling (no wildcard, no '..'): %r"
++                % (path, lineno, stripped)
++            )
++        return "include", raw
++    raise MakensisError(
++        "refused to invoke makensis: %s:%s: line not on the allowlist: %r"
++        % (path, lineno, stripped)
++    )
+ 
+ 
+ def include_set(branding_path):
+-    """Files that would be visible to makensis for this branding input.
++    """branding file plus the relative siblings it !includes (allowlisted only).
+ 
+-    If the file is named branding.nsi, siblings in the same directory are
+-    part of the set (!include / /file). A standalone *.branding.nsi fixture
+-    is the only member — other fixtures in a shared directory are not.
++    A standalone *.branding.nsi fixture is the only member unless it has an
++    allowed sibling !include. Other fixtures in a shared directory are not
++    copied in. Files are not added until their !include line is accepted.
+     """
+     branding_path = Path(branding_path).resolve()
+-    files = [branding_path]
+-    if branding_path.name == "branding.nsi":
+-        for sib in branding_path.parent.iterdir():
+-            if sib.is_file() and sib.resolve() != branding_path:
+-                files.append(sib)
++    files = []
++    seen = set()
++    queue = [branding_path]
++    while queue:
++        path = queue.pop(0)
++        resolved = path.resolve()
++        if resolved in seen:
++            continue
++        seen.add(resolved)
++        files.append(resolved)
++        text = resolved.read_text(encoding="utf-8", errors="replace")
++        for lineno, logical in logical_lines(text):
++            stripped = logical.strip()
++            if not stripped or stripped.startswith("#") or stripped.startswith(";"):
++                continue
++            m = _INCLUDE_RE.match(stripped)
++            if not m:
++                continue
++            raw = _include_path_token(m)
++            if _is_allowed_sibling_include(raw, resolved):
++                queue.append((resolved.parent / raw).resolve())
+     return files
+ 
+ 
+-def forbidden_nsis_command_in(path):
+-    """Return the first forbidden compile-time command in path, or None."""
+-    text = Path(path).read_text(encoding="utf-8", errors="replace")
+-    for line in text.splitlines():
+-        tok = _nsis_command(line)
+-        if tok in _FORBIDDEN_SET:
+-            return tok
+-    return None
++def refuse_unsafe_nsis(branding_path):
++    """Raise MakensisError unless every logical line is on the allowlist."""
++    branding_path = Path(branding_path).resolve()
++    if not branding_path.is_file():
++        raise MakensisError("branding file not found: %s" % branding_path)
++    seen = set()
++    queue = [branding_path]
++    while queue:
++        path = queue.pop(0)
++        resolved = path.resolve()
++        if resolved in seen:
++            continue
++        seen.add(resolved)
++        text = resolved.read_text(encoding="utf-8", errors="replace")
++        for lineno, logical in logical_lines(text):
++            kind, detail = classify_nsis_line(logical, resolved, lineno)
++            if kind == "include":
++                queue.append((resolved.parent / detail).resolve())
++
++
++def prepare_4l_bypass_payloads(fixture_dir):
++    """Place include payloads under /tmp so a missed refusal would write sentinels."""
++    fixture_dir = Path(fixture_dir)
++    src = fixture_dir / "G2-outside.nsh"
++    if src.is_file():
++        shutil.copy2(src, G2_OUTSIDE_TMP)
++    src = fixture_dir / "G3-x.nsh"
++    if src.is_file():
++        Path(G3_INCLUDEDIR_TMP).mkdir(parents=True, exist_ok=True)
++        shutil.copy2(src, Path(G3_INCLUDEDIR_TMP) / "x.nsh")
++    src = fixture_dir / "G10-wild.nsh"
++    if src.is_file():
++        Path(G10_INCLUDEDIR_TMP).mkdir(parents=True, exist_ok=True)
++        shutil.copy2(src, Path(G10_INCLUDEDIR_TMP) / "w1.nsh")
++
++
++def cleanup_4l_bypass_payloads():
++    """Remove /tmp include payloads this helper created (not used as sentinels)."""
++    for path in (G2_OUTSIDE_TMP,):
++        try:
++            os.remove(path)
++        except OSError:
++            pass
++    for d in (G3_INCLUDEDIR_TMP, G10_INCLUDEDIR_TMP):
++        shutil.rmtree(d, ignore_errors=True)
+ 
+ 
+-def ifdef_command_in(path):
+-    """Return the first !if* command in path, or None."""
+-    text = Path(path).read_text(encoding="utf-8", errors="replace")
+-    for line in text.splitlines():
+-        tok = _nsis_command(line)
+-        if tok and tok.startswith("!if"):
+-            return tok
+-    return None
++def sentinels_that_exist():
++    return [p for p in ALL_COMMAND_SENTINELS if os.path.exists(p)]
+ 
+ 
+-def refuse_unsafe_nsis(branding_path):
+-    """Raise MakensisError if the include set must not be handed to makensis."""
+-    branding_path = Path(branding_path).resolve()
+-    for path in include_set(branding_path):
+-        cmd = forbidden_nsis_command_in(path)
+-        if cmd:
+-            raise MakensisError(
+-                "refused to invoke makensis: %s contains %s" % (path, cmd)
+-            )
+-    cmd = ifdef_command_in(branding_path)
+-    if cmd:
+-        raise MakensisError(
+-            "refused to invoke makensis: %s contains %s" % (branding_path, cmd)
+-        )
++def remove_command_sentinels():
++    for path in ALL_COMMAND_SENTINELS:
++        try:
++            os.remove(path)
++        except OSError:
++            pass
+ 
+ 
+ def resolve_branding_nsi(branding_path):
+diff --git a/greatdane/tests/trademark_userfacing_check.py b/greatdane/tests/trademark_userfacing_check.py
+index 7fcdd3c54d..1e8c585171 100755
+--- a/greatdane/tests/trademark_userfacing_check.py
++++ b/greatdane/tests/trademark_userfacing_check.py
+@@ -21,8 +21,10 @@ from pepecoin_publisher import (
+     MakensisMissing,
+     ModuleVerError,
+     branding_publisher_values,
++    cleanup_4l_bypass_payloads,
+     is_empty_or_mozilla_publisher,
+     is_printable_ascii,
++    makensis_is_path_fallback,
+     makensis_path,
+     makensis_report,
+     manifest_has_pepecoin,
+@@ -31,7 +33,13 @@ from pepecoin_publisher import (
+     module_ver_copyright,
+     module_ver_parser_kind,
+     module_ver_parser_report,
++    module_ver_preprocessor_sha256,
++    module_ver_preprocessor_sha_ok,
++    prepare_4l_bypass_payloads,
++    remove_command_sentinels,
++    sentinels_that_exist,
+     shared_nsh_has_pepecoin,
++    UPSTREAM_PREPROCESSOR_SHA256,
+ )
+ 
+ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+@@ -103,6 +111,10 @@ def skip(msg):
+     print("SKIP " + msg)
+ 
+ 
++def warn(msg):
++    print("WARN " + msg)
++
++
+ def read(path, encoding="utf-8"):
+     with open(path, encoding=encoding) as f:
+         return f.read()
+@@ -605,10 +617,10 @@ PEPECOIN_BYPASS_FIXTURES = (
+     ("arp-mozilla", "branding.nsi", "arp-mozilla.branding.nsi", "empty-or-mozilla"),
+     # L1–L8 (NGD 4i reproduced bypasses)
+     ("L1-N11", "branding.nsi", "L1-N11-Uplus.branding.nsi", "pepecoin"),
+-    ("L2-N20", "branding.nsi", "L2-N20-redef.branding.nsi", "pepecoin"),
+-    ("L3-N21", "branding.nsi", "L3-N21-searchreplace.branding.nsi", "pepecoin"),
+-    ("L4-N22", "branding.nsi", "L4-N22-file/branding.nsi", "pepecoin"),
+-    ("L5-N5", "branding.nsi", "L5-N5-ifndef.branding.nsi", "pepecoin"),
++    ("L2-N20", "branding.nsi", "L2-N20-redef.branding.nsi", "not-allowlisted"),
++    ("L3-N21", "branding.nsi", "L3-N21-searchreplace.branding.nsi", "not-allowlisted"),
++    ("L4-N22", "branding.nsi", "L4-N22-file/branding.nsi", "not-allowlisted"),
++    ("L5-N5", "branding.nsi", "L5-N5-ifndef.branding.nsi", "not-allowlisted"),
+     ("L5-N6", "branding.nsi", "L5-N6-indented.branding.nsi", "pepecoin"),
+     ("L5-N9b", "branding.nsi", "L5-N9b-include/branding.nsi", "pepecoin"),
+     ("L5-N14", "module.ver", "L5-N14-define.module.ver", "pepecoin"),
+@@ -622,14 +634,22 @@ PEPECOIN_BYPASS_FIXTURES = (
+     # 4k F1–F4. F1-if: the upstream Preprocessor evaluates `%if 1` and
+     # the company is Pepecoin (verdict "pepecoin"). The fallback
+     # reimplementation refuses any % directive other than define/include
+-    # (verdict "forbidden-directive").
++    # (verdict "forbidden-directive"). F2/F3 NSIS constructs are now
++    # caught by the 4l allowlist (verdict "not-allowlisted").
+     ("F1-if", "module.ver", "F1-if.module.ver",
+      "pepecoin" if module_ver_parser_kind() == "mozbuild.preprocessor" else "forbidden-directive"),
+     ("F1-undefined-at", "module.ver", "F1-undefined-at.module.ver", "undefined-subst"),
+-    ("F2-system", "branding.nsi", "F2-system.branding.nsi", "forbidden-command"),
+-    ("F2-appendfile", "branding.nsi", "F2-appendfile.branding.nsi", "forbidden-command"),
+-    ("F3-ifdef", "branding.nsi", "F3-ifdef.branding.nsi", "forbidden-if"),
++    ("F2-system", "branding.nsi", "F2-system.branding.nsi", "not-allowlisted"),
++    ("F2-appendfile", "branding.nsi", "F2-appendfile.branding.nsi", "not-allowlisted"),
++    ("F3-ifdef", "branding.nsi", "F3-ifdef.branding.nsi", "not-allowlisted"),
+     ("F4-non-ascii", "branding.nsi", "F4-non-ascii.branding.nsi", "non-ascii"),
++    # 4l G2/G3/G4/G5/G10 + !tempfile: allowlist refusals (were denylist bypasses)
++    ("G2-abs-include", "branding.nsi", "G2-abs-include.branding.nsi", "not-allowlisted"),
++    ("G3-addincludedir", "branding.nsi", "G3-addincludedir.branding.nsi", "not-allowlisted"),
++    ("G4-continuation", "branding.nsi", "G4-continuation.branding.nsi", "not-allowlisted"),
++    ("G5-expanded-command", "branding.nsi", "G5-expanded-command.branding.nsi", "not-allowlisted"),
++    ("G10-wildcard-include", "branding.nsi", "G10-wildcard-include.branding.nsi", "not-allowlisted"),
++    ("G7-tempfile", "branding.nsi", "G7-tempfile.branding.nsi", "not-allowlisted"),
+ )
+ 
+ 
+@@ -657,6 +677,10 @@ def fixture_violations(name, kind, rel, expect):
+         return "forbidden-directive"
+     except MakensisError as exc:
+         msg = str(exc)
++        if "refused to invoke makensis" in msg and (
++            "allowlist" in msg or "not a relative sibling" in msg
++        ):
++            return "not-allowlisted"
+         if "refused to invoke makensis" in msg and any(
+             token in msg for token in ("!ifdef", "!ifndef", " contains !if")
+         ):
+@@ -679,8 +703,25 @@ def fixture_violations(name, kind, rel, expect):
+     return None
+ 
+ 
+-def check_pepecoin_bypass_fixtures(bad):
++def check_module_ver_parser(bad):
++    """Report the parser in use; FAIL if an imported preprocessor.py hash mismatches."""
+     pass_("module.ver parser: %s" % module_ver_parser_report())
++    if module_ver_parser_kind() != "mozbuild.preprocessor":
++        return
++    actual = module_ver_preprocessor_sha256()
++    if module_ver_preprocessor_sha_ok():
++        pass_(
++            "imported preprocessor.py sha256 %s matches ESR 153.7.0" % actual
++        )
++    else:
++        fail(
++            "imported preprocessor.py sha256 %s does not match ESR 153.7.0 %s"
++            % (actual, UPSTREAM_PREPROCESSOR_SHA256),
++            bad,
++        )
++
++
++def check_pepecoin_bypass_fixtures(bad):
+     report = makensis_report()
+     if not makensis_path():
+         fail(
+@@ -690,24 +731,39 @@ def check_pepecoin_bypass_fixtures(bad):
+         )
+         return
+     pass_("makensis -PPO available: %s" % report)
+-    for name, kind, rel, expect in PEPECOIN_BYPASS_FIXTURES:
+-        path = os.path.join(FIXTURE_DIR, rel)
+-        if not os.path.isfile(path):
+-            fail("bypass fixture %s is missing: %s" % (name, rel), bad)
+-            continue
+-        try:
+-            got = fixture_violations(name, kind, rel, expect)
+-        except (MakensisMissing, MakensisError, ModuleVerError) as exc:
+-            fail("bypass fixture %s: tool failed: %s" % (name, exc), bad)
+-            continue
+-        if got != expect:
+-            fail(
+-                "bypass fixture %s was not rejected as %s (got %s)"
+-                % (name, expect, got),
+-                bad,
+-            )
++    if makensis_is_path_fallback():
++        warn(
++            "makensis is the PATH fallback: %s (not $MAKENSISU or ~/.mozbuild v3.07)"
++            % report
++        )
++    prepare_4l_bypass_payloads(FIXTURE_DIR)
++    remove_command_sentinels()
++    try:
++        for name, kind, rel, expect in PEPECOIN_BYPASS_FIXTURES:
++            path = os.path.join(FIXTURE_DIR, rel)
++            if not os.path.isfile(path):
++                fail("bypass fixture %s is missing: %s" % (name, rel), bad)
++                continue
++            try:
++                got = fixture_violations(name, kind, rel, expect)
++            except (MakensisMissing, MakensisError, ModuleVerError) as exc:
++                fail("bypass fixture %s: tool failed: %s" % (name, exc), bad)
++                continue
++            if got != expect:
++                fail(
++                    "bypass fixture %s was not rejected as %s (got %s)"
++                    % (name, expect, got),
++                    bad,
++                )
++            else:
++                pass_("bypass fixture %s correctly rejected (%s)" % (name, expect))
++        leftover = sentinels_that_exist()
++        if leftover:
++            fail("makensis wrote command sentinels: %s" % leftover, bad)
+         else:
+-            pass_("bypass fixture %s correctly rejected (%s)" % (name, expect))
++            pass_("no command sentinels were written by the bypass fixtures")
++    finally:
++        cleanup_4l_bypass_payloads()
+ 
+ 
+ def check_shared_nsh(bad):
+@@ -735,6 +791,7 @@ def main():
+     check_module_ver(bad)
+     check_manifests(bad)
+     check_branding_nsi(bad)
++    check_module_ver_parser(bad)
+     check_shared_nsh(bad)
+     check_no_pepecoin_publisher(bad)
+     check_pepecoin_bypass_fixtures(bad)

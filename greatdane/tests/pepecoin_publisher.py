@@ -17,11 +17,14 @@ makensis is missing, callers must FAIL — never PASS. This is not a
 full build-environment mirror (AB_CD, Manifest*, FileFunc and the
 rest of installer.nsi stay unset).
 
-Before makensis is invoked, every file in the include set is refused if
-it contains !system, !execute, !appendfile, !delfile, !makensis,
-!packhdr, !finalize, !uninstfinalize, !getdllversion, or !gettlbversion.
-branding.nsi is also refused if it contains any !if / !ifdef / !ifndef
-(or other !if* command).
+Before makensis is invoked, every logical line of branding.nsi and of
+the files it includes (backslash continuations joined first) must be
+blank, a comment, a simple `!define NAME value` (optional quoted value;
+no flags such as /redef or /file), or an `!include` of a relative
+sibling with no wildcard and no `..`. Anything else, including a line
+starting with `${`, is refused. This replaced the earlier command
+denylist, which missed absolute/wildcard !include, !addincludedir,
+continued !sys + tem, and define-expanded ${C} commands.
 
 module.ver is parsed with mozbuild.preprocessor.Preprocessor
 (marker='%') from the Firefox ESR 153.7.0 tree when that package is
@@ -49,6 +52,7 @@ only when ARPPublisher is undefined.
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import re
@@ -124,25 +128,31 @@ _LOOKALIKE = {
     "ñ": "n",
 }
 
-# Compile-time NSIS commands that can touch the filesystem or run a process.
-# Refuse these in the include set before invoking makensis (F2).
-FORBIDDEN_NSIS_COMMANDS = (
-    "!system",
-    "!execute",
-    "!appendfile",
-    "!delfile",
-    "!makensis",
-    "!packhdr",
-    "!finalize",
-    "!uninstfinalize",
-    "!getdllversion",
-    "!gettlbversion",
-)
-
-# Sentinels used by the F2 fixtures. The check must refuse those fixtures
-# and must not create these paths.
+# Sentinels used by the F2 (4k) and G2–G10 / tempfile (4l) fixtures.
+# The check must refuse those fixtures and must not create these paths.
+# Bypass fixtures that could run commands only touch /tmp sentinels.
 F2_SYSTEM_SENTINEL = "/tmp/dane-4k-f2-system-sentinel"
 F2_APPENDFILE_SENTINEL = "/tmp/dane-4k-f2-appendfile-sentinel"
+G2_SENTINEL = "/tmp/dane-4l-g2-sentinel"
+G3_SENTINEL = "/tmp/dane-4l-g3-sentinel"
+G4_SENTINEL = "/tmp/dane-4l-g4-sentinel"
+G5_SENTINEL = "/tmp/dane-4l-g5-sentinel"
+G10_SENTINEL = "/tmp/dane-4l-g10-sentinel"
+G7_TEMPFILE_SENTINEL = "/tmp/dane-4l-tempfile-sentinel"
+G2_OUTSIDE_TMP = "/tmp/dane-4l-g2-outside.nsh"
+G3_INCLUDEDIR_TMP = "/tmp/dane-4l-g3-inc"
+G10_INCLUDEDIR_TMP = "/tmp/dane-4l-g10-inc"
+
+ALL_COMMAND_SENTINELS = (
+    F2_SYSTEM_SENTINEL,
+    F2_APPENDFILE_SENTINEL,
+    G2_SENTINEL,
+    G3_SENTINEL,
+    G4_SENTINEL,
+    G5_SENTINEL,
+    G10_SENTINEL,
+    G7_TEMPFILE_SENTINEL,
+)
 
 
 class MakensisMissing(Exception):
@@ -206,6 +216,12 @@ def makensis_report():
     if not path:
         return None
     return "%s (%s, %s)" % (path, version, label)
+
+
+def makensis_is_path_fallback():
+    """True when the chosen binary is the labelled PATH fallback, not $MAKENSISU or ~/.mozbuild."""
+    _path, _version, label = makensis_choice()
+    return label == "PATH fallback"
 
 
 def normalize_publisher(value):
@@ -282,6 +298,39 @@ _PARSER_SOURCE = (
     "minimal reimplementation of create_rc.parse_module_ver "
     "(Firefox ESR 153.7.0 config/create_rc.py:89-97); only %define / %include"
 )
+_PARSER_FILE = None
+_PARSER_FILE_SHA256 = None
+
+
+def _sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _record_preprocessor(cls, loc):
+    """Record the Preprocessor class, the file it came from, and that file's sha256."""
+    global _PREPROCESSOR_CLS, _PARSER_KIND, _PARSER_SOURCE
+    global _PARSER_FILE, _PARSER_FILE_SHA256
+    _PREPROCESSOR_CLS = cls
+    _PARSER_KIND = "mozbuild.preprocessor"
+    _PARSER_FILE = loc
+    try:
+        _PARSER_FILE_SHA256 = _sha256_file(loc) if loc and os.path.isfile(loc) else None
+    except OSError:
+        _PARSER_FILE_SHA256 = None
+    actual = _PARSER_FILE_SHA256 or "unreadable"
+    if _PARSER_FILE_SHA256 == UPSTREAM_PREPROCESSOR_SHA256:
+        match = "matches ESR 153.7.0"
+    else:
+        match = "MISMATCH expected ESR 153.7.0 %s" % UPSTREAM_PREPROCESSOR_SHA256
+    _PARSER_SOURCE = (
+        "mozbuild.preprocessor.Preprocessor(marker='%%') from %s "
+        "(preprocessor.py sha256 %s; %s)"
+        % (loc, actual, match)
+    )
 
 
 def _try_import_preprocessor():
@@ -295,18 +344,12 @@ def _try_import_preprocessor():
     try:
         from mozbuild.preprocessor import Preprocessor
 
-        _PREPROCESSOR_CLS = Preprocessor
-        _PARSER_KIND = "mozbuild.preprocessor"
         try:
             import mozbuild.preprocessor as _mpp
             loc = os.path.abspath(_mpp.__file__)
         except Exception:
-            loc = "sys.path"
-        _PARSER_SOURCE = (
-            "mozbuild.preprocessor.Preprocessor(marker='%%') from %s "
-            "(Firefox ESR 153.7.0; preprocessor.py sha256 %s)"
-            % (loc, UPSTREAM_PREPROCESSOR_SHA256)
-        )
+            loc = None
+        _record_preprocessor(Preprocessor, loc)
         return
     except ImportError:
         pass
@@ -322,13 +365,12 @@ def _try_import_preprocessor():
         try:
             from mozbuild.preprocessor import Preprocessor
 
-            _PREPROCESSOR_CLS = Preprocessor
-            _PARSER_KIND = "mozbuild.preprocessor"
-            _PARSER_SOURCE = (
-                "mozbuild.preprocessor.Preprocessor(marker='%%') from %s "
-                "(Firefox ESR 153.7.0; preprocessor.py sha256 %s)"
-                % (cand, UPSTREAM_PREPROCESSOR_SHA256)
-            )
+            try:
+                import mozbuild.preprocessor as _mpp
+                loc = os.path.abspath(_mpp.__file__)
+            except Exception:
+                loc = os.path.join(cand, "mozbuild", "preprocessor.py")
+            _record_preprocessor(Preprocessor, loc)
             return
         except ImportError:
             if inserted and cand in sys.path:
@@ -350,6 +392,16 @@ def module_ver_parser_kind():
 
 def module_ver_parser_report():
     return "%s: %s" % (_PARSER_KIND, _PARSER_SOURCE)
+
+
+def module_ver_preprocessor_sha256():
+    """sha256 of the preprocessor.py actually imported, or None on the fallback path."""
+    return _PARSER_FILE_SHA256
+
+
+def module_ver_preprocessor_sha_ok():
+    """True when the imported file's sha256 matches the boxed ESR 153.7.0 preprocessor."""
+    return _PARSER_FILE_SHA256 == UPSTREAM_PREPROCESSOR_SHA256
 
 
 def _expand_at(text, defines, *, require_defined=False):
@@ -459,73 +511,195 @@ def module_ver_copyright(path):
 
 
 # ---------------------------------------------------------------------------
-# NSIS: refuse unsafe commands, then makensis -PPO
+# NSIS: allowlist branding.nsi and its includes, then makensis -PPO
 # ---------------------------------------------------------------------------
 
 _PPO_COMPANY = re.compile(r'^!echo "PPO_CompanyName=(.*)"\s*$')
 _PPO_ARP = re.compile(r'^!echo "PPO_ARPPublisher=(.*)"\s*$')
-_FORBIDDEN_SET = {cmd.lower() for cmd in FORBIDDEN_NSIS_COMMANDS}
+
+# Optional trailing ; or # comment on an otherwise-valid line.
+_TRAIL_COMMENT = r'(?:\s*(?:;|#).*)?'
+# Simple !define NAME value — no /redef, /file, /ifndef, or other flags.
+# Value is a double- or single-quoted string, or a bare token (numbers, 0x hex).
+_DEFINE_RE = re.compile(
+    r'^!define\s+([A-Za-z_][A-Za-z0-9_]*)\s+'
+    r'("(?:[^"\\]|\\.)*"|\'(?:[^\'\\]|\\.)*\'|(?:0x[0-9A-Fa-f]+|[A-Za-z0-9_.+-]+))'
+    + _TRAIL_COMMENT
+    + r'$',
+    re.IGNORECASE,
+)
+_INCLUDE_RE = re.compile(
+    r'^!include\s+(?:"([^"]+)"|\'([^\']+)\'|(\S+))'
+    + _TRAIL_COMMENT
+    + r'$',
+    re.IGNORECASE,
+)
 
 
-def _nsis_command(line):
-    s = line.strip()
-    if not s or s.startswith(";") or s.startswith("#"):
-        return None
-    if not s.startswith("!"):
-        return None
-    return s.split()[0].lower()
+def logical_lines(text):
+    """Yield (lineno, logical_line) after joining backslash continuations.
+
+    lineno is 1-based and points at the first physical line of the logical
+    line. A physical line whose last non-space character is `\\` is joined
+    to the next, without inserting a space (so `!sys\\` + `tem` is `!system`).
+    """
+    physical = text.splitlines()
+    i = 0
+    n = len(physical)
+    while i < n:
+        start = i + 1
+        part = physical[i]
+        while part.rstrip().endswith("\\"):
+            part = part.rstrip()[:-1]
+            i += 1
+            if i >= n:
+                break
+            part = part + physical[i]
+        yield start, part
+        i += 1
+
+
+def _include_path_token(match):
+    return match.group(1) or match.group(2) or match.group(3) or ""
+
+
+def _is_allowed_sibling_include(raw, including_path):
+    """Relative bare filename, no wildcard, no `..`, existing same-directory sibling."""
+    if not raw or raw in (".", ".."):
+        return False
+    if any(ch in raw for ch in "*?[]"):
+        return False
+    if raw.startswith("/") or raw.startswith("\\") or re.match(r"^[A-Za-z]:[\\/]", raw):
+        return False
+    if "/" in raw or "\\" in raw or ".." in raw:
+        return False
+    parent = Path(including_path).resolve().parent
+    candidate = parent / raw
+    try:
+        if not candidate.is_file():
+            return False
+        if candidate.resolve().parent != parent:
+            return False
+    except OSError:
+        return False
+    return True
+
+
+def classify_nsis_line(logical, path, lineno):
+    """Return ('comment'|'blank'|'define'|'include', detail) or raise MakensisError."""
+    stripped = logical.strip()
+    if not stripped:
+        return "blank", None
+    if stripped.startswith("#") or stripped.startswith(";"):
+        return "comment", None
+    m = _DEFINE_RE.match(stripped)
+    if m:
+        return "define", m.group(1)
+    m = _INCLUDE_RE.match(stripped)
+    if m:
+        raw = _include_path_token(m)
+        if not _is_allowed_sibling_include(raw, path):
+            raise MakensisError(
+                "refused to invoke makensis: %s:%s: !include is not a relative "
+                "sibling (no wildcard, no '..'): %r"
+                % (path, lineno, stripped)
+            )
+        return "include", raw
+    raise MakensisError(
+        "refused to invoke makensis: %s:%s: line not on the allowlist: %r"
+        % (path, lineno, stripped)
+    )
 
 
 def include_set(branding_path):
-    """Files that would be visible to makensis for this branding input.
+    """branding file plus the relative siblings it !includes (allowlisted only).
 
-    If the file is named branding.nsi, siblings in the same directory are
-    part of the set (!include / /file). A standalone *.branding.nsi fixture
-    is the only member — other fixtures in a shared directory are not.
+    A standalone *.branding.nsi fixture is the only member unless it has an
+    allowed sibling !include. Other fixtures in a shared directory are not
+    copied in. Files are not added until their !include line is accepted.
     """
     branding_path = Path(branding_path).resolve()
-    files = [branding_path]
-    if branding_path.name == "branding.nsi":
-        for sib in branding_path.parent.iterdir():
-            if sib.is_file() and sib.resolve() != branding_path:
-                files.append(sib)
+    files = []
+    seen = set()
+    queue = [branding_path]
+    while queue:
+        path = queue.pop(0)
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        files.append(resolved)
+        text = resolved.read_text(encoding="utf-8", errors="replace")
+        for lineno, logical in logical_lines(text):
+            stripped = logical.strip()
+            if not stripped or stripped.startswith("#") or stripped.startswith(";"):
+                continue
+            m = _INCLUDE_RE.match(stripped)
+            if not m:
+                continue
+            raw = _include_path_token(m)
+            if _is_allowed_sibling_include(raw, resolved):
+                queue.append((resolved.parent / raw).resolve())
     return files
 
 
-def forbidden_nsis_command_in(path):
-    """Return the first forbidden compile-time command in path, or None."""
-    text = Path(path).read_text(encoding="utf-8", errors="replace")
-    for line in text.splitlines():
-        tok = _nsis_command(line)
-        if tok in _FORBIDDEN_SET:
-            return tok
-    return None
-
-
-def ifdef_command_in(path):
-    """Return the first !if* command in path, or None."""
-    text = Path(path).read_text(encoding="utf-8", errors="replace")
-    for line in text.splitlines():
-        tok = _nsis_command(line)
-        if tok and tok.startswith("!if"):
-            return tok
-    return None
-
-
 def refuse_unsafe_nsis(branding_path):
-    """Raise MakensisError if the include set must not be handed to makensis."""
+    """Raise MakensisError unless every logical line is on the allowlist."""
     branding_path = Path(branding_path).resolve()
-    for path in include_set(branding_path):
-        cmd = forbidden_nsis_command_in(path)
-        if cmd:
-            raise MakensisError(
-                "refused to invoke makensis: %s contains %s" % (path, cmd)
-            )
-    cmd = ifdef_command_in(branding_path)
-    if cmd:
-        raise MakensisError(
-            "refused to invoke makensis: %s contains %s" % (branding_path, cmd)
-        )
+    if not branding_path.is_file():
+        raise MakensisError("branding file not found: %s" % branding_path)
+    seen = set()
+    queue = [branding_path]
+    while queue:
+        path = queue.pop(0)
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        text = resolved.read_text(encoding="utf-8", errors="replace")
+        for lineno, logical in logical_lines(text):
+            kind, detail = classify_nsis_line(logical, resolved, lineno)
+            if kind == "include":
+                queue.append((resolved.parent / detail).resolve())
+
+
+def prepare_4l_bypass_payloads(fixture_dir):
+    """Place include payloads under /tmp so a missed refusal would write sentinels."""
+    fixture_dir = Path(fixture_dir)
+    src = fixture_dir / "G2-outside.nsh"
+    if src.is_file():
+        shutil.copy2(src, G2_OUTSIDE_TMP)
+    src = fixture_dir / "G3-x.nsh"
+    if src.is_file():
+        Path(G3_INCLUDEDIR_TMP).mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, Path(G3_INCLUDEDIR_TMP) / "x.nsh")
+    src = fixture_dir / "G10-wild.nsh"
+    if src.is_file():
+        Path(G10_INCLUDEDIR_TMP).mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, Path(G10_INCLUDEDIR_TMP) / "w1.nsh")
+
+
+def cleanup_4l_bypass_payloads():
+    """Remove /tmp include payloads this helper created (not used as sentinels)."""
+    for path in (G2_OUTSIDE_TMP,):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+    for d in (G3_INCLUDEDIR_TMP, G10_INCLUDEDIR_TMP):
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def sentinels_that_exist():
+    return [p for p in ALL_COMMAND_SENTINELS if os.path.exists(p)]
+
+
+def remove_command_sentinels():
+    for path in ALL_COMMAND_SENTINELS:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 def resolve_branding_nsi(branding_path):

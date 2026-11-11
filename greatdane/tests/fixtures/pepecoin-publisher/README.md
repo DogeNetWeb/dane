@@ -48,3 +48,21 @@ it applies only when `ARPPublisher` is undefined, and it stays.
 | F2-appendfile.branding.nsi | F2 `!appendfile` to `/tmp/dane-4k-f2-appendfile-sentinel` | refused before makensis; sentinel must not be created |
 | F3-ifdef.branding.nsi | F3 `!ifdef` in branding.nsi | refused (!if*) |
 | F4-non-ascii.branding.nsi | F4 Armenian օ in CompanyName | not printable ASCII after resolution |
+
+
+Round 4l replaces the NSIS command denylist with an allowlist. Logical
+lines (backslash continuations joined first) of branding.nsi and its
+includes must be blank, a comment, a simple `!define NAME value`, or a
+relative sibling `!include` with no wildcard and no `..`. Anything else
+fails, including a line starting with `${`. module.ver parsing still
+prefers the ESR Preprocessor (hash of the file actually imported) and
+falls back to the minimal reimplementation.
+
+| File | Case | Must fail because |
+|---|---|---|
+| G2-abs-include.branding.nsi | G2 absolute-path `!include` | not a relative sibling; `/tmp/dane-4l-g2-sentinel` must not be created |
+| G3-addincludedir.branding.nsi | G3 `!addincludedir` then `!include` | `!addincludedir` is not on the allowlist; `/tmp/dane-4l-g3-sentinel` must not be created |
+| G4-continuation.branding.nsi | G4 `!sys\` / `tem` | joined line is `!system`, not on the allowlist; `/tmp/dane-4l-g4-sentinel` must not be created |
+| G5-expanded-command.branding.nsi | G5 `!define C "!system"` then `${C}` | a line starting with `${` is not on the allowlist; `/tmp/dane-4l-g5-sentinel` must not be created |
+| G10-wildcard-include.branding.nsi | G10 wildcard `!include` | wildcard / absolute include refused; `/tmp/dane-4l-g10-sentinel` must not be created |
+| G7-tempfile.branding.nsi | `!tempfile` | not on the allowlist; `/tmp/dane-4l-tempfile-sentinel` must not be created |

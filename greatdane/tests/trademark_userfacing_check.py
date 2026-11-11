@@ -21,8 +21,10 @@ from pepecoin_publisher import (
     MakensisMissing,
     ModuleVerError,
     branding_publisher_values,
+    cleanup_4l_bypass_payloads,
     is_empty_or_mozilla_publisher,
     is_printable_ascii,
+    makensis_is_path_fallback,
     makensis_path,
     makensis_report,
     manifest_has_pepecoin,
@@ -31,7 +33,13 @@ from pepecoin_publisher import (
     module_ver_copyright,
     module_ver_parser_kind,
     module_ver_parser_report,
+    module_ver_preprocessor_sha256,
+    module_ver_preprocessor_sha_ok,
+    prepare_4l_bypass_payloads,
+    remove_command_sentinels,
+    sentinels_that_exist,
     shared_nsh_has_pepecoin,
+    UPSTREAM_PREPROCESSOR_SHA256,
 )
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -101,6 +109,10 @@ def pass_(msg):
 
 def skip(msg):
     print("SKIP " + msg)
+
+
+def warn(msg):
+    print("WARN " + msg)
 
 
 def read(path, encoding="utf-8"):
@@ -605,10 +617,10 @@ PEPECOIN_BYPASS_FIXTURES = (
     ("arp-mozilla", "branding.nsi", "arp-mozilla.branding.nsi", "empty-or-mozilla"),
     # L1–L8 (NGD 4i reproduced bypasses)
     ("L1-N11", "branding.nsi", "L1-N11-Uplus.branding.nsi", "pepecoin"),
-    ("L2-N20", "branding.nsi", "L2-N20-redef.branding.nsi", "pepecoin"),
-    ("L3-N21", "branding.nsi", "L3-N21-searchreplace.branding.nsi", "pepecoin"),
-    ("L4-N22", "branding.nsi", "L4-N22-file/branding.nsi", "pepecoin"),
-    ("L5-N5", "branding.nsi", "L5-N5-ifndef.branding.nsi", "pepecoin"),
+    ("L2-N20", "branding.nsi", "L2-N20-redef.branding.nsi", "not-allowlisted"),
+    ("L3-N21", "branding.nsi", "L3-N21-searchreplace.branding.nsi", "not-allowlisted"),
+    ("L4-N22", "branding.nsi", "L4-N22-file/branding.nsi", "not-allowlisted"),
+    ("L5-N5", "branding.nsi", "L5-N5-ifndef.branding.nsi", "not-allowlisted"),
     ("L5-N6", "branding.nsi", "L5-N6-indented.branding.nsi", "pepecoin"),
     ("L5-N9b", "branding.nsi", "L5-N9b-include/branding.nsi", "pepecoin"),
     ("L5-N14", "module.ver", "L5-N14-define.module.ver", "pepecoin"),
@@ -622,14 +634,22 @@ PEPECOIN_BYPASS_FIXTURES = (
     # 4k F1–F4. F1-if: the upstream Preprocessor evaluates `%if 1` and
     # the company is Pepecoin (verdict "pepecoin"). The fallback
     # reimplementation refuses any % directive other than define/include
-    # (verdict "forbidden-directive").
+    # (verdict "forbidden-directive"). F2/F3 NSIS constructs are now
+    # caught by the 4l allowlist (verdict "not-allowlisted").
     ("F1-if", "module.ver", "F1-if.module.ver",
      "pepecoin" if module_ver_parser_kind() == "mozbuild.preprocessor" else "forbidden-directive"),
     ("F1-undefined-at", "module.ver", "F1-undefined-at.module.ver", "undefined-subst"),
-    ("F2-system", "branding.nsi", "F2-system.branding.nsi", "forbidden-command"),
-    ("F2-appendfile", "branding.nsi", "F2-appendfile.branding.nsi", "forbidden-command"),
-    ("F3-ifdef", "branding.nsi", "F3-ifdef.branding.nsi", "forbidden-if"),
+    ("F2-system", "branding.nsi", "F2-system.branding.nsi", "not-allowlisted"),
+    ("F2-appendfile", "branding.nsi", "F2-appendfile.branding.nsi", "not-allowlisted"),
+    ("F3-ifdef", "branding.nsi", "F3-ifdef.branding.nsi", "not-allowlisted"),
     ("F4-non-ascii", "branding.nsi", "F4-non-ascii.branding.nsi", "non-ascii"),
+    # 4l G2/G3/G4/G5/G10 + !tempfile: allowlist refusals (were denylist bypasses)
+    ("G2-abs-include", "branding.nsi", "G2-abs-include.branding.nsi", "not-allowlisted"),
+    ("G3-addincludedir", "branding.nsi", "G3-addincludedir.branding.nsi", "not-allowlisted"),
+    ("G4-continuation", "branding.nsi", "G4-continuation.branding.nsi", "not-allowlisted"),
+    ("G5-expanded-command", "branding.nsi", "G5-expanded-command.branding.nsi", "not-allowlisted"),
+    ("G10-wildcard-include", "branding.nsi", "G10-wildcard-include.branding.nsi", "not-allowlisted"),
+    ("G7-tempfile", "branding.nsi", "G7-tempfile.branding.nsi", "not-allowlisted"),
 )
 
 
@@ -657,6 +677,10 @@ def fixture_violations(name, kind, rel, expect):
         return "forbidden-directive"
     except MakensisError as exc:
         msg = str(exc)
+        if "refused to invoke makensis" in msg and (
+            "allowlist" in msg or "not a relative sibling" in msg
+        ):
+            return "not-allowlisted"
         if "refused to invoke makensis" in msg and any(
             token in msg for token in ("!ifdef", "!ifndef", " contains !if")
         ):
@@ -679,8 +703,25 @@ def fixture_violations(name, kind, rel, expect):
     return None
 
 
-def check_pepecoin_bypass_fixtures(bad):
+def check_module_ver_parser(bad):
+    """Report the parser in use; FAIL if an imported preprocessor.py hash mismatches."""
     pass_("module.ver parser: %s" % module_ver_parser_report())
+    if module_ver_parser_kind() != "mozbuild.preprocessor":
+        return
+    actual = module_ver_preprocessor_sha256()
+    if module_ver_preprocessor_sha_ok():
+        pass_(
+            "imported preprocessor.py sha256 %s matches ESR 153.7.0" % actual
+        )
+    else:
+        fail(
+            "imported preprocessor.py sha256 %s does not match ESR 153.7.0 %s"
+            % (actual, UPSTREAM_PREPROCESSOR_SHA256),
+            bad,
+        )
+
+
+def check_pepecoin_bypass_fixtures(bad):
     report = makensis_report()
     if not makensis_path():
         fail(
@@ -690,24 +731,39 @@ def check_pepecoin_bypass_fixtures(bad):
         )
         return
     pass_("makensis -PPO available: %s" % report)
-    for name, kind, rel, expect in PEPECOIN_BYPASS_FIXTURES:
-        path = os.path.join(FIXTURE_DIR, rel)
-        if not os.path.isfile(path):
-            fail("bypass fixture %s is missing: %s" % (name, rel), bad)
-            continue
-        try:
-            got = fixture_violations(name, kind, rel, expect)
-        except (MakensisMissing, MakensisError, ModuleVerError) as exc:
-            fail("bypass fixture %s: tool failed: %s" % (name, exc), bad)
-            continue
-        if got != expect:
-            fail(
-                "bypass fixture %s was not rejected as %s (got %s)"
-                % (name, expect, got),
-                bad,
-            )
+    if makensis_is_path_fallback():
+        warn(
+            "makensis is the PATH fallback: %s (not $MAKENSISU or ~/.mozbuild v3.07)"
+            % report
+        )
+    prepare_4l_bypass_payloads(FIXTURE_DIR)
+    remove_command_sentinels()
+    try:
+        for name, kind, rel, expect in PEPECOIN_BYPASS_FIXTURES:
+            path = os.path.join(FIXTURE_DIR, rel)
+            if not os.path.isfile(path):
+                fail("bypass fixture %s is missing: %s" % (name, rel), bad)
+                continue
+            try:
+                got = fixture_violations(name, kind, rel, expect)
+            except (MakensisMissing, MakensisError, ModuleVerError) as exc:
+                fail("bypass fixture %s: tool failed: %s" % (name, exc), bad)
+                continue
+            if got != expect:
+                fail(
+                    "bypass fixture %s was not rejected as %s (got %s)"
+                    % (name, expect, got),
+                    bad,
+                )
+            else:
+                pass_("bypass fixture %s correctly rejected (%s)" % (name, expect))
+        leftover = sentinels_that_exist()
+        if leftover:
+            fail("makensis wrote command sentinels: %s" % leftover, bad)
         else:
-            pass_("bypass fixture %s correctly rejected (%s)" % (name, expect))
+            pass_("no command sentinels were written by the bypass fixtures")
+    finally:
+        cleanup_4l_bypass_payloads()
 
 
 def check_shared_nsh(bad):
@@ -735,6 +791,7 @@ def main():
     check_module_ver(bad)
     check_manifests(bad)
     check_branding_nsi(bad)
+    check_module_ver_parser(bad)
     check_shared_nsh(bad)
     check_no_pepecoin_publisher(bad)
     check_pepecoin_bypass_fixtures(bad)
