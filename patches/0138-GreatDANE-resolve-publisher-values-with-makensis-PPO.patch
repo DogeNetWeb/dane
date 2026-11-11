@@ -1,0 +1,1090 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 18:48:29 -0600
+Subject: [PATCH 138/144] GreatDANE: resolve publisher values with makensis
+ -PPO and parse_module_ver (round 4j)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Rework the publisher check (test tooling and fixtures only; no product
+files). Company and publisher values in greatdane branding.nsi are taken
+from makensis -PPO on a wrapper that !includes the branding file and
+echoes ${CompanyName} and ${ARPPublisher}. If makensis is missing, the
+check FAILs (not PASS).
+
+module.ver is parsed with a vendored copy of Firefox ESR 153.7.0
+config/create_rc.py preprocess / parse_module_ver (that file is not in
+this snapshot; the source is cited in pepecoin_publisher.py).
+
+Values are normalized (NFKC, casefold, Cyrillic/Greek/Latin-accent
+lookalikes, zero-width and non-letters stripped) before matching.
+A company or publisher value that contains "pepecoin" or "mozilla" after
+that fold is a failure (L8). The official shared.nsh Publisher "Mozilla"
+fallback stays, and applies only when ARPPublisher is undefined.
+
+The dead non-publisher / vendor-key path is removed (L9). All 4i fixtures
+and the 4j L1–L8 cases NGD reproduced must be rejected; the real tree must
+pass.
+
+Prepared only. Not built, signed, notarized or published.
+---
+ .../L1-N11-Uplus.branding.nsi                 |   2 +
+ .../L2-N20-redef.branding.nsi                 |   3 +
+ .../L3-N21-searchreplace.branding.nsi         |   4 +
+ .../L4-N22-file/branding.nsi                  |   4 +
+ .../pepecoin-publisher/L4-N22-file/pub.txt    |   1 +
+ .../L5-N14-define.module.ver                  |   2 +
+ .../L5-N5-ifndef.branding.nsi                 |   4 +
+ .../L5-N6-indented.branding.nsi               |   3 +
+ .../L5-N9b-include/branding.nsi               |   3 +
+ .../pepecoin-publisher/L5-N9b-include/pub.nsh |   1 +
+ .../L6-N1-cyrillic.branding.nsi               |   2 +
+ .../L6-N16-acute.branding.nsi                 |   2 +
+ .../L7-N2-zwsp.branding.nsi                   |   2 +
+ .../L7-N3-hyphen.branding.nsi                 |   2 +
+ .../L7-N4-spaces.branding.nsi                 |   2 +
+ .../L8-mozilla-corporation.branding.nsi       |   2 +
+ .../L8-mozilla-foundation.branding.nsi        |   2 +
+ .../fixtures/pepecoin-publisher/README.md     |  47 ++-
+ greatdane/tests/pepecoin_publisher.py         | 358 +++++++++++++++++
+ greatdane/tests/trademark_userfacing_check.py | 371 ++++++------------
+ 20 files changed, 561 insertions(+), 256 deletions(-)
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/L1-N11-Uplus.branding.nsi
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/L2-N20-redef.branding.nsi
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/L3-N21-searchreplace.branding.nsi
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/L4-N22-file/branding.nsi
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/L4-N22-file/pub.txt
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/L5-N14-define.module.ver
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/L5-N5-ifndef.branding.nsi
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/L5-N6-indented.branding.nsi
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/L5-N9b-include/branding.nsi
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/L5-N9b-include/pub.nsh
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/L6-N1-cyrillic.branding.nsi
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/L6-N16-acute.branding.nsi
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/L7-N2-zwsp.branding.nsi
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/L7-N3-hyphen.branding.nsi
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/L7-N4-spaces.branding.nsi
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/L8-mozilla-corporation.branding.nsi
+ create mode 100644 greatdane/tests/fixtures/pepecoin-publisher/L8-mozilla-foundation.branding.nsi
+ create mode 100644 greatdane/tests/pepecoin_publisher.py
+
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/L1-N11-Uplus.branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/L1-N11-Uplus.branding.nsi
+new file mode 100644
+index 0000000000..8b71543e40
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/L1-N11-Uplus.branding.nsi
+@@ -0,0 +1,2 @@
++!define CompanyName "Pepe${U+63}oin"
++!define ARPPublisher "Pepe${U+63}oin"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/L2-N20-redef.branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/L2-N20-redef.branding.nsi
+new file mode 100644
+index 0000000000..4a20a4746e
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/L2-N20-redef.branding.nsi
+@@ -0,0 +1,3 @@
++!define CompanyName "Dane"
++!define /redef CompanyName "Pepe${U+63}oin"
++!define ARPPublisher "Dane"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/L3-N21-searchreplace.branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/L3-N21-searchreplace.branding.nsi
+new file mode 100644
+index 0000000000..86e0986e18
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/L3-N21-searchreplace.branding.nsi
+@@ -0,0 +1,4 @@
++!define CompanyName "Dane"
++!undef CompanyName
++!searchreplace CompanyName "PepeXoin" "X" "c"
++!define ARPPublisher "Dane"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/L4-N22-file/branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/L4-N22-file/branding.nsi
+new file mode 100644
+index 0000000000..69279e2b08
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/L4-N22-file/branding.nsi
+@@ -0,0 +1,4 @@
++!define CompanyName "Dane"
++!undef CompanyName
++!define /file CompanyName "pub.txt"
++!define ARPPublisher "Dane"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/L4-N22-file/pub.txt b/greatdane/tests/fixtures/pepecoin-publisher/L4-N22-file/pub.txt
+new file mode 100644
+index 0000000000..3009d9a738
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/L4-N22-file/pub.txt
+@@ -0,0 +1 @@
++Pepecoin
+\ No newline at end of file
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/L5-N14-define.module.ver b/greatdane/tests/fixtures/pepecoin-publisher/L5-N14-define.module.ver
+new file mode 100644
+index 0000000000..4b12ad917c
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/L5-N14-define.module.ver
+@@ -0,0 +1,2 @@
++%define PB coin
++WIN32_MODULE_COMPANYNAME=Pepe@PB@
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/L5-N5-ifndef.branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/L5-N5-ifndef.branding.nsi
+new file mode 100644
+index 0000000000..55a987b2d0
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/L5-N5-ifndef.branding.nsi
+@@ -0,0 +1,4 @@
++!define /ifndef PA "Pepe"
++!define /ifndef PB "coin"
++!define CompanyName "${PA}${PB}"
++!define ARPPublisher "${PA}${PB}"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/L5-N6-indented.branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/L5-N6-indented.branding.nsi
+new file mode 100644
+index 0000000000..24c759008d
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/L5-N6-indented.branding.nsi
+@@ -0,0 +1,3 @@
++  !define PA "Pepe"
++!define CompanyName "${PA}coin"
++!define ARPPublisher "Dane"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/L5-N9b-include/branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/L5-N9b-include/branding.nsi
+new file mode 100644
+index 0000000000..f2a8f73f13
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/L5-N9b-include/branding.nsi
+@@ -0,0 +1,3 @@
++!include "pub.nsh"
++!define CompanyName "${PA}coin"
++!define ARPPublisher "Dane"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/L5-N9b-include/pub.nsh b/greatdane/tests/fixtures/pepecoin-publisher/L5-N9b-include/pub.nsh
+new file mode 100644
+index 0000000000..315837cc0a
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/L5-N9b-include/pub.nsh
+@@ -0,0 +1 @@
++!define PA "Pepe"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/L6-N1-cyrillic.branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/L6-N1-cyrillic.branding.nsi
+new file mode 100644
+index 0000000000..11e409b600
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/L6-N1-cyrillic.branding.nsi
+@@ -0,0 +1,2 @@
++!define CompanyName "Pepеcoin"
++!define ARPPublisher "Dane"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/L6-N16-acute.branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/L6-N16-acute.branding.nsi
+new file mode 100644
+index 0000000000..39fbfbf88d
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/L6-N16-acute.branding.nsi
+@@ -0,0 +1,2 @@
++!define CompanyName "Pépécoin"
++!define ARPPublisher "Dane"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/L7-N2-zwsp.branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/L7-N2-zwsp.branding.nsi
+new file mode 100644
+index 0000000000..316bb84e67
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/L7-N2-zwsp.branding.nsi
+@@ -0,0 +1,2 @@
++!define CompanyName "Pepe​coin"
++!define ARPPublisher "Dane"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/L7-N3-hyphen.branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/L7-N3-hyphen.branding.nsi
+new file mode 100644
+index 0000000000..c251cc5d5c
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/L7-N3-hyphen.branding.nsi
+@@ -0,0 +1,2 @@
++!define CompanyName "Pepe-coin"
++!define ARPPublisher "Dane"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/L7-N4-spaces.branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/L7-N4-spaces.branding.nsi
+new file mode 100644
+index 0000000000..e9f49438cc
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/L7-N4-spaces.branding.nsi
+@@ -0,0 +1,2 @@
++!define CompanyName "P e p e c o i n"
++!define ARPPublisher "Dane"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/L8-mozilla-corporation.branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/L8-mozilla-corporation.branding.nsi
+new file mode 100644
+index 0000000000..06f65d4090
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/L8-mozilla-corporation.branding.nsi
+@@ -0,0 +1,2 @@
++!define CompanyName "Dane"
++!define ARPPublisher "Mozilla Corporation"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/L8-mozilla-foundation.branding.nsi b/greatdane/tests/fixtures/pepecoin-publisher/L8-mozilla-foundation.branding.nsi
+new file mode 100644
+index 0000000000..49a28ff087
+--- /dev/null
++++ b/greatdane/tests/fixtures/pepecoin-publisher/L8-mozilla-foundation.branding.nsi
+@@ -0,0 +1,2 @@
++!define CompanyName "Mozilla Foundation"
++!define ARPPublisher "Mozilla Foundation"
+diff --git a/greatdane/tests/fixtures/pepecoin-publisher/README.md b/greatdane/tests/fixtures/pepecoin-publisher/README.md
+index f6bfb5b38b..23f79097e7 100644
+--- a/greatdane/tests/fixtures/pepecoin-publisher/README.md
++++ b/greatdane/tests/fixtures/pepecoin-publisher/README.md
+@@ -1,15 +1,38 @@
+-# Pepecoin publisher check fixtures (round 4i)
++# Pepecoin publisher check fixtures (rounds 4i and 4j)
+ 
+-Negative test cases for `trademark_userfacing_check.py`. They are not shipped
+-in the product. Each fixture must be rejected (FAIL if used as a publisher
+-file). The real tree must PASS.
++Negative test cases for `trademark_userfacing_check.py` / `pepecoin_publisher.py`.
++They are not shipped in the product. Each fixture must be rejected. The real
++tree must pass.
+ 
+-| File | NGD case | Must fail because |
++Round 4j resolves values with real tools (`makensis -PPO` for NSIS,
++vendored `create_rc.parse_module_ver` for module.ver) and then normalizes
++(NFKC, casefold, Cyrillic/Greek/Latin-accent lookalikes, drop zero-width
++and non-letters) before matching.
++
++| File | Case | Must fail because |
+ |---|---|---|
+-| A.module.ver | `WIN32_MODULE_COMPANYNAME=Pepecoin # MOZ_APP_VENDOR` | Pepecoin company, comment must not exempt |
+-| A2.module.ver | `© Pepecoin (MOZ_APP_VENDOR)` | Pepecoin copyright, token in parentheses must not exempt |
+-| C.branding.nsi | `!define CompanyName "Pepecoin" ; MOZ_APP_VENDOR` | Pepecoin company, NSIS comment must not exempt |
+-| E.branding.nsi | `!define PUB "Pepecoin" ; HKCU\Software` then `ARPPublisher "${PUB}"` | resolved publisher is Pepecoin; path comment must not exempt |
+-| D2.branding.nsi | line-continued CompanyName using pepecoin.surf | continuations are joined; hostname is the company value |
+-| empty-company.module.ver | empty `WIN32_MODULE_COMPANYNAME` | company must be non-empty and not Mozilla |
+-| arp-mozilla.branding.nsi | `ARPPublisher "Mozilla"` | unofficial publisher must be non-empty and not Mozilla |
++| A.module.ver | 4h/4i `WIN32_MODULE_COMPANYNAME=Pepecoin # MOZ_APP_VENDOR` | Pepecoin company |
++| A2.module.ver | 4h/4i `© Pepecoin (MOZ_APP_VENDOR)` | Pepecoin copyright |
++| C.branding.nsi | 4h/4i `!define CompanyName "Pepecoin" ; MOZ_APP_VENDOR` | Pepecoin company |
++| E.branding.nsi | 4h/4i `PUB` + `${PUB}` | resolved ARPPublisher is Pepecoin |
++| D2.branding.nsi | 4h/4i continued CompanyName using pepecoin.surf | makensis value contains pepecoin |
++| empty-company.module.ver | empty `WIN32_MODULE_COMPANYNAME` | company must be non-empty and not contain mozilla |
++| arp-mozilla.branding.nsi | `ARPPublisher "Mozilla"` | unofficial publisher must not contain mozilla |
++| L1-N11-Uplus.branding.nsi | L1 / N11/N23 `Pepe${U+63}oin` | makensis yields Pepecoin |
++| L2-N20-redef.branding.nsi | L2 / N20 `!define /redef` | later redef is Pepecoin |
++| L3-N21-searchreplace.branding.nsi | L3 / N21 `!undef` + `!searchreplace` | makensis yields Pepecoin |
++| L4-N22-file/ | L4 / N22 `!undef` + `!define /file` | file content is Pepecoin |
++| L5-N5-ifndef.branding.nsi | L5 / N5 `/ifndef` concat | `${PA}${PB}` is Pepecoin |
++| L5-N6-indented.branding.nsi | L5 / N6 indented `!define` | `${PA}coin` is Pepecoin |
++| L5-N9b-include/ | L5 / N9b `!include` | included define concatenates to Pepecoin |
++| L5-N14-define.module.ver | L5 / N14 `%define PB coin` + `Pepe@PB@` | parse_module_ver yields Pepecoin |
++| L6-N1-cyrillic.branding.nsi | L6 / N1 Cyrillic е | lookalike fold is pepecoin |
++| L6-N16-acute.branding.nsi | L6 / N16 Latin é | lookalike fold is pepecoin |
++| L7-N2-zwsp.branding.nsi | L7 / N2 zero-width | zero-width stripped, pepecoin remains |
++| L7-N3-hyphen.branding.nsi | L7 / N3 `Pepe-coin` | non-letters stripped |
++| L7-N4-spaces.branding.nsi | L7 / N4 spaced letters | non-letters stripped |
++| L8-mozilla-foundation.branding.nsi | L8 Mozilla Foundation | publisher contains mozilla |
++| L8-mozilla-corporation.branding.nsi | L8 Mozilla Corporation | publisher contains mozilla |
++
++The official `shared.nsh` Publisher `"Mozilla"` fallback is not a fixture:
++it applies only when `ARPPublisher` is undefined, and it stays.
+diff --git a/greatdane/tests/pepecoin_publisher.py b/greatdane/tests/pepecoin_publisher.py
+new file mode 100644
+index 0000000000..cbd49e9a00
+--- /dev/null
++++ b/greatdane/tests/pepecoin_publisher.py
+@@ -0,0 +1,358 @@
++#!/usr/bin/env python3
++"""Resolve and normalize Windows publisher/company values for the 4j check.
++
++This is test tooling only. It is not shipped in the product.
++
++NSIS values are taken from `makensis -PPO` on a tiny wrapper that !includes
++the branding file and echoes ${CompanyName} and ${ARPPublisher}. If makensis
++is missing, callers must SKIP or FAIL — never PASS.
++
++module.ver values use a vendored copy of the parse/preprocess logic from
++Firefox ESR 153.7.0 `config/create_rc.py` (preprocess at lines 79–87,
++parse_module_ver at lines 89–97). That file is not in this snapshot (it
++imports buildconfig), so the marker-% substitution, %define, %include, and
++`#` comment split are reproduced here and cited below. If `config/create_rc.py`
++is later present and importable, it is preferred.
++
++Values are normalized before matching: NFKC, casefold, Cyrillic/Greek (and
++common Latin-accent) lookalikes mapped to Latin, then zero-width and
++non-letter characters stripped (NGD 4i L6/L7). A publisher/company value
++that contains "pepecoin" or "mozilla" after that fold is a failure (L8).
++The official shared.nsh Publisher "Mozilla" fallback is the exception, and
++applies only when ARPPublisher is undefined.
++"""
++from __future__ import annotations
++
++import os
++import re
++import shutil
++import subprocess
++import tempfile
++import unicodedata
++from pathlib import Path
++
++# Letters in "pepecoin" / "mozilla" and close confusables. Keys are
++# already-casefolded where possible; lookup uses casefold(ch).
++_LOOKALIKE = {
++    # Cyrillic
++    "а": "a",
++    "е": "e",
++    "о": "o",
++    "р": "p",
++    "с": "c",
++    "у": "y",
++    "х": "x",
++    "і": "i",
++    "ї": "i",
++    "ј": "j",
++    "ѕ": "s",
++    "һ": "h",
++    "ӏ": "l",
++    "м": "m",
++    "п": "n",  # visually a shako; used cautiously
++    "л": "l",
++    "ｚ": "z",
++    # Greek
++    "α": "a",
++    "ε": "e",
++    "ο": "o",
++    "ρ": "p",
++    "ι": "i",
++    "ν": "v",
++    "η": "n",
++    "χ": "x",
++    "κ": "k",
++    "μ": "m",
++    "ѕ": "s",
++    # Latin accented (N16); also covered if we drop combining marks after NFKD
++    "é": "e",
++    "è": "e",
++    "ê": "e",
++    "ë": "e",
++    "ę": "e",
++    "ė": "e",
++    "ē": "e",
++    "á": "a",
++    "à": "a",
++    "â": "a",
++    "ä": "a",
++    "ã": "a",
++    "å": "a",
++    "ī": "i",
++    "í": "i",
++    "ì": "i",
++    "î": "i",
++    "ï": "i",
++    "ó": "o",
++    "ò": "o",
++    "ô": "o",
++    "ö": "o",
++    "õ": "o",
++    "ø": "o",
++    "ú": "u",
++    "ù": "u",
++    "û": "u",
++    "ü": "u",
++    "ý": "y",
++    "ç": "c",
++    "ñ": "n",
++}
++
++
++class MakensisMissing(Exception):
++    """makensis is not on PATH."""
++
++
++class MakensisError(Exception):
++    """makensis -PPO failed."""
++
++
++def makensis_path():
++    return shutil.which("makensis")
++
++
++def makensis_version():
++    path = makensis_path()
++    if not path:
++        return None
++    r = subprocess.run([path, "-VERSION"], capture_output=True, text=True)
++    return (r.stdout or r.stderr or "").strip() or None
++
++
++def normalize_publisher(value):
++    """NFKC, casefold, lookalike fold, then drop zero-width and non-letters."""
++    if value is None:
++        return ""
++    s = unicodedata.normalize("NFKC", str(value))
++    s = s.casefold()
++    s = "".join(_LOOKALIKE.get(ch, ch) for ch in s)
++    # Drop combining marks so a leftover acute (or NFKC-stable é already mapped)
++    # cannot keep a decorated letter in the string.
++    s = unicodedata.normalize("NFKD", s)
++    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
++    out = []
++    for ch in s:
++        cat = unicodedata.category(ch)
++        if cat.startswith("L"):
++            out.append(ch)
++        # Cf/Cc/Zs/Pd and other non-letters (zero-width, spaces, hyphens) dropped
++    return "".join(out)
++
++
++def mentions_pepecoin(value):
++    return "pepecoin" in normalize_publisher(value)
++
++
++def mentions_mozilla(value):
++    return "mozilla" in normalize_publisher(value)
++
++
++def is_empty_or_mozilla_publisher(value):
++    """True if missing, empty, or the publisher contains 'mozilla' (L8)."""
++    if value is None:
++        return True
++    if str(value).strip() == "":
++        return True
++    # Unresolved NSIS ${Name} means the symbol was not defined.
++    s = str(value).strip()
++    if s.startswith("${") and s.endswith("}") and s[2:-1].isidentifier():
++        return True
++    return mentions_mozilla(s)
++
++
++# ---------------------------------------------------------------------------
++# module.ver: vendored from Firefox ESR 153.7.0 config/create_rc.py
++# preprocess(): lines 79–87 (Preprocessor marker="%", substitution filter)
++# parse_module_ver(): lines 89–97 (split # comments, key=value)
++# ---------------------------------------------------------------------------
++
++_AT_SUBST = re.compile(r"@(\w+)@")
++
++
++def _expand_at(text, defines):
++    def repl(m):
++        key = m.group(1)
++        if key in defines:
++            return str(defines[key])
++        return m.group(0)
++
++    return _AT_SUBST.sub(repl, text)
++
++
++def _preprocess_module_ver(path, defines):
++    """Marker-% preprocess: %define, %include, @KEY@ substitution.
++
++    Mirrors create_rc.preprocess (marker '%', substitution filter). Input
++    encoding is latin1, as in create_rc.py.
++    """
++    defines = dict(defines)
++    path = os.fspath(path)
++    out_lines = []
++    with open(path, encoding="latin1") as fh:
++        for line in fh:
++            stripped = line.lstrip()
++            if stripped.startswith("%define"):
++                rest = stripped[len("%define") :].strip()
++                name, _, val = rest.partition(" ")
++                if name:
++                    defines[name] = _expand_at(val.strip(), defines)
++                continue
++            if stripped.startswith("%include"):
++                inc = stripped[len("%include") :].strip().strip('"').strip("'")
++                inc_path = inc if os.path.isabs(inc) else os.path.join(os.path.dirname(path), inc)
++                out_lines.extend(_preprocess_module_ver(inc_path, defines))
++                continue
++            if stripped.startswith("%"):
++                # Other % directives are not copied into parse_module_ver output
++                # once consumed by the preprocessor (same as mozbuild).
++                continue
++            out_lines.append(_expand_at(line, defines))
++    return out_lines, defines
++
++
++def parse_module_ver(path, defines=None):
++    """Parse a module.ver the way create_rc.parse_module_ver does.
++
++    Tries config/create_rc.py in the same tree if it can be imported; otherwise
++    uses the vendored logic cited above.
++    """
++    defines = dict(defines or {})
++    tree_create_rc = None
++    # Walk up from the given file to a source root that has config/create_rc.py
++    cur = os.path.abspath(os.path.dirname(os.fspath(path)))
++    for _ in range(8):
++        candidate = os.path.join(cur, "config", "create_rc.py")
++        if os.path.isfile(candidate):
++            tree_create_rc = candidate
++            break
++        parent = os.path.dirname(cur)
++        if parent == cur:
++            break
++        cur = parent
++    if tree_create_rc:
++        try:
++            import importlib.util
++
++            spec = importlib.util.spec_from_file_location("_dane_create_rc", tree_create_rc)
++            mod = importlib.util.module_from_spec(spec)
++            # create_rc imports buildconfig at module level; this will usually fail
++            # in the snapshot. Fall through to the vendored copy.
++            spec.loader.exec_module(mod)
++            return mod.parse_module_ver(path, defines)
++        except Exception:
++            pass
++    result = {}
++    lines, _defs = _preprocess_module_ver(path, defines)
++    for line in lines:
++        content, *_comment = line.split("#", 1)
++        if not content.strip():
++            continue
++        if "=" not in content:
++            continue
++        entry, value = content.split("=", 1)
++        result[entry.strip()] = value.strip()
++    return result
++
++
++def module_ver_company(path):
++    parsed = parse_module_ver(path)
++    if "WIN32_MODULE_COMPANYNAME" not in parsed:
++        return None
++    return parsed["WIN32_MODULE_COMPANYNAME"]
++
++
++def module_ver_copyright(path):
++    parsed = parse_module_ver(path)
++    return parsed.get("WIN32_MODULE_COPYRIGHT")
++
++
++# ---------------------------------------------------------------------------
++# NSIS: makensis -PPO
++# ---------------------------------------------------------------------------
++
++_PPO_COMPANY = re.compile(r'^!echo "PPO_CompanyName=(.*)"\s*$')
++_PPO_ARP = re.compile(r'^!echo "PPO_ARPPublisher=(.*)"\s*$')
++
++
++def resolve_branding_nsi(branding_path):
++    """Return (company, arp_publisher, ppo_stdout) from makensis -PPO.
++
++    The wrapper !includes the branding file and echoes the two symbols.
++    Sidecar files in the same directory (!include, /file) are available.
++    """
++    path = makensis_path()
++    if not path:
++        raise MakensisMissing(
++            "makensis is not on PATH; the publisher check cannot resolve NSIS values"
++        )
++    branding_path = Path(branding_path).resolve()
++    if not branding_path.is_file():
++        raise MakensisError("branding file not found: %s" % branding_path)
++    with tempfile.TemporaryDirectory(prefix="dane-ppo-") as td:
++        td = Path(td)
++        for sib in branding_path.parent.iterdir():
++            if sib.is_file():
++                shutil.copy2(sib, td / sib.name)
++        if branding_path.name != "branding.nsi":
++            shutil.copy2(branding_path, td / "branding.nsi")
++        wrapper = td / "wrapper.nsi"
++        wrapper.write_text(
++            '!include "branding.nsi"\n'
++            '!echo "PPO_CompanyName=${CompanyName}"\n'
++            '!echo "PPO_ARPPublisher=${ARPPublisher}"\n',
++            encoding="utf-8",
++        )
++        try:
++            r = subprocess.run(
++                [path, "-PPO", "-INPUTCHARSET", "UTF8", str(wrapper)],
++                cwd=td,
++                capture_output=True,
++                text=True,
++                timeout=30,
++            )
++        except subprocess.TimeoutExpired as exc:
++            raise MakensisError("makensis -PPO timed out") from exc
++        if r.returncode != 0:
++            raise MakensisError(
++                "makensis -PPO rc=%s stderr=%s stdout=%s"
++                % (r.returncode, (r.stderr or "")[-500:], (r.stdout or "")[-500:])
++            )
++        company = arp = None
++        for line in r.stdout.splitlines():
++            m = _PPO_COMPANY.match(line)
++            if m:
++                company = m.group(1)
++            m = _PPO_ARP.match(line)
++            if m:
++                arp = m.group(1)
++        return company, arp, r.stdout
++
++
++def _unresolved(value):
++    if value is None:
++        return True
++    s = str(value).strip()
++    return s.startswith("${") and s.endswith("}") and s[2:-1].isidentifier()
++
++
++def branding_publisher_values(branding_path):
++    company, arp, _stdout = resolve_branding_nsi(branding_path)
++    if _unresolved(company):
++        company = None
++    if _unresolved(arp):
++        arp = None
++    return company, arp
++
++
++def manifest_has_pepecoin(path):
++    raw = Path(path).read_bytes()
++    try:
++        text = raw.decode("utf-8")
++    except UnicodeDecodeError:
++        text = raw.decode("latin-1")
++    return mentions_pepecoin(text)
++
++
++def shared_nsh_has_pepecoin(path):
++    text = Path(path).read_text(encoding="utf-8")
++    return mentions_pepecoin(text)
+diff --git a/greatdane/tests/trademark_userfacing_check.py b/greatdane/tests/trademark_userfacing_check.py
+index 593ed975e8..70a4febbc3 100755
+--- a/greatdane/tests/trademark_userfacing_check.py
++++ b/greatdane/tests/trademark_userfacing_check.py
+@@ -15,6 +15,22 @@ import os
+ import re
+ import sys
+ 
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++from pepecoin_publisher import (
++    MakensisError,
++    MakensisMissing,
++    branding_publisher_values,
++    is_empty_or_mozilla_publisher,
++    makensis_path,
++    makensis_version,
++    manifest_has_pepecoin,
++    mentions_pepecoin,
++    module_ver_company,
++    module_ver_copyright,
++    parse_module_ver,
++    shared_nsh_has_pepecoin,
++)
++
+ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+ 
+ ABOUT_XHTML = os.path.join(ROOT, "browser/base/content/aboutDialog.xhtml")
+@@ -89,159 +105,6 @@ def read(path, encoding="utf-8"):
+         return f.read()
+ 
+ 
+-def join_line_continuations(text):
+-    """Join lines that end with a backslash (NSIS / preprocessor continuation)."""
+-    out = []
+-    buf = ""
+-    for line in text.splitlines():
+-        if line.rstrip().endswith("\\"):
+-            buf += line.rstrip()[:-1]
+-            continue
+-        buf += line
+-        out.append(buf)
+-        buf = ""
+-    if buf:
+-        out.append(buf)
+-    ended_nl = text.endswith("\n") or text.endswith("\r\n")
+-    joined = "\n".join(out)
+-    if ended_nl and (joined or text):
+-        joined += "\n"
+-    return joined
+-
+-
+-def resolve_nsis(text):
+-    """Parse !define NAME and substitute ${NAME} references. Returns (resolved_text, defines)."""
+-    defines = {}
+-    for m in re.finditer(
+-        r"^!define\s+(\w+)\s+(?:\"([^\"]*)\"|(\S+))\s*$",
+-        text,
+-        re.MULTILINE,
+-    ):
+-        defines[m.group(1)] = m.group(2) if m.group(2) is not None else m.group(3)
+-
+-    def subst(value, stack=None):
+-        stack = set() if stack is None else set(stack)
+-        def repl(m):
+-            name = m.group(1)
+-            if name in stack:
+-                return m.group(0)
+-            if name not in defines:
+-                return m.group(0)
+-            return subst(defines[name], stack | {name})
+-        return re.sub(r"\$\{(\w+)\}", repl, value)
+-
+-    resolved_defines = {k: subst(v) for k, v in defines.items()}
+-    return subst(text), resolved_defines
+-
+-
+-_PREPROCESSOR_DIRECTIVE = re.compile(
+-    r"^\s*#\s*(define|undef|if|ifdef|ifndef|else|elif|endif|"
+-    r"filter|include|expand|literal|error|unifdef)\b",
+-    re.I,
+-)
+-
+-
+-def strip_comments(text):
+-    """Strip #, ;, //, and <!-- --> comments, leaving preprocessor directives."""
+-    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+-
+-    def strip_line(line):
+-        if _PREPROCESSOR_DIRECTIVE.match(line):
+-            return line
+-        in_str = False
+-        i = 0
+-        while i < len(line):
+-            c = line[i]
+-            if in_str:
+-                if c == "\\" and i + 1 < len(line):
+-                    i += 2
+-                    continue
+-                if c == '"':
+-                    in_str = False
+-                i += 1
+-                continue
+-            if c == '"':
+-                in_str = True
+-                i += 1
+-                continue
+-            if c in "#;" or (c == "/" and i + 1 < len(line) and line[i + 1] == "/"):
+-                return line[:i].rstrip()
+-            i += 1
+-        return line
+-
+-    return "\n".join(strip_line(ln) for ln in text.splitlines())
+-
+-
+-def is_vendor_key_line(line):
+-    """True only for a vendor identifier assignment or configure vendor setting."""
+-    if re.match(r"\s*MOZ_APP_VENDOR\s*=", line):
+-        return True
+-    if re.search(
+-        r"""\b(?:imply_option|set_config|set_define)\s*\(\s*["']MOZ_APP_VENDOR["']""",
+-        line,
+-    ):
+-        return True
+-    if re.search(r"""\boption\s*\(\s*["']--with-app-vendor["']""", line):
+-        return True
+-    return False
+-
+-
+-def has_pepecoin_publisher(text, *, publisher_file=False):
+-    """True if a publisher/company/copyright string mentions Pepecoin (any case).
+-
+-    Publisher files (module.ver, exe manifests, greatdane branding.nsi, shared.nsh):
+-    no exemptions. Line continuations are joined and NSIS ${NAME} refs are resolved.
+-
+-    Elsewhere: comments are stripped first, then only lines whose key is the
+-    vendor (MOZ_APP_VENDOR=... or the configure vendor setting) are exempt.
+-    """
+-    joined = join_line_continuations(text)
+-    if publisher_file:
+-        resolved, _defs = resolve_nsis(joined)
+-        return bool(re.search(r"pepecoin", resolved, re.I))
+-    stripped = strip_comments(joined)
+-    for line in stripped.splitlines():
+-        if not re.search(r"pepecoin", line, re.I):
+-            continue
+-        if is_vendor_key_line(line):
+-            continue
+-        return True
+-    return False
+-
+-
+-def _unquote(value):
+-    value = (value or "").strip()
+-    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+-        return value[1:-1]
+-    return value
+-
+-
+-def module_ver_company(text):
+-    joined = join_line_continuations(text)
+-    m = re.search(r"^WIN32_MODULE_COMPANYNAME=(.*)$", joined, re.MULTILINE)
+-    if not m:
+-        return None
+-    return strip_comments(m.group(1)).strip()
+-
+-
+-def branding_publisher_values(text):
+-    joined = join_line_continuations(text)
+-    _resolved, defs = resolve_nsis(joined)
+-    company = defs.get("CompanyName")
+-    publisher = defs.get("ARPPublisher")
+-    if company is not None:
+-        company = _unquote(company)
+-    if publisher is not None:
+-        publisher = _unquote(publisher)
+-    return company, publisher
+-
+-
+-def is_empty_or_mozilla(value):
+-    if value is None:
+-        return True
+-    return value.strip() == "" or value.strip().lower() == "mozilla"
+-
+-
+ def ftl_value(text, key):
+     m = re.search(r"^" + re.escape(key) + r" = (.+)$", text, re.MULTILINE)
+     return m.group(1) if m else None
+@@ -410,8 +273,9 @@ def check_module_ver(bad):
+         found += 1
+         raw = open(path, "rb").read()
+         text = raw.decode("latin-1")
+-        copyright = text.split("WIN32_MODULE_COPYRIGHT=", 1)[1].splitlines()[0] if "WIN32_MODULE_COPYRIGHT=" in text else ""
+-        if has_pepecoin_publisher(text, publisher_file=True):
++        company = module_ver_company(path)
++        copyright = module_ver_copyright(path) or ""
++        if mentions_pepecoin(company) or mentions_pepecoin(copyright):
+             fail("%s still has a Pepecoin publisher/company/copyright string" % rel, bad)
+         elif "TODO-OWNER" not in text:
+             fail("%s is missing a TODO-OWNER marker on the publisher/company placeholders" % rel, bad)
+@@ -425,8 +289,8 @@ def check_module_ver(bad):
+             fail("%s is missing company or copyright keys" % rel, bad)
+         elif b"\xa9" not in raw:
+             fail("%s copyright is missing the Latin-1 copyright sign" % rel, bad)
+-        elif is_empty_or_mozilla(module_ver_company(text)):
+-            fail("%s WIN32_MODULE_COMPANYNAME is empty or 'Mozilla': %r" % (rel, module_ver_company(text)), bad)
++        elif is_empty_or_mozilla_publisher(company):
++            fail("%s WIN32_MODULE_COMPANYNAME is empty or contains 'mozilla': %r" % (rel, company), bad)
+         else:
+             pass_("%s has TODO-OWNER publisher placeholders, no Pepecoin, Mozilla.org trademark credit kept" % rel)
+     if found == 0:
+@@ -494,19 +358,27 @@ def check_branding_nsi(bad):
+         fail("branding.nsi still uses Mozilla Corporation as CertNameDownload", bad)
+     elif "support.mozilla.org" in defines or "mozilla.org/firefox/system-requirements" in defines:
+         fail("branding.nsi still points help/requirements at Mozilla Firefox pages", bad)
+-    elif has_pepecoin_publisher(text, publisher_file=True):
+-        fail("branding.nsi still has a Pepecoin publisher/company define", bad)
+     elif "TODO-OWNER" not in text:
+         fail("branding.nsi is missing a TODO-OWNER marker on the publisher placeholders", bad)
+     elif "ARPPublisher" not in defines:
+         fail("branding.nsi is missing ARPPublisher for Add/Remove Programs", bad)
+     elif "TODO(windows-signing)" not in text or "owner's decision" not in text.lower():
+         fail("branding.nsi is missing the TODO comment that no Windows signing identity exists yet and the publisher name is the owner's decision", bad)
+-    elif is_empty_or_mozilla(branding_publisher_values(text)[0]) or is_empty_or_mozilla(branding_publisher_values(text)[1]):
+-        company, publisher = branding_publisher_values(text)
+-        fail("branding.nsi CompanyName/ARPPublisher is empty or 'Mozilla': CompanyName=%r ARPPublisher=%r" % (company, publisher), bad)
+     else:
+-        pass_("branding.nsi has TODO-OWNER publisher placeholders, ARPPublisher, stub cert TODOs, and dane.surf URLs")
++        try:
++            company, publisher = branding_publisher_values(BRANDING_NSI)
++        except MakensisMissing as exc:
++            fail("makensis is required to resolve branding.nsi publisher values but was not found (%s); not PASS" % exc, bad)
++            return
++        except MakensisError as exc:
++            fail("makensis -PPO failed on greatdane branding.nsi: %s" % exc, bad)
++            return
++        if mentions_pepecoin(company) or mentions_pepecoin(publisher):
++            fail("branding.nsi still has a Pepecoin publisher/company define (makensis -PPO: CompanyName=%r ARPPublisher=%r)" % (company, publisher), bad)
++        elif is_empty_or_mozilla_publisher(company) or is_empty_or_mozilla_publisher(publisher):
++            fail("branding.nsi CompanyName/ARPPublisher is empty or contains 'mozilla': CompanyName=%r ARPPublisher=%r" % (company, publisher), bad)
++        else:
++            pass_("branding.nsi has TODO-OWNER publisher placeholders, ARPPublisher, stub cert TODOs, and dane.surf URLs (makensis %s)" % (makensis_version() or "unknown"))
+ 
+ 
+ def check_sync_promo(bad):
+@@ -673,7 +545,26 @@ def check_no_pepecoin_publisher(bad):
+             text = raw.decode("utf-8")
+         except UnicodeDecodeError:
+             text = raw.decode("latin-1")
+-        if has_pepecoin_publisher(text, publisher_file=True):
++        pepe = False
++        if rel.endswith("module.ver"):
++            pepe = mentions_pepecoin(module_ver_company(path)) or mentions_pepecoin(module_ver_copyright(path))
++        elif rel.endswith("branding.nsi"):
++            try:
++                company, publisher = branding_publisher_values(path)
++            except MakensisMissing as exc:
++                fail("makensis is required to scan branding.nsi but was not found (%s); not PASS" % exc, bad)
++                continue
++            except MakensisError as exc:
++                fail("makensis -PPO failed on %s: %s" % (rel, exc), bad)
++                continue
++            pepe = mentions_pepecoin(company) or mentions_pepecoin(publisher)
++        elif rel.endswith(".manifest"):
++            pepe = manifest_has_pepecoin(path)
++        elif rel.endswith("shared.nsh"):
++            pepe = shared_nsh_has_pepecoin(path)
++        else:
++            pepe = mentions_pepecoin(text)
++        if pepe:
+             fail("%s still contains a Pepecoin publisher/company/copyright string" % rel, bad)
+         else:
+             pass_("%s has no Pepecoin publisher/company/copyright string" % rel)
+@@ -682,86 +573,62 @@ def check_no_pepecoin_publisher(bad):
+ 
+ 
+ 
+-# NGD 4h bypass fixtures. Each must be rejected. The real tree must still pass.
++
++# NGD 4h/4i fixtures plus 4j L1–L8 (cases NGD reproduced on 4i). Each must be
++# rejected using makensis -PPO / parse_module_ver and normalization. The real
++# tree must still pass.
++FIXTURE_DIR = os.path.join(ROOT, "greatdane/tests/fixtures/pepecoin-publisher")
++
++# name, kind ('module.ver' or 'branding.nsi'), relative path, expected verdict
+ PEPECOIN_BYPASS_FIXTURES = (
+-    {
+-        "name": "A",
+-        "kind": "module.ver",
+-        "text": "WIN32_MODULE_COMPANYNAME=Pepecoin # MOZ_APP_VENDOR\n",
+-        "expect": "pepecoin",
+-    },
+-    {
+-        "name": "A2",
+-        "kind": "module.ver",
+-        "text": "WIN32_MODULE_COPYRIGHT=\u00a9 Pepecoin (MOZ_APP_VENDOR)\n",
+-        "expect": "pepecoin",
+-    },
+-    {
+-        "name": "C",
+-        "kind": "branding.nsi",
+-        "text": "!define CompanyName \"Pepecoin\" ; MOZ_APP_VENDOR\n",
+-        "expect": "pepecoin",
+-    },
+-    {
+-        "name": "E",
+-        "kind": "branding.nsi",
+-        "text": "!define PUB \"Pepecoin\" ; HKCU\\Software\n!define ARPPublisher \"${PUB}\"\n",
+-        "expect": "pepecoin",
+-    },
+-    {
+-        "name": "D2",
+-        "kind": "branding.nsi",
+-        "text": "!define CompanyName \\\n  \"pepecoin.surf\"\n",
+-        "expect": "pepecoin",
+-    },
+-    {
+-        "name": "empty-company",
+-        "kind": "module.ver",
+-        "text": "WIN32_MODULE_COMPANYNAME=\n",
+-        "expect": "empty-or-mozilla",
+-    },
+-    {
+-        "name": "arp-mozilla",
+-        "kind": "branding.nsi",
+-        "text": "!define ARPPublisher \"Mozilla\"\n",
+-        "expect": "empty-or-mozilla",
+-    },
++    # 4h/4i residual cases, still required
++    ("A", "module.ver", "A.module.ver", "pepecoin"),
++    ("A2", "module.ver", "A2.module.ver", "pepecoin"),
++    ("C", "branding.nsi", "C.branding.nsi", "pepecoin"),
++    ("E", "branding.nsi", "E.branding.nsi", "pepecoin"),
++    ("D2", "branding.nsi", "D2.branding.nsi", "pepecoin"),
++    ("empty-company", "module.ver", "empty-company.module.ver", "empty-or-mozilla"),
++    ("arp-mozilla", "branding.nsi", "arp-mozilla.branding.nsi", "empty-or-mozilla"),
++    # L1–L8 (NGD 4i reproduced bypasses)
++    ("L1-N11", "branding.nsi", "L1-N11-Uplus.branding.nsi", "pepecoin"),
++    ("L2-N20", "branding.nsi", "L2-N20-redef.branding.nsi", "pepecoin"),
++    ("L3-N21", "branding.nsi", "L3-N21-searchreplace.branding.nsi", "pepecoin"),
++    ("L4-N22", "branding.nsi", "L4-N22-file/branding.nsi", "pepecoin"),
++    ("L5-N5", "branding.nsi", "L5-N5-ifndef.branding.nsi", "pepecoin"),
++    ("L5-N6", "branding.nsi", "L5-N6-indented.branding.nsi", "pepecoin"),
++    ("L5-N9b", "branding.nsi", "L5-N9b-include/branding.nsi", "pepecoin"),
++    ("L5-N14", "module.ver", "L5-N14-define.module.ver", "pepecoin"),
++    ("L6-N1", "branding.nsi", "L6-N1-cyrillic.branding.nsi", "pepecoin"),
++    ("L6-N16", "branding.nsi", "L6-N16-acute.branding.nsi", "pepecoin"),
++    ("L7-N2", "branding.nsi", "L7-N2-zwsp.branding.nsi", "pepecoin"),
++    ("L7-N3", "branding.nsi", "L7-N3-hyphen.branding.nsi", "pepecoin"),
++    ("L7-N4", "branding.nsi", "L7-N4-spaces.branding.nsi", "pepecoin"),
++    ("L8-foundation", "branding.nsi", "L8-mozilla-foundation.branding.nsi", "empty-or-mozilla"),
++    ("L8-corporation", "branding.nsi", "L8-mozilla-corporation.branding.nsi", "empty-or-mozilla"),
+ )
+ 
+ 
+-def _load_fixture_text(fix):
+-    # Prefer the on-disk fixture so the test case is inspectable; fall back to the
+-    # inline text if the snapshot does not ship the fixtures directory.
+-    name = {
+-        "A": "A.module.ver",
+-        "A2": "A2.module.ver",
+-        "C": "C.branding.nsi",
+-        "E": "E.branding.nsi",
+-        "D2": "D2.branding.nsi",
+-        "empty-company": "empty-company.module.ver",
+-        "arp-mozilla": "arp-mozilla.branding.nsi",
+-    }[fix["name"]]
+-    path = os.path.join(ROOT, "greatdane/tests/fixtures/pepecoin-publisher", name)
+-    if os.path.isfile(path):
+-        return read(path)
+-    return fix["text"]
+-
+-
+-def fixture_violations(fix):
++def fixture_violations(name, kind, rel, expect):
+     """Return the violation kind detected in a fixture, or None if it slipped through."""
+-    text = _load_fixture_text(fix)
+-    pepe = bool(has_pepecoin_publisher(text, publisher_file=True))
+-    if fix["kind"] == "module.ver":
+-        empty = is_empty_or_mozilla(module_ver_company(text))
+-    elif fix["name"] == "arp-mozilla":
+-        _company, publisher = branding_publisher_values(text)
+-        empty = is_empty_or_mozilla(publisher)
++    path = os.path.join(FIXTURE_DIR, rel)
++    if not os.path.isfile(path):
++        return None
++    pepe = False
++    empty = False
++    if kind == "module.ver":
++        company = module_ver_company(path)
++        copyright = module_ver_copyright(path)
++        pepe = mentions_pepecoin(company) or mentions_pepecoin(copyright)
++        empty = is_empty_or_mozilla_publisher(company)
+     else:
+-        company, publisher = branding_publisher_values(text)
+-        empty = is_empty_or_mozilla(company) or is_empty_or_mozilla(publisher)
+-    if fix["expect"] == "pepecoin" and pepe:
++        company, publisher = branding_publisher_values(path)
++        pepe = mentions_pepecoin(company) or mentions_pepecoin(publisher)
++        empty = is_empty_or_mozilla_publisher(company) or is_empty_or_mozilla_publisher(publisher)
++        # arp-mozilla / L8: a missing CompanyName is empty, but the expected
++        # verdict may still be empty-or-mozilla from ARPPublisher alone.
++    if expect == "pepecoin" and pepe:
+         return "pepecoin"
+-    if fix["expect"] == "empty-or-mozilla" and empty:
++    if expect == "empty-or-mozilla" and empty:
+         return "empty-or-mozilla"
+     if pepe:
+         return "pepecoin"
+@@ -771,16 +638,32 @@ def fixture_violations(fix):
+ 
+ 
+ def check_pepecoin_bypass_fixtures(bad):
+-    for fix in PEPECOIN_BYPASS_FIXTURES:
+-        got = fixture_violations(fix)
+-        if got != fix["expect"]:
++    ver = makensis_version()
++    if not makensis_path():
++        fail(
++            "makensis is required to evaluate NSIS publisher fixtures but was not found; not PASS",
++            bad,
++        )
++        return
++    pass_("makensis -PPO available: %s" % (ver or "unknown"))
++    for name, kind, rel, expect in PEPECOIN_BYPASS_FIXTURES:
++        path = os.path.join(FIXTURE_DIR, rel)
++        if not os.path.isfile(path):
++            fail("bypass fixture %s is missing: %s" % (name, rel), bad)
++            continue
++        try:
++            got = fixture_violations(name, kind, rel, expect)
++        except (MakensisMissing, MakensisError) as exc:
++            fail("bypass fixture %s: tool failed: %s" % (name, exc), bad)
++            continue
++        if got != expect:
+             fail(
+-                "bypass fixture %s was not rejected as %s (got %s): %r"
+-                % (fix["name"], fix["expect"], got, fix["text"]),
++                "bypass fixture %s was not rejected as %s (got %s)"
++                % (name, expect, got),
+                 bad,
+             )
+         else:
+-            pass_("bypass fixture %s correctly rejected (%s)" % (fix["name"], fix["expect"]))
++            pass_("bypass fixture %s correctly rejected (%s)" % (name, expect))
+ 
+ 
+ def check_shared_nsh(bad):
+@@ -794,7 +677,7 @@ def check_shared_nsh(bad):
+         fail("shared.nsh official Publisher Mozilla fallback is missing", bad)
+     elif "TODO-OWNER" not in text:
+         fail("shared.nsh is missing a TODO-OWNER marker on the Add/Remove Programs publisher", bad)
+-    elif has_pepecoin_publisher(text, publisher_file=True):
++    elif shared_nsh_has_pepecoin(SHARED_NSH):
+         fail("shared.nsh still has a Pepecoin publisher string", bad)
+     else:
+         pass_("shared.nsh Add/Remove Programs Publisher is ${ARPPublisher} when defined, else Mozilla; TODO-OWNER present")
