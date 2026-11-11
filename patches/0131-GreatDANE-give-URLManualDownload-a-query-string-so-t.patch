@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 18:23:13 -0600
+Subject: [PATCH 131/144] GreatDANE: give URLManualDownload a query string so
+ the stub suffix is valid (round 4h)
+
+NGD 4f+4g MEDIUM: stub.nsh appends &installer_arch= to URLManualDownload. The
+4f URL was https://dane.surf/download/ with no "?", which would produce a
+broken path. It is now https://dane.surf/download/?channel=unofficial.
+
+No stub installer is built: no Dane mozconfig sets MOZ_STUB_INSTALLER. The
+branding.nsi comments say that plainly. stub.nsh itself is not edited (stock).
+
+Prepared only. Not built, signed, notarized or published.
+---
+ browser/branding/greatdane/branding.nsi | 13 ++++++++++---
+ 1 file changed, 10 insertions(+), 3 deletions(-)
+
+diff --git a/browser/branding/greatdane/branding.nsi b/browser/branding/greatdane/branding.nsi
+index 0cd1267c31..c7e1cc10b6 100644
+--- a/browser/branding/greatdane/branding.nsi
++++ b/browser/branding/greatdane/branding.nsi
+@@ -18,10 +18,14 @@
+ # equivalent. The public Windows installer (2026-11-10) is the versioned
+ # unsigned Dane-153.7.0esr-win64.installer.exe; pinning that filename would
+ # rot, and the stub CertCheck cannot succeed until a signed build exists.
++# No stub installer is built: no Dane mozconfig sets MOZ_STUB_INSTALLER.
++# URLManualDownload includes ?channel=unofficial because stub.nsh appends
++# &installer_arch= to this URL when a stub is present; a bare path with no
++# "?" would produce a broken query.
+ !define URLStubDownloadX86 "https://dane.surf/download/"
+ !define URLStubDownloadAMD64 "https://dane.surf/download/"
+ !define URLStubDownloadAArch64 "https://dane.surf/download/"
+-!define URLManualDownload "https://dane.surf/download/"
++!define URLManualDownload "https://dane.surf/download/?channel=unofficial"
+ !define URLSystemRequirements "https://dane.surf/support/"
+ !define Channel "unofficial"
+ 
+@@ -29,8 +33,11 @@
+ # name used here (CertNameDownload subject CN and CertIssuerDownload issuer)
+ # is the owner's decision before release. These placeholders are syntactically
+ # valid NSIS string defines and must be replaced with the real identity before
+-# any signed stub is shipped. Until then the stub's PE trust check is expected
+-# to fail and fall back to URLManualDownload (the Dane download page).
++# any signed stub is shipped. No stub is built today (no mozconfig sets
++# MOZ_STUB_INSTALLER). If a stub is built later, its PE trust check is
++# expected to fail until a real identity is set, and URLManualDownload is
++# https://dane.surf/download/?channel=unofficial so the stub.nsh
++# &installer_arch= suffix is a valid query parameter.
+ !define CertNameDownload   "TODO-NO-WINDOWS-SIGNING-IDENTITY-YET"
+ !define CertIssuerDownload "TODO-NO-WINDOWS-SIGNING-IDENTITY-YET"
+ 
