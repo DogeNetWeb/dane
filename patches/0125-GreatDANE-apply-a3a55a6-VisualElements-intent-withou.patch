@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 20:58:08 -0600
+Subject: [PATCH 125/144] GreatDANE: apply a3a55a6 VisualElements intent
+ without Windows node packaging lines
+
+Resolution of a3a55a6 (round 4f): rename the greatdane VisualElements
+manifest and list @BINPATH@/@MOZ_APP_NAME@.VisualElementsManifest.xml.
+The original patch context included uncommitted Windows working-tree
+lines that ship greatdane-node.exe; those lines are not in 067014d89b
+or any dane-esr153head series patch, so they are not added here.
+---
+ browser/branding/branding-common.mozbuild             | 11 ++++++++++-
+ ...ifest.xml => greatdane.VisualElementsManifest.xml} |  0
+ browser/installer/package-manifest.in                 |  2 +-
+ greatdane/WORDMARK-SOURCES.md                         |  7 ++++++-
+ 4 files changed, 17 insertions(+), 3 deletions(-)
+ rename browser/branding/greatdane/{firefox.VisualElementsManifest.xml => greatdane.VisualElementsManifest.xml} (100%)
+
+diff --git a/browser/branding/branding-common.mozbuild b/browser/branding/branding-common.mozbuild
+index dd02e32066..f94ba5e2f2 100644
+--- a/browser/branding/branding-common.mozbuild
++++ b/browser/branding/branding-common.mozbuild
+@@ -15,8 +15,17 @@ def FirefoxBranding():
+         ]
+ 
+     if CONFIG["MOZ_WIDGET_TOOLKIT"] == "windows":
++        # Official, nightly, aurora, and unofficial branding keep the stock
++        # firefox.VisualElementsManifest.xml filename. greatdane ships
++        # greatdane.VisualElementsManifest.xml next to greatdane.exe
++        # (MOZ_APP_NAME is the lowercase of --with-app-basename=GreatDANE).
++        # Official-branding files and their default packaged name are unchanged.
++        if CONFIG["MOZ_BRANDING_DIRECTORY"] == "browser/branding/greatdane":
++            visual_elements_manifest = "greatdane.VisualElementsManifest.xml"
++        else:
++            visual_elements_manifest = "firefox.VisualElementsManifest.xml"
+         FINAL_TARGET_FILES[".."] += [
+-            "firefox.VisualElementsManifest.xml",
++            visual_elements_manifest,
+             "private_browsing.VisualElementsManifest.xml",
+         ]
+         FINAL_TARGET_FILES.VisualElements += [
+diff --git a/browser/branding/greatdane/firefox.VisualElementsManifest.xml b/browser/branding/greatdane/greatdane.VisualElementsManifest.xml
+similarity index 100%
+rename from browser/branding/greatdane/firefox.VisualElementsManifest.xml
+rename to browser/branding/greatdane/greatdane.VisualElementsManifest.xml
+diff --git a/browser/installer/package-manifest.in b/browser/installer/package-manifest.in
+index 4c55bf15f4..1cb55a0d7e 100644
+--- a/browser/installer/package-manifest.in
++++ b/browser/installer/package-manifest.in
+@@ -161,7 +161,7 @@
+ ; [Base Browser Files]
+ #ifndef XP_UNIX
+ @BINPATH@/@MOZ_APP_NAME@.exe
+-@BINPATH@/firefox.VisualElementsManifest.xml
++@BINPATH@/@MOZ_APP_NAME@.VisualElementsManifest.xml
+ @BINPATH@/browser/VisualElements/VisualElements_150.png
+ @BINPATH@/browser/VisualElements/VisualElements_70.png
+ @BINPATH@/private_browsing.exe
+diff --git a/greatdane/WORDMARK-SOURCES.md b/greatdane/WORDMARK-SOURCES.md
+index d9b55a03d1..b995ee9a0e 100644
+--- a/greatdane/WORDMARK-SOURCES.md
++++ b/greatdane/WORDMARK-SOURCES.md
+@@ -48,4 +48,9 @@ These live in shared (non-branding) trees. Replacing the files would change an o
+ - **Linux installer symbolic icon.** `browser/installer/linux/app/flatpak/files/share/icons/hicolor/symbolic/apps/org.mozilla.firefox-symbolic.svg` is a packaging icon for Linux/Flatpak, not loaded by the Mac app chrome. Not changed here.
+ - **Fluent ids** such as `home-prefs-firefox-logo-header` are string identifiers, not graphics.
+ 
+-A source-level check is `greatdane/tests/wordmark_branding_check.py`.
++## Shipped filenames (round 4f)
++
++- **`firefox-wordmark.svg` chrome URL — documented, not renamed.** Stock new-tab and private-browsing CSS load `chrome://branding/content/firefox-wordmark.svg`. Renaming the chrome URL would require editing those shared CSS files, which would leak into official branding or break it. The file is already an alias of `about-wordmark.svg` (plain-text "Dane") via `content/jar.mn` from round 4e. The source filename in the greatdane branding tree was already removed; only the chrome URL remains.
++- **`firefox.VisualElementsManifest.xml` — renamed for greatdane only.** Windows looks for `<exe>.VisualElementsManifest.xml` next to the exe. Dane's exe is `greatdane.exe` (`MOZ_APP_NAME` is the lowercase of `--with-app-basename=GreatDANE`), so the shipped name is now `greatdane.VisualElementsManifest.xml`. `branding-common.mozbuild` selects that filename only when `MOZ_BRANDING_DIRECTORY` is `browser/branding/greatdane`. Official, nightly, aurora, and unofficial branding still package `firefox.VisualElementsManifest.xml`. Official-branding files are not edited. `package-manifest.in` now lists `@BINPATH@/@MOZ_APP_NAME@.VisualElementsManifest.xml`. `private_browsing.VisualElementsManifest.xml` is unchanged (it sits next to `private_browsing.exe`).
++
++A source-level check is `greatdane/tests/wordmark_branding_check.py`. Round 4f also adds `greatdane/tests/trademark_userfacing_check.py`.
