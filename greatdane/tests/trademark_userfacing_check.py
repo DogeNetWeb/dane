@@ -63,9 +63,12 @@ UPSTREAM_COMMUNITY_2 = (
 
 PRIVACY_URL = "https://dane.surf/privacy/"
 SUPPORT_URL = "https://dane.surf/support/"
+SOURCE_URL = "https://dane.surf/source/"
 DOWNLOAD_URL = "https://dane.surf/download/"
+MANUAL_DOWNLOAD_URL = "https://dane.surf/download/?channel=unofficial"
 HOME_URL = "https://dane.surf/"
 MOZILLA_HOME = "https://www.mozilla.org/"
+SHARED_NSH = os.path.join(ROOT, "browser/installer/windows/nsis/shared.nsh")
 
 
 def fail(msg, bad):
@@ -84,6 +87,48 @@ def skip(msg):
 def read(path, encoding="utf-8"):
     with open(path, encoding=encoding) as f:
         return f.read()
+
+
+def line_is_vendor_identifier(line):
+    """MOZ_APP_VENDOR and vendor-derived profile/registry paths are internal.
+
+    Changing them would move profiles. They are not publisher, company, or
+    copyright strings. pepecoin.surf hostnames are also not publisher metadata.
+    """
+    if re.search(r"MOZ_APP_VENDOR", line, re.I):
+        return True
+    if re.search(r"^\s*Vendor\s*=", line, re.I):
+        return True
+    if re.search(r"pepecoin\.surf", line, re.I) and not re.search(
+        r"(CompanyName|WIN32_MODULE_COMPANYNAME|WIN32_MODULE_COPYRIGHT|"
+        r"Publisher|CertName|CertIssuer|LegalCopyright)",
+        line,
+        re.I,
+    ):
+        return True
+    # Registry/profile paths derived from the vendor identifier.
+    if re.search(r"pepecoin", line, re.I) and re.search(
+        r"(HKLM|HKCU|SHCTX|AppData|Profiles)\\", line, re.I
+    ):
+        if not re.search(
+            r"(Publisher|CompanyName|WIN32_MODULE_COMPANYNAME|WIN32_MODULE_COPYRIGHT|"
+            r"CertName|CertIssuer|LegalCopyright)",
+            line,
+            re.I,
+        ):
+            return True
+    return False
+
+
+def has_pepecoin_publisher(text):
+    """True if a publisher/company/copyright string mentions Pepecoin (any case)."""
+    for line in text.splitlines():
+        if not re.search(r"pepecoin", line, re.I):
+            continue
+        if line_is_vendor_identifier(line):
+            continue
+        return True
+    return False
 
 
 def ftl_value(text, key):
@@ -148,7 +193,7 @@ def check_about(bad):
     for unoff, off in unofficial_block(xhtml):
         if "helpus-donateLink" in unoff or "foundation.mozilla.org" in unoff:
             unofficial_donate = True
-        if 'data-l10n-id="dane-helpus"' in unoff and SUPPORT_URL in unoff:
+        if 'data-l10n-id="dane-helpus"' in unoff and SOURCE_URL in unoff:
             unofficial_involved = True
         if "helpus-donateLink" in off and "foundation.mozilla.org" in off:
             official_donate = True
@@ -157,9 +202,9 @@ def check_about(bad):
     else:
         pass_("unofficial About drops the donate link")
     if not unofficial_involved:
-        fail("unofficial About get-involved is not %s under dane-helpus" % SUPPORT_URL, bad)
+        fail("unofficial About get-involved is not %s under dane-helpus" % SOURCE_URL, bad)
     else:
-        pass_("unofficial About get-involved is %s" % SUPPORT_URL)
+        pass_("unofficial About get-involved is %s" % SOURCE_URL)
     if not official_donate:
         fail("official About donate link was removed", bad)
     else:
@@ -237,6 +282,12 @@ def check_ftl_wording(bad):
     else:
         pass_("aboutDialog.ftl bottom-links-terms stays 'Terms of Use' for official branding")
 
+    dane_sync = ftl_value(brand, "dane-sync-mobile-promo")
+    if not dane_sync or "download page" not in dane_sync or re.search(r"Download Firefox", dane_sync or ""):
+        fail("brand.ftl dane-sync-mobile-promo is missing or still says Download Firefox: %r" % dane_sync, bad)
+    else:
+        pass_("brand.ftl dane-sync-mobile-promo is the unofficial Dane download wording")
+
 
 def check_module_ver(bad):
     found = 0
@@ -249,22 +300,22 @@ def check_module_ver(bad):
         raw = open(path, "rb").read()
         text = raw.decode("latin-1")
         copyright = text.split("WIN32_MODULE_COPYRIGHT=", 1)[1].splitlines()[0] if "WIN32_MODULE_COPYRIGHT=" in text else ""
-        if "Pepecoin" in text:
-            fail("%s still has a Pepecoin publisher/company string" % rel, bad)
-        elif "WIN32_MODULE_COMPANYNAME=Dane" not in text:
-            fail("%s company is not Dane" % rel, bad)
+        if has_pepecoin_publisher(text):
+            fail("%s still has a Pepecoin publisher/company/copyright string" % rel, bad)
+        elif "TODO-OWNER" not in text:
+            fail("%s is missing a TODO-OWNER marker on the publisher/company placeholders" % rel, bad)
         elif "Mozilla Corporation" in text:
             fail("%s still names Mozilla Corporation" % rel, bad)
         elif "Firefox is a Trademark of The Mozilla Foundation" in text:
             fail("%s still uses the Firefox-product trademark line" % rel, bad)
         elif "Firefox and Mozilla are trademarks of Mozilla.org" not in text:
             fail("%s is missing the Mozilla.org trademark credit" % rel, bad)
-        elif "Dane contributors" not in copyright:
-            fail("%s copyright is not Dane contributors: %r" % (rel, copyright), bad)
+        elif "WIN32_MODULE_COMPANYNAME=" not in text or "WIN32_MODULE_COPYRIGHT=" not in text:
+            fail("%s is missing company or copyright keys" % rel, bad)
         elif b"\xa9" not in raw:
             fail("%s copyright is missing the Latin-1 copyright sign" % rel, bad)
         else:
-            pass_("%s company is Dane, copyright is Dane contributors, Mozilla.org trademark credit kept" % rel)
+            pass_("%s has TODO-OWNER publisher placeholders, no Pepecoin, Mozilla.org trademark credit kept" % rel)
     if found == 0:
         skip("module.ver files are not in this snapshot")
 
@@ -306,9 +357,8 @@ def check_branding_nsi(bad):
         ('URLStubDownloadX86', DOWNLOAD_URL),
         ('URLStubDownloadAMD64', DOWNLOAD_URL),
         ('URLStubDownloadAArch64', DOWNLOAD_URL),
-        ('URLManualDownload', DOWNLOAD_URL),
+        ('URLManualDownload', MANUAL_DOWNLOAD_URL),
         ('URLSystemRequirements', SUPPORT_URL),
-        ('CompanyName', 'Dane'),
         ('CertNameDownload', 'TODO-NO-WINDOWS-SIGNING-IDENTITY-YET'),
         ('CertIssuerDownload', 'TODO-NO-WINDOWS-SIGNING-IDENTITY-YET'),
     ]
@@ -331,12 +381,16 @@ def check_branding_nsi(bad):
         fail("branding.nsi still uses Mozilla Corporation as CertNameDownload", bad)
     elif "support.mozilla.org" in defines or "mozilla.org/firefox/system-requirements" in defines:
         fail("branding.nsi still points help/requirements at Mozilla Firefox pages", bad)
-    elif "Pepecoin" in defines:
+    elif has_pepecoin_publisher(defines):
         fail("branding.nsi still has a Pepecoin publisher/company define", bad)
+    elif "TODO-OWNER" not in text:
+        fail("branding.nsi is missing a TODO-OWNER marker on the publisher placeholders", bad)
+    elif "ARPPublisher" not in defines:
+        fail("branding.nsi is missing ARPPublisher for Add/Remove Programs", bad)
     elif "TODO(windows-signing)" not in text or "owner's decision" not in text.lower():
         fail("branding.nsi is missing the TODO comment that no Windows signing identity exists yet and the publisher name is the owner's decision", bad)
     else:
-        pass_("branding.nsi CompanyName is Dane; stub certs are TODO placeholders; dane.surf URLs kept")
+        pass_("branding.nsi has TODO-OWNER publisher placeholders, ARPPublisher, stub cert TODOs, and dane.surf URLs")
 
 
 def check_sync_promo(bad):
@@ -347,12 +401,10 @@ def check_sync_promo(bad):
         val = ftl_value(text, "sync-mobile-promo")
         if not val:
             fail("preferences.ftl is missing sync-mobile-promo", bad)
-        elif re.search(r"Download Firefox", val) or "Android" in (val or "") or "iOS" in (val or ""):
-            fail("sync-mobile-promo still promotes Firefox or a mobile app: %r" % val, bad)
-        elif "android-link" not in (val or "") or "download page" not in (val or ""):
-            fail("sync-mobile-promo does not point at a download page: %r" % val, bad)
+        elif "Download Firefox" not in val or "Android" not in val or "iOS" not in val:
+            fail("preferences.ftl sync-mobile-promo is not the stock official Firefox string: %r" % val, bad)
         else:
-            pass_("sync-mobile-promo no longer says Download Firefox and points at the download page")
+            pass_("preferences.ftl sync-mobile-promo is the stock official Firefox string")
     if not os.path.isfile(BRANDING_JS):
         skip("firefox-branding.js is not in this tree")
     else:
@@ -366,14 +418,25 @@ def check_sync_promo(bad):
         skip("sync.inc.xhtml is not in this tree")
     else:
         text = read(SYNC_INC)
-        if "logo-android.svg" in text or "logo-ios.svg" in text:
-            fail("sync-mobile-promo markup still includes Android/iOS store icons", bad)
-        elif "fxaMobilePromo-android" not in text:
-            fail("sync-mobile-promo lost the android-link target sync.js fills", bad)
+        unofficial_ok = (
+            'data-l10n-id="dane-sync-mobile-promo"' in text
+            and "fxaMobilePromo-android" in text
+            and "#ifndef MOZ_OFFICIAL_BRANDING" in text
+        )
+        official_ok = (
+            'data-l10n-id="sync-mobile-promo"' in text
+            and "logo-android.svg" in text
+            and "logo-ios.svg" in text
+            and "fxaMobilePromo-ios" in text
+        )
+        if not unofficial_ok:
+            fail("sync.inc.xhtml unofficial branch is not the gated dane-sync-mobile-promo markup", bad)
+        elif not official_ok:
+            fail("sync.inc.xhtml official branch is not the stock Android/iOS promo markup", bad)
         elif 'id="connect-another-device"' not in text:
             fail("connect-another-device was removed; Sync UI must stay", bad)
         else:
-            pass_("sync promo markup is a single download link; connect-another-device remains")
+            pass_("sync promo: unofficial uses dane-sync-mobile-promo; official stock markup kept; Sync itself unchanged")
 
 
 def check_bookmarks(bad):
@@ -381,30 +444,35 @@ def check_bookmarks(bad):
         skip("default-bookmarks.html is not in this tree")
     else:
         text = read(BOOKMARKS_HTML)
-        if "support.mozilla.org" in text or "customize-firefox" in text:
-            fail("default-bookmarks.html still links to Firefox help/customize pages", bad)
-        elif "blog.nightly.mozilla.org" in text or "bugzilla.mozilla.org" in text or "addons.mozilla.org/firefox" in text:
-            fail("default-bookmarks.html still has Firefox Nightly resource links", bad)
-        elif "#ifndef NIGHTLY_BUILD" in text or "#else" in text:
-            fail("default-bookmarks.html still has a live NIGHTLY_BUILD branch", bad)
+        if "#ifndef MOZ_OFFICIAL_BRANDING" not in text:
+            fail("default-bookmarks.html is not gated on MOZ_OFFICIAL_BRANDING", bad)
+        elif "dane-default-bookmarks-community" not in text or SOURCE_URL not in text:
+            fail("unofficial bookmarks are missing Get Involved -> %s" % SOURCE_URL, bad)
         elif SUPPORT_URL not in text or HOME_URL not in text:
-            fail("default-bookmarks.html is missing dane.surf support or home URLs", bad)
-        elif "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0" in text:
-            fail("default-bookmarks.html still embeds the old Firefox PNG icon", bad)
+            fail("unofficial bookmarks are missing dane.surf support or home URLs", bad)
+        elif "dane-default-bookmarks-customize" in text:
+            fail("unofficial bookmarks still have a Customize Dane entry (no support anchor exists)", bad)
+        elif "support.mozilla.org/products/firefox" not in text or "customize-firefox-controls" not in text:
+            fail("official bookmark URLs were not restored", bad)
+        elif "#ifndef NIGHTLY_BUILD" not in text or "blog.nightly.mozilla.org" not in text:
+            fail("official NIGHTLY_BUILD bookmark block was not restored", bad)
         else:
-            pass_("default-bookmarks.html uses Dane URLs and Dane icon data; no Nightly Firefox block")
+            pass_("default-bookmarks.html: unofficial Dane URLs (no Customize, Get Involved -> source); official stock restored")
     if not os.path.isfile(BOOKMARKS_FTL):
         skip("default-bookmarks.ftl is not in this tree")
     else:
         text = read(BOOKMARKS_FTL)
         heading = ftl_value(text, "default-bookmarks-firefox-heading")
+        customize = ftl_value(text, "default-bookmarks-firefox-customize")
         nightly = ftl_value(text, "default-bookmarks-nightly-heading")
-        if heading != "Dane":
-            fail("default-bookmarks-firefox-heading is %r, not Dane" % heading, bad)
-        elif nightly == "Firefox Nightly Resources":
-            fail("default-bookmarks-nightly-heading still says Firefox Nightly Resources", bad)
+        if heading != "Mozilla Firefox":
+            fail("default-bookmarks-firefox-heading is %r, official stock is Mozilla Firefox" % heading, bad)
+        elif customize != "Customize Firefox":
+            fail("default-bookmarks-firefox-customize is %r, official stock is Customize Firefox" % customize, bad)
+        elif nightly != "Firefox Nightly Resources":
+            fail("default-bookmarks-nightly-heading is %r, official stock was not restored" % nightly, bad)
         else:
-            pass_("default-bookmarks folder titles are Dane, not Firefox Nightly Resources")
+            pass_("default-bookmarks.ftl official titles are the stock Firefox strings")
 
 
 def check_filenames(bad):
@@ -472,6 +540,7 @@ PUBLISHER_FILES = (
     "browser/app/firefox.exe.manifest",
     "browser/app/desktop-launcher/desktop-launcher.exe.manifest",
     "browser/branding/greatdane/branding.nsi",
+    "browser/installer/windows/nsis/shared.nsh",
 )
 
 
@@ -488,12 +557,29 @@ def check_no_pepecoin_publisher(bad):
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             text = raw.decode("latin-1")
-        if "Pepecoin" in text:
-            fail("%s still contains a Pepecoin publisher/company string" % rel, bad)
+        if has_pepecoin_publisher(text):
+            fail("%s still contains a Pepecoin publisher/company/copyright string" % rel, bad)
         else:
-            pass_("%s has no Pepecoin publisher/company string" % rel)
+            pass_("%s has no Pepecoin publisher/company/copyright string" % rel)
     if found == 0:
         skip("no Windows publisher metadata files in this snapshot")
+
+
+def check_shared_nsh(bad):
+    if not os.path.isfile(SHARED_NSH):
+        skip("shared.nsh is not in this tree")
+        return
+    text = read(SHARED_NSH)
+    if "!ifdef ARPPublisher" not in text or '"${ARPPublisher}"' not in text:
+        fail("shared.nsh does not use branding ARPPublisher for Add/Remove Programs Publisher", bad)
+    elif '"Mozilla"' not in text or "!else" not in text:
+        fail("shared.nsh official Publisher Mozilla fallback is missing", bad)
+    elif "TODO-OWNER" not in text:
+        fail("shared.nsh is missing a TODO-OWNER marker on the Add/Remove Programs publisher", bad)
+    elif has_pepecoin_publisher(text):
+        fail("shared.nsh still has a Pepecoin publisher string", bad)
+    else:
+        pass_("shared.nsh Add/Remove Programs Publisher is ${ARPPublisher} when defined, else Mozilla; TODO-OWNER present")
 
 
 def main():
@@ -504,6 +590,7 @@ def main():
     check_module_ver(bad)
     check_manifests(bad)
     check_branding_nsi(bad)
+    check_shared_nsh(bad)
     check_no_pepecoin_publisher(bad)
     check_sync_promo(bad)
     check_bookmarks(bad)
