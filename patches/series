@@ -133,3 +133,4 @@
 0133-GreatDANE-pin-l10n-fixtures-to-the-153.7.0esr-revisi.patch
 0134-GreatDANE-TODO-OWNER-publisher-placeholders-gated-AR.patch
 0135-GreatDANE-drop-committed-test-bytecode-ignore-__pyca.patch
+0136-GreatDANE-harden-the-Pepecoin-publisher-check-reject.patch

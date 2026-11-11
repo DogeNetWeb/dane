@@ -1,0 +1,2 @@
+!define CompanyName \
+  "pepecoin.surf"

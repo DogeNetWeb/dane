@@ -89,46 +89,157 @@ def read(path, encoding="utf-8"):
         return f.read()
 
 
-def line_is_vendor_identifier(line):
-    """MOZ_APP_VENDOR and vendor-derived profile/registry paths are internal.
+def join_line_continuations(text):
+    """Join lines that end with a backslash (NSIS / preprocessor continuation)."""
+    out = []
+    buf = ""
+    for line in text.splitlines():
+        if line.rstrip().endswith("\\"):
+            buf += line.rstrip()[:-1]
+            continue
+        buf += line
+        out.append(buf)
+        buf = ""
+    if buf:
+        out.append(buf)
+    ended_nl = text.endswith("\n") or text.endswith("\r\n")
+    joined = "\n".join(out)
+    if ended_nl and (joined or text):
+        joined += "\n"
+    return joined
 
-    Changing them would move profiles. They are not publisher, company, or
-    copyright strings. pepecoin.surf hostnames are also not publisher metadata.
-    """
-    if re.search(r"MOZ_APP_VENDOR", line, re.I):
+
+def resolve_nsis(text):
+    """Parse !define NAME and substitute ${NAME} references. Returns (resolved_text, defines)."""
+    defines = {}
+    for m in re.finditer(
+        r"^!define\s+(\w+)\s+(?:\"([^\"]*)\"|(\S+))\s*$",
+        text,
+        re.MULTILINE,
+    ):
+        defines[m.group(1)] = m.group(2) if m.group(2) is not None else m.group(3)
+
+    def subst(value, stack=None):
+        stack = set() if stack is None else set(stack)
+        def repl(m):
+            name = m.group(1)
+            if name in stack:
+                return m.group(0)
+            if name not in defines:
+                return m.group(0)
+            return subst(defines[name], stack | {name})
+        return re.sub(r"\$\{(\w+)\}", repl, value)
+
+    resolved_defines = {k: subst(v) for k, v in defines.items()}
+    return subst(text), resolved_defines
+
+
+_PREPROCESSOR_DIRECTIVE = re.compile(
+    r"^\s*#\s*(define|undef|if|ifdef|ifndef|else|elif|endif|"
+    r"filter|include|expand|literal|error|unifdef)\b",
+    re.I,
+)
+
+
+def strip_comments(text):
+    """Strip #, ;, //, and <!-- --> comments, leaving preprocessor directives."""
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+
+    def strip_line(line):
+        if _PREPROCESSOR_DIRECTIVE.match(line):
+            return line
+        in_str = False
+        i = 0
+        while i < len(line):
+            c = line[i]
+            if in_str:
+                if c == "\\" and i + 1 < len(line):
+                    i += 2
+                    continue
+                if c == '"':
+                    in_str = False
+                i += 1
+                continue
+            if c == '"':
+                in_str = True
+                i += 1
+                continue
+            if c in "#;" or (c == "/" and i + 1 < len(line) and line[i + 1] == "/"):
+                return line[:i].rstrip()
+            i += 1
+        return line
+
+    return "\n".join(strip_line(ln) for ln in text.splitlines())
+
+
+def is_vendor_key_line(line):
+    """True only for a vendor identifier assignment or configure vendor setting."""
+    if re.match(r"\s*MOZ_APP_VENDOR\s*=", line):
         return True
-    if re.search(r"^\s*Vendor\s*=", line, re.I):
-        return True
-    if re.search(r"pepecoin\.surf", line, re.I) and not re.search(
-        r"(CompanyName|WIN32_MODULE_COMPANYNAME|WIN32_MODULE_COPYRIGHT|"
-        r"Publisher|CertName|CertIssuer|LegalCopyright)",
+    if re.search(
+        r"""\b(?:imply_option|set_config|set_define)\s*\(\s*["']MOZ_APP_VENDOR["']""",
         line,
-        re.I,
     ):
         return True
-    # Registry/profile paths derived from the vendor identifier.
-    if re.search(r"pepecoin", line, re.I) and re.search(
-        r"(HKLM|HKCU|SHCTX|AppData|Profiles)\\", line, re.I
-    ):
-        if not re.search(
-            r"(Publisher|CompanyName|WIN32_MODULE_COMPANYNAME|WIN32_MODULE_COPYRIGHT|"
-            r"CertName|CertIssuer|LegalCopyright)",
-            line,
-            re.I,
-        ):
-            return True
+    if re.search(r"""\boption\s*\(\s*["']--with-app-vendor["']""", line):
+        return True
     return False
 
 
-def has_pepecoin_publisher(text):
-    """True if a publisher/company/copyright string mentions Pepecoin (any case)."""
-    for line in text.splitlines():
+def has_pepecoin_publisher(text, *, publisher_file=False):
+    """True if a publisher/company/copyright string mentions Pepecoin (any case).
+
+    Publisher files (module.ver, exe manifests, greatdane branding.nsi, shared.nsh):
+    no exemptions. Line continuations are joined and NSIS ${NAME} refs are resolved.
+
+    Elsewhere: comments are stripped first, then only lines whose key is the
+    vendor (MOZ_APP_VENDOR=... or the configure vendor setting) are exempt.
+    """
+    joined = join_line_continuations(text)
+    if publisher_file:
+        resolved, _defs = resolve_nsis(joined)
+        return bool(re.search(r"pepecoin", resolved, re.I))
+    stripped = strip_comments(joined)
+    for line in stripped.splitlines():
         if not re.search(r"pepecoin", line, re.I):
             continue
-        if line_is_vendor_identifier(line):
+        if is_vendor_key_line(line):
             continue
         return True
     return False
+
+
+def _unquote(value):
+    value = (value or "").strip()
+    if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+        return value[1:-1]
+    return value
+
+
+def module_ver_company(text):
+    joined = join_line_continuations(text)
+    m = re.search(r"^WIN32_MODULE_COMPANYNAME=(.*)$", joined, re.MULTILINE)
+    if not m:
+        return None
+    return strip_comments(m.group(1)).strip()
+
+
+def branding_publisher_values(text):
+    joined = join_line_continuations(text)
+    _resolved, defs = resolve_nsis(joined)
+    company = defs.get("CompanyName")
+    publisher = defs.get("ARPPublisher")
+    if company is not None:
+        company = _unquote(company)
+    if publisher is not None:
+        publisher = _unquote(publisher)
+    return company, publisher
+
+
+def is_empty_or_mozilla(value):
+    if value is None:
+        return True
+    return value.strip() == "" or value.strip().lower() == "mozilla"
 
 
 def ftl_value(text, key):
@@ -300,7 +411,7 @@ def check_module_ver(bad):
         raw = open(path, "rb").read()
         text = raw.decode("latin-1")
         copyright = text.split("WIN32_MODULE_COPYRIGHT=", 1)[1].splitlines()[0] if "WIN32_MODULE_COPYRIGHT=" in text else ""
-        if has_pepecoin_publisher(text):
+        if has_pepecoin_publisher(text, publisher_file=True):
             fail("%s still has a Pepecoin publisher/company/copyright string" % rel, bad)
         elif "TODO-OWNER" not in text:
             fail("%s is missing a TODO-OWNER marker on the publisher/company placeholders" % rel, bad)
@@ -314,6 +425,8 @@ def check_module_ver(bad):
             fail("%s is missing company or copyright keys" % rel, bad)
         elif b"\xa9" not in raw:
             fail("%s copyright is missing the Latin-1 copyright sign" % rel, bad)
+        elif is_empty_or_mozilla(module_ver_company(text)):
+            fail("%s WIN32_MODULE_COMPANYNAME is empty or 'Mozilla': %r" % (rel, module_ver_company(text)), bad)
         else:
             pass_("%s has TODO-OWNER publisher placeholders, no Pepecoin, Mozilla.org trademark credit kept" % rel)
     if found == 0:
@@ -381,7 +494,7 @@ def check_branding_nsi(bad):
         fail("branding.nsi still uses Mozilla Corporation as CertNameDownload", bad)
     elif "support.mozilla.org" in defines or "mozilla.org/firefox/system-requirements" in defines:
         fail("branding.nsi still points help/requirements at Mozilla Firefox pages", bad)
-    elif has_pepecoin_publisher(defines):
+    elif has_pepecoin_publisher(text, publisher_file=True):
         fail("branding.nsi still has a Pepecoin publisher/company define", bad)
     elif "TODO-OWNER" not in text:
         fail("branding.nsi is missing a TODO-OWNER marker on the publisher placeholders", bad)
@@ -389,6 +502,9 @@ def check_branding_nsi(bad):
         fail("branding.nsi is missing ARPPublisher for Add/Remove Programs", bad)
     elif "TODO(windows-signing)" not in text or "owner's decision" not in text.lower():
         fail("branding.nsi is missing the TODO comment that no Windows signing identity exists yet and the publisher name is the owner's decision", bad)
+    elif is_empty_or_mozilla(branding_publisher_values(text)[0]) or is_empty_or_mozilla(branding_publisher_values(text)[1]):
+        company, publisher = branding_publisher_values(text)
+        fail("branding.nsi CompanyName/ARPPublisher is empty or 'Mozilla': CompanyName=%r ARPPublisher=%r" % (company, publisher), bad)
     else:
         pass_("branding.nsi has TODO-OWNER publisher placeholders, ARPPublisher, stub cert TODOs, and dane.surf URLs")
 
@@ -557,12 +673,114 @@ def check_no_pepecoin_publisher(bad):
             text = raw.decode("utf-8")
         except UnicodeDecodeError:
             text = raw.decode("latin-1")
-        if has_pepecoin_publisher(text):
+        if has_pepecoin_publisher(text, publisher_file=True):
             fail("%s still contains a Pepecoin publisher/company/copyright string" % rel, bad)
         else:
             pass_("%s has no Pepecoin publisher/company/copyright string" % rel)
     if found == 0:
         skip("no Windows publisher metadata files in this snapshot")
+
+
+
+# NGD 4h bypass fixtures. Each must be rejected. The real tree must still pass.
+PEPECOIN_BYPASS_FIXTURES = (
+    {
+        "name": "A",
+        "kind": "module.ver",
+        "text": "WIN32_MODULE_COMPANYNAME=Pepecoin # MOZ_APP_VENDOR\n",
+        "expect": "pepecoin",
+    },
+    {
+        "name": "A2",
+        "kind": "module.ver",
+        "text": "WIN32_MODULE_COPYRIGHT=\u00a9 Pepecoin (MOZ_APP_VENDOR)\n",
+        "expect": "pepecoin",
+    },
+    {
+        "name": "C",
+        "kind": "branding.nsi",
+        "text": "!define CompanyName \"Pepecoin\" ; MOZ_APP_VENDOR\n",
+        "expect": "pepecoin",
+    },
+    {
+        "name": "E",
+        "kind": "branding.nsi",
+        "text": "!define PUB \"Pepecoin\" ; HKCU\\Software\n!define ARPPublisher \"${PUB}\"\n",
+        "expect": "pepecoin",
+    },
+    {
+        "name": "D2",
+        "kind": "branding.nsi",
+        "text": "!define CompanyName \\\n  \"pepecoin.surf\"\n",
+        "expect": "pepecoin",
+    },
+    {
+        "name": "empty-company",
+        "kind": "module.ver",
+        "text": "WIN32_MODULE_COMPANYNAME=\n",
+        "expect": "empty-or-mozilla",
+    },
+    {
+        "name": "arp-mozilla",
+        "kind": "branding.nsi",
+        "text": "!define ARPPublisher \"Mozilla\"\n",
+        "expect": "empty-or-mozilla",
+    },
+)
+
+
+def _load_fixture_text(fix):
+    # Prefer the on-disk fixture so the test case is inspectable; fall back to the
+    # inline text if the snapshot does not ship the fixtures directory.
+    name = {
+        "A": "A.module.ver",
+        "A2": "A2.module.ver",
+        "C": "C.branding.nsi",
+        "E": "E.branding.nsi",
+        "D2": "D2.branding.nsi",
+        "empty-company": "empty-company.module.ver",
+        "arp-mozilla": "arp-mozilla.branding.nsi",
+    }[fix["name"]]
+    path = os.path.join(ROOT, "greatdane/tests/fixtures/pepecoin-publisher", name)
+    if os.path.isfile(path):
+        return read(path)
+    return fix["text"]
+
+
+def fixture_violations(fix):
+    """Return the violation kind detected in a fixture, or None if it slipped through."""
+    text = _load_fixture_text(fix)
+    pepe = bool(has_pepecoin_publisher(text, publisher_file=True))
+    if fix["kind"] == "module.ver":
+        empty = is_empty_or_mozilla(module_ver_company(text))
+    elif fix["name"] == "arp-mozilla":
+        _company, publisher = branding_publisher_values(text)
+        empty = is_empty_or_mozilla(publisher)
+    else:
+        company, publisher = branding_publisher_values(text)
+        empty = is_empty_or_mozilla(company) or is_empty_or_mozilla(publisher)
+    if fix["expect"] == "pepecoin" and pepe:
+        return "pepecoin"
+    if fix["expect"] == "empty-or-mozilla" and empty:
+        return "empty-or-mozilla"
+    if pepe:
+        return "pepecoin"
+    if empty:
+        return "empty-or-mozilla"
+    return None
+
+
+def check_pepecoin_bypass_fixtures(bad):
+    for fix in PEPECOIN_BYPASS_FIXTURES:
+        got = fixture_violations(fix)
+        if got != fix["expect"]:
+            fail(
+                "bypass fixture %s was not rejected as %s (got %s): %r"
+                % (fix["name"], fix["expect"], got, fix["text"]),
+                bad,
+            )
+        else:
+            pass_("bypass fixture %s correctly rejected (%s)" % (fix["name"], fix["expect"]))
 
 
 def check_shared_nsh(bad):
@@ -576,7 +794,7 @@ def check_shared_nsh(bad):
         fail("shared.nsh official Publisher Mozilla fallback is missing", bad)
     elif "TODO-OWNER" not in text:
         fail("shared.nsh is missing a TODO-OWNER marker on the Add/Remove Programs publisher", bad)
-    elif has_pepecoin_publisher(text):
+    elif has_pepecoin_publisher(text, publisher_file=True):
         fail("shared.nsh still has a Pepecoin publisher string", bad)
     else:
         pass_("shared.nsh Add/Remove Programs Publisher is ${ARPPublisher} when defined, else Mozilla; TODO-OWNER present")
@@ -592,6 +810,7 @@ def main():
     check_branding_nsi(bad)
     check_shared_nsh(bad)
     check_no_pepecoin_publisher(bad)
+    check_pepecoin_bypass_fixtures(bad)
     check_sync_promo(bad)
     check_bookmarks(bad)
     check_filenames(bad)
