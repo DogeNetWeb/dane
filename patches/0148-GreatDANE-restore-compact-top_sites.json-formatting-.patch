@@ -1,0 +1,369 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 21:01:55 -0600
+Subject: [PATCH 148/155] GreatDANE: restore compact top_sites.json formatting
+ (round 5b)
+
+5A-L4: rewrite the 5a tile swap (drop pepecoin.surf and dogecoin.surf,
+add dane.surf between ctrip.com and duckduckgo.com, keep greatdane.doge)
+as a minimal diff against the compact upstream-style domains arrays.
+Semantics are unchanged.
+---
+ .../topsites/content/tippytop/top_sites.json  | 171 +++++-------------
+ 1 file changed, 42 insertions(+), 129 deletions(-)
+
+diff --git a/browser/components/topsites/content/tippytop/top_sites.json b/browser/components/topsites/content/tippytop/top_sites.json
+index a94dc25..9be550b 100644
+--- a/browser/components/topsites/content/tippytop/top_sites.json
++++ b/browser/components/topsites/content/tippytop/top_sites.json
+@@ -1,31 +1,21 @@
+ [
+   {
+-    "domains": [
+-      "adidas.co.uk",
+-      "adidas.de",
+-      "adidas.fr"
+-    ],
++    "domains": ["adidas.co.uk", "adidas.de", "adidas.fr"],
+     "image_url": "images/adidas@2x.png",
+     "favicon_url": "favicons/adidas.png"
+   },
+   {
+-    "domains": [
+-      "addons.mozilla.org"
+-    ],
++    "domains": ["addons.mozilla.org"],
+     "image_url": "images/addons-mozilla@2x.png",
+     "favicon_url": "favicons/addons-mozilla.png"
+   },
+   {
+-    "domains": [
+-      "aliexpress.com"
+-    ],
++    "domains": ["aliexpress.com"],
+     "image_url": "images/aliexpress-com@2x.png",
+     "favicon_url": "favicons/aliexpress-com.ico"
+   },
+   {
+-    "domains": [
+-      "allegro.pl"
+-    ],
++    "domains": ["allegro.pl"],
+     "image_url": "images/allegro-pl@2x.png",
+     "favicon_url": "favicons/allegro-pl.ico"
+   },
+@@ -55,58 +45,42 @@
+     "favicon_url": "favicons/amazon.ico"
+   },
+   {
+-    "domains": [
+-      "apnews.com"
+-    ],
++    "domains": ["apnews.com"],
+     "image_url": "images/apnews@2x.png",
+     "favicon_url": "favicons/apnews.png"
+   },
+   {
+-    "domains": [
+-      "avito.ru"
+-    ],
++    "domains": ["avito.ru"],
+     "image_url": "images/avito-ru@2x.png",
+     "favicon_url": "favicons/avito-ru.ico"
+   },
+   {
+-    "domains": [
+-      "baidu.com"
+-    ],
++    "domains": ["baidu.com"],
+     "image_url": "images/baidu-com@2x.png",
+     "favicon_url": "favicons/baidu-com.png"
+   },
+   {
+-    "domains": [
+-      "bbc.co.uk"
+-    ],
++    "domains": ["bbc.co.uk"],
+     "image_url": "images/bbc-uk@2x.png",
+     "favicon_url": "favicons/bbc-uk.ico"
+   },
+   {
+-    "domains": [
+-      "bing.com"
+-    ],
++    "domains": ["bing.com"],
+     "image_url": "images/bing-com@2x.svg",
+     "favicon_url": "favicons/bing-com.ico"
+   },
+   {
+-    "domains": [
+-      "ctrip.com"
+-    ],
++    "domains": ["ctrip.com"],
+     "image_url": "images/ctrip-com@2x.png",
+     "favicon_url": "favicons/ctrip-com.ico"
+   },
+   {
+-    "domains": [
+-      "dane.surf"
+-    ],
++    "domains": ["dane.surf"],
+     "image_url": "images/dane-surf@2x.png",
+     "favicon_url": "favicons/dane-surf.png"
+   },
+   {
+-    "domains": [
+-      "duckduckgo.com"
+-    ],
++    "domains": ["duckduckgo.com"],
+     "image_url": "images/duckduckgo-com@2x.svg",
+     "favicon_url": "favicons/duckduckgo-com.ico"
+   },
+@@ -133,200 +107,143 @@
+     "favicon_url": "favicons/ebay.ico"
+   },
+   {
+-    "domains": [
+-      "etsy.com"
+-    ],
++    "domains": ["etsy.com"],
+     "image_url": "images/etsy@2x.jpg",
+     "favicon_url": "favicons/etsy.ico"
+   },
+   {
+-    "domains": [
+-      "facebook.com"
+-    ],
++    "domains": ["facebook.com"],
+     "image_url": "images/facebook-com@2x.png",
+     "favicon_url": "favicons/facebook-com.png"
+   },
+   {
+-    "domains": [
+-      "geico.com"
+-    ],
++    "domains": ["geico.com"],
+     "image_url": "images/geico@2x.jpg",
+     "favicon_url": "favicons/geico.png"
+   },
+   {
+-    "domains": [
+-      "google.com"
+-    ],
++    "domains": ["google.com"],
+     "image_url": "images/google-com@2x.png",
+     "favicon_url": "favicons/google-com.ico"
+   },
+   {
+-    "domains": [
+-      "greatdane.doge"
+-    ],
++    "domains": ["greatdane.doge"],
+     "image_url": "images/greatdane-doge@2x.png",
+     "favicon_url": "favicons/greatdane-doge.png"
+   },
+   {
+-    "domains": [
+-      "grokipedia.com"
+-    ],
++    "domains": ["grokipedia.com"],
+     "image_url": "images/grokipedia-com-letter@2x.png",
+     "favicon_url": "favicons/grokipedia-com-letter.png",
+     "background_color": "#4a5568"
+   },
+   {
+-    "domains": [
+-      "hrblock.com"
+-    ],
++    "domains": ["hrblock.com"],
+     "image_url": "images/hrblock@2x.png",
+     "favicon_url": "favicons/hrblock.ico"
+   },
+   {
+-    "domains": [
+-      "ifeng.com"
+-    ],
++    "domains": ["ifeng.com"],
+     "image_url": "images/ifeng-com@2x.png",
+     "favicon_url": "favicons/ifeng-com.ico"
+   },
+   {
+-    "domains": [
+-      "iqiyi.com"
+-    ],
++    "domains": ["iqiyi.com"],
+     "image_url": "images/iqiyi-com@2x.png",
+     "favicon_url": "favicons/iqiyi-com.ico"
+   },
+   {
+-    "domains": [
+-      "leboncoin.fr"
+-    ],
++    "domains": ["leboncoin.fr"],
+     "image_url": "images/leboncoin-fr@2x.png",
+     "favicon_url": "favicons/leboncoin-fr.png"
+   },
+   {
+-    "domains": [
+-      "lemonde.fr"
+-    ],
++    "domains": ["lemonde.fr"],
+     "image_url": "images/lemonde@2x.png",
+     "favicon_url": "favicons/lemonde.png"
+   },
+   {
+-    "domains": [
+-      "nike.com"
+-    ],
++    "domains": ["nike.com"],
+     "image_url": "images/nike@2x.jpg",
+     "favicon_url": "favicons/nike.ico"
+   },
+   {
+-    "domains": [
+-      "ndtv.com"
+-    ],
++    "domains": ["ndtv.com"],
+     "image_url": "images/ndtv@2x.png",
+     "favicon_url": "favicons/ndtv.png"
+   },
+   {
+-    "domains": [
+-      "ok.ru"
+-    ],
++    "domains": ["ok.ru"],
+     "image_url": "images/ok-ru@2x.png",
+     "favicon_url": "favicons/ok-ru.ico"
+   },
+   {
+-    "domains": [
+-      "olx.pl"
+-    ],
++    "domains": ["olx.pl"],
+     "image_url": "images/olx-pl@2x.png",
+     "favicon_url": "favicons/olx-pl.ico"
+   },
+   {
+-    "domains": [
+-      "reddit.com"
+-    ],
++    "domains": ["reddit.com"],
+     "image_url": "images/reddit-com@2x.png",
+     "favicon_url": "favicons/reddit-com.png"
+   },
+   {
+-    "domains": [
+-      "samsung.com"
+-    ],
++    "domains": ["samsung.com"],
+     "image_url": "images/samsung@2x.jpg",
+     "favicon_url": "favicons/samsung.ico"
+   },
+   {
+-    "domains": [
+-      "tagesschau.de"
+-    ],
++    "domains": ["tagesschau.de"],
+     "image_url": "images/tagesschau@2x.png",
+     "favicon_url": "favicons/tagesschau.png"
+   },
+   {
+-    "domains": [
+-      "turbotax.intuit.com"
+-    ],
++    "domains": ["turbotax.intuit.com"],
+     "image_url": "images/turbotax@2x.jpg",
+     "favicon_url": "favicons/turbotax.png"
+   },
+   {
+-    "domains": [
+-      "twitter.com"
+-    ],
++    "domains": ["twitter.com"],
+     "image_url": "images/twitter-com@2x.png",
+     "favicon_url": "favicons/twitter-com.ico"
+   },
+   {
+-    "domains": [
+-      "x.com"
+-    ],
++    "domains": ["x.com"],
+     "image_url": "images/x-com@2x.png",
+     "favicon_url": "favicons/x-com.ico"
+   },
+   {
+-    "domains": [
+-      "vk.com"
+-    ],
++    "domains": ["vk.com"],
+     "image_url": "images/vk-com@2x.png",
+     "favicon_url": "favicons/vk-com.ico"
+   },
+   {
+-    "domains": [
+-      "vodafone.co.uk"
+-    ],
++    "domains": ["vodafone.co.uk"],
+     "image_url": "images/vodafone@2x.jpg",
+     "favicon_url": "favicons/vodafone.png"
+   },
+   {
+-    "domains": [
+-      "weibo.com"
+-    ],
++    "domains": ["weibo.com"],
+     "image_url": "images/weibo-com@2x.png",
+     "favicon_url": "favicons/weibo-com.ico"
+   },
+   {
+-    "domains": [
+-      "wikipedia.org"
+-    ],
++    "domains": ["wikipedia.org"],
+     "image_url": "images/wikipedia-org@2x.png",
+     "favicon_url": "favicons/wikipedia-org.ico"
+   },
+   {
+-    "domains": [
+-      "wix.com"
+-    ],
++    "domains": ["wix.com"],
+     "image_url": "images/wix@2x.jpg",
+     "favicon_url": "favicons/wix.ico"
+   },
+   {
+-    "domains": [
+-      "wykop.pl"
+-    ],
++    "domains": ["wykop.pl"],
+     "image_url": "images/wykop-pl@2x.png",
+     "favicon_url": "favicons/wykop-pl.png"
+   },
+   {
+-    "domains": [
+-      "yandex.com",
+-      "yandex.com.tr"
+-    ],
++    "domains": ["yandex.com", "yandex.com.tr"],
+     "image_url": "images/yandex-com@2x.png",
+     "favicon_url": "favicons/yandex-com.png"
+   },
+@@ -342,16 +259,12 @@
+     "favicon_url": "favicons/yandex-ru.png"
+   },
+   {
+-    "domains": [
+-      "youtube.com"
+-    ],
++    "domains": ["youtube.com"],
+     "image_url": "images/youtube-com@2x.png",
+     "favicon_url": "favicons/youtube-com.png"
+   },
+   {
+-    "domains": [
+-      "zhihu.com"
+-    ],
++    "domains": ["zhihu.com"],
+     "image_url": "images/zhihu-com@2x.png",
+     "favicon_url": "favicons/zhihu-com.ico"
+   }
