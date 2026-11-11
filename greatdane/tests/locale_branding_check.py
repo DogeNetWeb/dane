@@ -202,21 +202,38 @@ def check_fixtures(bad):
         pass_("xx-MISSING + Firefox: no maintenance line added")
 
     # NGD L4: CRLF input must keep CR on the replaced line.
-    crlf_path = os.path.join(FIXTURES, "xx-CRLF.ini")
-    crlf_raw = open(crlf_path, "rb").read()
+    # Synthesize CRLF from xx-TEST.ini at runtime so format-patch / git-am
+    # cannot flatten a checked-in CRLF fixture to LF.
+    import tempfile
+
+    test_raw = open(os.path.join(FIXTURES, "xx-TEST.ini"), "rb").read()
+    test_lf = test_raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+    crlf_raw = test_lf.replace(b"\n", b"\r\n")
     if b"\r\n" not in crlf_raw or b"MozillaMaintenanceDescription=" not in crlf_raw:
-        fail("xx-CRLF.ini fixture is missing CRLF endings or the maintenance key", bad)
+        fail("could not build a CRLF input from xx-TEST.ini", bad)
     else:
-        dane_crlf = run_generate(crlf_path, "Dane")
+        fd, crlf_path = tempfile.mkstemp(prefix="xx-CRLF-", suffix=".ini")
+        try:
+            os.write(fd, crlf_raw)
+            os.close(fd)
+            fd = None
+            dane_crlf = run_generate(crlf_path, "Dane")
+        finally:
+            if fd is not None:
+                os.close(fd)
+            try:
+                os.remove(crlf_path)
+            except OSError:
+                pass
         dane_val = (maint_value(dane_crlf) or "").rstrip("\r")
         if "\r\n" not in dane_crlf:
-            fail("xx-CRLF + Dane: generator dropped CR, output has no CRLF", bad)
+            fail("CRLF + Dane: generator dropped CR, output has no CRLF", bad)
         elif dane_val != DANE_MAINT:
-            fail("xx-CRLF + Dane: maintenance value mismatch: %r" % dane_val, bad)
+            fail("CRLF + Dane: maintenance value mismatch: %r" % dane_val, bad)
         elif FORBIDDEN_MAINT.search(dane_val):
-            fail("xx-CRLF + Dane: leftover Firefox in maintenance value", bad)
+            fail("CRLF + Dane: leftover Firefox in maintenance value", bad)
         else:
-            pass_("xx-CRLF + Dane: MozillaMaintenanceDescription replaced and CRLF preserved")
+            pass_("CRLF + Dane: MozillaMaintenanceDescription replaced and CRLF preserved")
 
 
 def ftl_value(text, key):

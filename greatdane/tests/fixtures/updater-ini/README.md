@@ -16,8 +16,8 @@ the product.
 
 xx-TEST.ini and xx-MISSING.ini are synthetic cases (a leftover "Mozilla Firefox"
 line, and a file with no MozillaMaintenanceDescription key).
-xx-CRLF.ini is xx-TEST.ini rewritten with CRLF line endings, to check that
-generate_ini.py preserves `\r` (NGD L4).
+The NGD L4 CRLF case is synthesized at runtime from xx-TEST.ini so a checked-in
+CRLF fixture cannot be flattened by format-patch / git-am.
 
 If a real firefox-l10n checkout at this revision is available, set
 `GREATDANE_L10N_CHECKOUT` to its root and `locale_branding_check.py` will

@@ -1,0 +1,96 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 18:08:43 -0600
+Subject: [PATCH 127/144] GreatDANE: synthesize the updater.ini CRLF fixture at
+ runtime (round 4f)
+
+xx-CRLF.ini was a checked-in CRLF copy of xx-TEST.ini for NGD L4. format-patch
+and git-am flatten it to LF, so a fresh-repo roundtrip no longer matched the
+source tree. locale_branding_check.py now builds the CRLF input from
+xx-TEST.ini at runtime. The generate_ini.py regex fix is unchanged: it still
+must not consume CR.
+
+Prepared only. Not built, signed, notarized or published.
+---
+ .../tests/fixtures/updater-ini/README.md      |  4 +--
+ .../tests/fixtures/updater-ini/xx-CRLF.ini    |  4 ---
+ greatdane/tests/locale_branding_check.py      | 33 ++++++++++++++-----
+ 3 files changed, 27 insertions(+), 14 deletions(-)
+ delete mode 100644 greatdane/tests/fixtures/updater-ini/xx-CRLF.ini
+
+diff --git a/greatdane/tests/fixtures/updater-ini/README.md b/greatdane/tests/fixtures/updater-ini/README.md
+index 9cd435e1e5..7ec976920a 100644
+--- a/greatdane/tests/fixtures/updater-ini/README.md
++++ b/greatdane/tests/fixtures/updater-ini/README.md
+@@ -16,8 +16,8 @@ the product.
+ 
+ xx-TEST.ini and xx-MISSING.ini are synthetic cases (a leftover "Mozilla Firefox"
+ line, and a file with no MozillaMaintenanceDescription key).
+-xx-CRLF.ini is xx-TEST.ini rewritten with CRLF line endings, to check that
+-generate_ini.py preserves `\r` (NGD L4).
++The NGD L4 CRLF case is synthesized at runtime from xx-TEST.ini so a checked-in
++CRLF fixture cannot be flattened by format-patch / git-am.
+ 
+ If a real firefox-l10n checkout at this revision is available, set
+ `GREATDANE_L10N_CHECKOUT` to its root and `locale_branding_check.py` will
+diff --git a/greatdane/tests/fixtures/updater-ini/xx-CRLF.ini b/greatdane/tests/fixtures/updater-ini/xx-CRLF.ini
+deleted file mode 100644
+index a139f9102f..0000000000
+--- a/greatdane/tests/fixtures/updater-ini/xx-CRLF.ini
++++ /dev/null
+@@ -1,4 +0,0 @@
+-[Strings]
+-TitleText=%MOZ_APP_DISPLAYNAME% Update
+-InfoText=%MOZ_APP_DISPLAYNAME% is installing your updates and will start in a few moments…
+-MozillaMaintenanceDescription=Please keep Mozilla Firefox and Firefox current.
+diff --git a/greatdane/tests/locale_branding_check.py b/greatdane/tests/locale_branding_check.py
+index c4d923aa03..e4ee51cbdb 100644
+--- a/greatdane/tests/locale_branding_check.py
++++ b/greatdane/tests/locale_branding_check.py
+@@ -202,21 +202,38 @@ def check_fixtures(bad):
+         pass_("xx-MISSING + Firefox: no maintenance line added")
+ 
+     # NGD L4: CRLF input must keep CR on the replaced line.
+-    crlf_path = os.path.join(FIXTURES, "xx-CRLF.ini")
+-    crlf_raw = open(crlf_path, "rb").read()
++    # Synthesize CRLF from xx-TEST.ini at runtime so format-patch / git-am
++    # cannot flatten a checked-in CRLF fixture to LF.
++    import tempfile
++
++    test_raw = open(os.path.join(FIXTURES, "xx-TEST.ini"), "rb").read()
++    test_lf = test_raw.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
++    crlf_raw = test_lf.replace(b"\n", b"\r\n")
+     if b"\r\n" not in crlf_raw or b"MozillaMaintenanceDescription=" not in crlf_raw:
+-        fail("xx-CRLF.ini fixture is missing CRLF endings or the maintenance key", bad)
++        fail("could not build a CRLF input from xx-TEST.ini", bad)
+     else:
+-        dane_crlf = run_generate(crlf_path, "Dane")
++        fd, crlf_path = tempfile.mkstemp(prefix="xx-CRLF-", suffix=".ini")
++        try:
++            os.write(fd, crlf_raw)
++            os.close(fd)
++            fd = None
++            dane_crlf = run_generate(crlf_path, "Dane")
++        finally:
++            if fd is not None:
++                os.close(fd)
++            try:
++                os.remove(crlf_path)
++            except OSError:
++                pass
+         dane_val = (maint_value(dane_crlf) or "").rstrip("\r")
+         if "\r\n" not in dane_crlf:
+-            fail("xx-CRLF + Dane: generator dropped CR, output has no CRLF", bad)
++            fail("CRLF + Dane: generator dropped CR, output has no CRLF", bad)
+         elif dane_val != DANE_MAINT:
+-            fail("xx-CRLF + Dane: maintenance value mismatch: %r" % dane_val, bad)
++            fail("CRLF + Dane: maintenance value mismatch: %r" % dane_val, bad)
+         elif FORBIDDEN_MAINT.search(dane_val):
+-            fail("xx-CRLF + Dane: leftover Firefox in maintenance value", bad)
++            fail("CRLF + Dane: leftover Firefox in maintenance value", bad)
+         else:
+-            pass_("xx-CRLF + Dane: MozillaMaintenanceDescription replaced and CRLF preserved")
++            pass_("CRLF + Dane: MozillaMaintenanceDescription replaced and CRLF preserved")
+ 
+ 
+ def ftl_value(text, key):
