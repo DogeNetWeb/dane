@@ -1,0 +1,123 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Tue, 10 Nov 2026 18:04:10 -0600
+Subject: [PATCH 121/144] GreatDANE: retarget unofficial About Terms, Privacy,
+ and help links; restore stock community strings (round 4f)
+
+Frank leftovers 1-4, and NGD 4d M1 / L1. The approved Dane About paragraph in
+dane-community-2 / dane-community-exp is unchanged.
+
+Under #ifndef MOZ_OFFICIAL_BRANDING, aboutDialog.xhtml now points:
+- Terms of Use at https://dane.surf/support/ (dane.surf/terms/ returned 404 on a
+  public HTTPS check, 2026-11-10, America/Chicago; the coordinator asked for
+  support/terms, so support is the existing Dane page)
+- Privacy Notice at https://dane.surf/privacy/ (verified 200)
+- Get involved at https://dane.surf/support/
+- Mozilla.org community links at https://www.mozilla.org/ with firefox-browser
+  UTMs stripped (destination stays as factual credit)
+
+The Donate link is dropped on unofficial builds only: nowon has no donate page,
+and a new dane-helpus string in brand.ftl is "Want to help? Get involved!"
+Official branding keeps the stock helpus string, the Mozilla Foundation donate
+URL, Firefox terms/privacy URLs, and the firefox-browser UTM community links.
+
+en-US aboutDialog.ftl community-exp / community-2 are restored to the upstream
+ESR153 stock wording (vendor-short-name / "is designed by"). Official en-US
+builds must not say "Firefox is not officially associated with Mozilla" (NGD L1).
+Dane builds continue to use the dane-* IDs. helpus in this file is left stock.
+
+Prepared only. Not built, signed, notarized or published.
+---
+ browser/base/content/aboutDialog.xhtml        | 19 +++++++++++++++++++
+ .../greatdane/locales/en-US/brand.ftl         |  4 ++++
+ browser/locales/en-US/browser/aboutDialog.ftl | 11 +++++------
+ 3 files changed, 28 insertions(+), 6 deletions(-)
+
+diff --git a/browser/base/content/aboutDialog.xhtml b/browser/base/content/aboutDialog.xhtml
+index 56ffd5de91..e930fedaa0 100644
+--- a/browser/base/content/aboutDialog.xhtml
++++ b/browser/base/content/aboutDialog.xhtml
+@@ -126,7 +126,11 @@
+                          data-l10n-id="community-exp"
+ #endif
+                          >
++#ifndef MOZ_OFFICIAL_BRANDING
++              <label is="text-link" href="https://www.mozilla.org/" data-l10n-name="community-exp-mozillaLink"/>
++#else
+               <label is="text-link" href="https://www.mozilla.org/?utm_source=firefox-browser&#38;utm_medium=firefox-desktop&#38;utm_campaign=about-dialog" data-l10n-name="community-exp-mozillaLink"/>
++#endif
+               <label is="text-link" useoriginprincipal="true" href="about:credits" data-l10n-name="community-exp-creditsLink"/>
+             </description>
+           </vbox>
+@@ -137,21 +141,36 @@
+                        data-l10n-id="community-2"
+ #endif
+                        >
++#ifndef MOZ_OFFICIAL_BRANDING
++            <label is="text-link" href="https://www.mozilla.org/" data-l10n-name="community-mozillaLink"/>
++#else
+             <label is="text-link" href="https://www.mozilla.org/?utm_source=firefox-browser&#38;utm_medium=firefox-desktop&#38;utm_campaign=about-dialog" data-l10n-name="community-mozillaLink"/>
++#endif
+             <label is="text-link" useoriginprincipal="true" href="about:credits" data-l10n-name="community-creditsLink"/>
+           </description>
++#ifndef MOZ_OFFICIAL_BRANDING
++          <description class="text-blurb" id="contributeDesc" data-l10n-id="dane-helpus">
++            <label is="text-link" href="https://dane.surf/support/" data-l10n-name="helpus-getInvolvedLink"/>
++          </description>
++#else
+           <description class="text-blurb" id="contributeDesc" data-l10n-id="helpus">
+             <label is="text-link" href="https://foundation.mozilla.org/?form=firefox-about" data-l10n-name="helpus-donateLink"/>
+             <label is="text-link" href="https://www.mozilla.org/contribute/?utm_source=firefox-browser&#38;utm_medium=firefox-desktop&#38;utm_campaign=about-dialog" data-l10n-name="helpus-getInvolvedLink"/>
+           </description>
++#endif
+         </vbox>
+       </vbox>
+     </hbox>
+     <vbox id="bottomBox">
+       <hbox pack="center">
+         <label is="text-link" class="bottom-link" useoriginprincipal="true" href="about:license" data-l10n-id="bottomLinks-license"/>
++#ifndef MOZ_OFFICIAL_BRANDING
++        <label is="text-link" class="bottom-link" href="https://dane.surf/support/" data-l10n-id="bottom-links-terms"/>
++        <label is="text-link" class="bottom-link" href="https://dane.surf/privacy/" data-l10n-id="bottom-links-privacy"/>
++#else
+         <label is="text-link" class="bottom-link" href="https://www.mozilla.org/about/legal/terms/firefox/" data-l10n-id="bottom-links-terms"/>
+         <label is="text-link" class="bottom-link" href="https://www.mozilla.org/privacy/firefox/?utm_source=firefox-browser&#38;utm_medium=firefox-desktop&#38;utm_campaign=about-dialog" data-l10n-id="bottom-links-privacy"/>
++#endif
+       </hbox>
+       <description id="trademark" data-l10n-id="trademarkInfo"></description>
+     </vbox>
+diff --git a/browser/branding/greatdane/locales/en-US/brand.ftl b/browser/branding/greatdane/locales/en-US/brand.ftl
+index ed27c218e1..567b94a84a 100644
+--- a/browser/branding/greatdane/locales/en-US/brand.ftl
++++ b/browser/branding/greatdane/locales/en-US/brand.ftl
+@@ -37,3 +37,7 @@ trademarkInfo = Firefox and Mozilla are trademarks of Mozilla.org in the U.S. an
+ dane-community-exp = { -brand-short-name } is built from Mozilla's open source Firefox ESR web browser. { -brand-short-name } is not officially associated with Mozilla or its products. <label data-l10n-name="community-exp-mozillaLink">Mozilla</label> is a <label data-l10n-name="community-exp-creditsLink">global community</label> working together to keep the Web open, public and accessible to all.
+ 
+ dane-community-2 = { -brand-short-name } is built from Mozilla's open source Firefox ESR web browser. { -brand-short-name } is not officially associated with Mozilla or its products. <label data-l10n-name="community-mozillaLink">Mozilla</label> is a <label data-l10n-name="community-creditsLink">global community</label> working together to keep the Web open, public and accessible to all.
++
++# Unofficial About "Want to help?" line. Official branding keeps helpus, including
++# the donate link. Dane has no donate page, so unofficial builds drop it.
++dane-helpus = Want to help? <label data-l10n-name="helpus-getInvolvedLink">Get involved!</label>
+diff --git a/browser/locales/en-US/browser/aboutDialog.ftl b/browser/locales/en-US/browser/aboutDialog.ftl
+index 911a166df3..8060b535ac 100644
+--- a/browser/locales/en-US/browser/aboutDialog.ftl
++++ b/browser/locales/en-US/browser/aboutDialog.ftl
+@@ -76,13 +76,12 @@ warningDesc-version = { -brand-short-name } is experimental and may be unstable.
+ aboutdialog-help-user = { -brand-product-name } Help
+ aboutdialog-submit-feedback = Submit Feedback
+ 
+-# Proposed wording (round 4d). Pending coordinator/NGD review. Dane builds use
+-# dane-community-exp from branding/brand.ftl; this en-US string is kept in sync.
+-community-exp = { -brand-short-name } is built from Mozilla's open source Firefox ESR web browser. { -brand-short-name } is not officially associated with Mozilla or its products. <label data-l10n-name="community-exp-mozillaLink">Mozilla</label> is a <label data-l10n-name="community-exp-creditsLink">global community</label> working together to keep the Web open, public and accessible to all.
++# Upstream stock strings (ESR153). Dane builds use dane-community-exp /
++# dane-community-2 from branding/brand.ftl. Official branding must keep these
++# IDs; they must not carry the Dane disassociation sentence (NGD L1).
++community-exp = <label data-l10n-name="community-exp-mozillaLink">{ -vendor-short-name }</label> is a <label data-l10n-name="community-exp-creditsLink">global community</label> working together to keep the Web open, public and accessible to all.
+ 
+-# Proposed wording (round 4d). Pending coordinator/NGD review. Dane builds use
+-# dane-community-2 from branding/brand.ftl; this en-US string is kept in sync.
+-community-2 = { -brand-short-name } is built from Mozilla's open source Firefox ESR web browser. { -brand-short-name } is not officially associated with Mozilla or its products. <label data-l10n-name="community-mozillaLink">Mozilla</label> is a <label data-l10n-name="community-creditsLink">global community</label> working together to keep the Web open, public and accessible to all.
++community-2 = { -brand-short-name } is designed by <label data-l10n-name="community-mozillaLink">{ -vendor-short-name }</label>, a <label data-l10n-name="community-creditsLink">global community</label> working together to keep the Web open, public and accessible to all.
+ 
+ helpus = Want to help? <label data-l10n-name="helpus-donateLink">Make a donation</label> or <label data-l10n-name="helpus-getInvolvedLink">get involved!</label>
+ 
