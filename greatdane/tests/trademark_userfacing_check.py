@@ -19,15 +19,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pepecoin_publisher import (
     MakensisError,
     MakensisMissing,
+    ModuleVerError,
     branding_publisher_values,
     is_empty_or_mozilla_publisher,
+    is_printable_ascii,
     makensis_path,
-    makensis_version,
+    makensis_report,
     manifest_has_pepecoin,
     mentions_pepecoin,
     module_ver_company,
     module_ver_copyright,
-    parse_module_ver,
     shared_nsh_has_pepecoin,
 )
 
@@ -273,8 +274,12 @@ def check_module_ver(bad):
         found += 1
         raw = open(path, "rb").read()
         text = raw.decode("latin-1")
-        company = module_ver_company(path)
-        copyright = module_ver_copyright(path) or ""
+        try:
+            company = module_ver_company(path)
+            copyright = module_ver_copyright(path) or ""
+        except ModuleVerError as exc:
+            fail("%s module.ver parser failed: %s" % (rel, exc), bad)
+            continue
         if mentions_pepecoin(company) or mentions_pepecoin(copyright):
             fail("%s still has a Pepecoin publisher/company/copyright string" % rel, bad)
         elif "TODO-OWNER" not in text:
@@ -291,6 +296,8 @@ def check_module_ver(bad):
             fail("%s copyright is missing the Latin-1 copyright sign" % rel, bad)
         elif is_empty_or_mozilla_publisher(company):
             fail("%s WIN32_MODULE_COMPANYNAME is empty or contains 'mozilla': %r" % (rel, company), bad)
+        elif not is_printable_ascii(company):
+            fail("%s WIN32_MODULE_COMPANYNAME is not printable ASCII: %r" % (rel, company), bad)
         else:
             pass_("%s has TODO-OWNER publisher placeholders, no Pepecoin, Mozilla.org trademark credit kept" % rel)
     if found == 0:
@@ -377,8 +384,10 @@ def check_branding_nsi(bad):
             fail("branding.nsi still has a Pepecoin publisher/company define (makensis -PPO: CompanyName=%r ARPPublisher=%r)" % (company, publisher), bad)
         elif is_empty_or_mozilla_publisher(company) or is_empty_or_mozilla_publisher(publisher):
             fail("branding.nsi CompanyName/ARPPublisher is empty or contains 'mozilla': CompanyName=%r ARPPublisher=%r" % (company, publisher), bad)
+        elif not is_printable_ascii(company) or not is_printable_ascii(publisher):
+            fail("branding.nsi CompanyName/ARPPublisher is not printable ASCII: CompanyName=%r ARPPublisher=%r" % (company, publisher), bad)
         else:
-            pass_("branding.nsi has TODO-OWNER publisher placeholders, ARPPublisher, stub cert TODOs, and dane.surf URLs (makensis %s)" % (makensis_version() or "unknown"))
+            pass_("branding.nsi has TODO-OWNER publisher placeholders, ARPPublisher, stub cert TODOs, and dane.surf URLs (makensis %s)" % (makensis_report() or "unknown"))
 
 
 def check_sync_promo(bad):
@@ -547,7 +556,11 @@ def check_no_pepecoin_publisher(bad):
             text = raw.decode("latin-1")
         pepe = False
         if rel.endswith("module.ver"):
-            pepe = mentions_pepecoin(module_ver_company(path)) or mentions_pepecoin(module_ver_copyright(path))
+            try:
+                pepe = mentions_pepecoin(module_ver_company(path)) or mentions_pepecoin(module_ver_copyright(path))
+            except ModuleVerError as exc:
+                fail("%s module.ver parser failed: %s" % (rel, exc), bad)
+                continue
         elif rel.endswith("branding.nsi"):
             try:
                 company, publisher = branding_publisher_values(path)
@@ -574,9 +587,8 @@ def check_no_pepecoin_publisher(bad):
 
 
 
-# NGD 4h/4i fixtures plus 4j L1–L8 (cases NGD reproduced on 4i). Each must be
-# rejected using makensis -PPO / parse_module_ver and normalization. The real
-# tree must still pass.
+# NGD 4h/4i fixtures, 4j L1–L8, and 4k F1–F4. Each must be rejected.
+# The real tree must still pass.
 FIXTURE_DIR = os.path.join(ROOT, "greatdane/tests/fixtures/pepecoin-publisher")
 
 # name, kind ('module.ver' or 'branding.nsi'), relative path, expected verdict
@@ -605,6 +617,13 @@ PEPECOIN_BYPASS_FIXTURES = (
     ("L7-N4", "branding.nsi", "L7-N4-spaces.branding.nsi", "pepecoin"),
     ("L8-foundation", "branding.nsi", "L8-mozilla-foundation.branding.nsi", "empty-or-mozilla"),
     ("L8-corporation", "branding.nsi", "L8-mozilla-corporation.branding.nsi", "empty-or-mozilla"),
+    # 4k F1–F4
+    ("F1-if", "module.ver", "F1-if.module.ver", "forbidden-directive"),
+    ("F1-undefined-at", "module.ver", "F1-undefined-at.module.ver", "undefined-subst"),
+    ("F2-system", "branding.nsi", "F2-system.branding.nsi", "forbidden-command"),
+    ("F2-appendfile", "branding.nsi", "F2-appendfile.branding.nsi", "forbidden-command"),
+    ("F3-ifdef", "branding.nsi", "F3-ifdef.branding.nsi", "forbidden-if"),
+    ("F4-non-ascii", "branding.nsi", "F4-non-ascii.branding.nsi", "non-ascii"),
 )
 
 
@@ -613,39 +632,57 @@ def fixture_violations(name, kind, rel, expect):
     path = os.path.join(FIXTURE_DIR, rel)
     if not os.path.isfile(path):
         return None
-    pepe = False
-    empty = False
-    if kind == "module.ver":
-        company = module_ver_company(path)
-        copyright = module_ver_copyright(path)
-        pepe = mentions_pepecoin(company) or mentions_pepecoin(copyright)
-        empty = is_empty_or_mozilla_publisher(company)
-    else:
-        company, publisher = branding_publisher_values(path)
-        pepe = mentions_pepecoin(company) or mentions_pepecoin(publisher)
-        empty = is_empty_or_mozilla_publisher(company) or is_empty_or_mozilla_publisher(publisher)
-        # arp-mozilla / L8: a missing CompanyName is empty, but the expected
-        # verdict may still be empty-or-mozilla from ARPPublisher alone.
+    try:
+        if kind == "module.ver":
+            company = module_ver_company(path)
+            copyright = module_ver_copyright(path)
+            pepe = mentions_pepecoin(company) or mentions_pepecoin(copyright)
+            empty = is_empty_or_mozilla_publisher(company)
+            non_ascii = not is_printable_ascii(company)
+        else:
+            company, publisher = branding_publisher_values(path)
+            pepe = mentions_pepecoin(company) or mentions_pepecoin(publisher)
+            empty = is_empty_or_mozilla_publisher(company) or is_empty_or_mozilla_publisher(publisher)
+            non_ascii = not is_printable_ascii(company) or not is_printable_ascii(publisher)
+    except ModuleVerError as exc:
+        msg = str(exc)
+        if "undefined" in msg:
+            return "undefined-subst"
+        return "forbidden-directive"
+    except MakensisError as exc:
+        msg = str(exc)
+        if "refused to invoke makensis" in msg and any(
+            token in msg for token in ("!ifdef", "!ifndef", " contains !if")
+        ):
+            return "forbidden-if"
+        if "refused to invoke makensis" in msg:
+            return "forbidden-command"
+        raise
     if expect == "pepecoin" and pepe:
         return "pepecoin"
     if expect == "empty-or-mozilla" and empty:
         return "empty-or-mozilla"
+    if expect == "non-ascii" and non_ascii:
+        return "non-ascii"
     if pepe:
         return "pepecoin"
     if empty:
         return "empty-or-mozilla"
+    if non_ascii:
+        return "non-ascii"
     return None
 
 
 def check_pepecoin_bypass_fixtures(bad):
-    ver = makensis_version()
+    report = makensis_report()
     if not makensis_path():
         fail(
-            "makensis is required to evaluate NSIS publisher fixtures but was not found; not PASS",
+            "makensis is required to evaluate NSIS publisher fixtures but was not found "
+            "($MAKENSISU, ~/.mozbuild/nsis/bin/makensis, or PATH); not PASS",
             bad,
         )
         return
-    pass_("makensis -PPO available: %s" % (ver or "unknown"))
+    pass_("makensis -PPO available: %s" % report)
     for name, kind, rel, expect in PEPECOIN_BYPASS_FIXTURES:
         path = os.path.join(FIXTURE_DIR, rel)
         if not os.path.isfile(path):
@@ -653,7 +690,7 @@ def check_pepecoin_bypass_fixtures(bad):
             continue
         try:
             got = fixture_violations(name, kind, rel, expect)
-        except (MakensisMissing, MakensisError) as exc:
+        except (MakensisMissing, MakensisError, ModuleVerError) as exc:
             fail("bypass fixture %s: tool failed: %s" % (name, exc), bad)
             continue
         if got != expect:

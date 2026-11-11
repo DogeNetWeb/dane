@@ -4,10 +4,15 @@ Negative test cases for `trademark_userfacing_check.py` / `pepecoin_publisher.py
 They are not shipped in the product. Each fixture must be rejected. The real
 tree must pass.
 
-Round 4j resolves values with real tools (`makensis -PPO` for NSIS,
-vendored `create_rc.parse_module_ver` for module.ver) and then normalizes
-(NFKC, casefold, Cyrillic/Greek/Latin-accent lookalikes, drop zero-width
-and non-letters) before matching.
+Round 4j resolved values with `makensis -PPO` and a module.ver parser.
+Round 4k keeps that, but the module.ver parser is a reimplementation (not
+a vendored copy): it FAILs on any % directive other than %define/%include
+and on an undefined @X@ in company or copyright. makensis is refused if
+the include set contains compile-time command such as !system or
+!appendfile, or if branding.nsi contains !if*. Publisher values must be
+printable ASCII after resolution. Normalization (NFKC, casefold,
+lookalikes, drop zero-width and non-letters) is unchanged, except the
+wrong п→n map was removed.
 
 | File | Case | Must fail because |
 |---|---|---|
@@ -36,3 +41,10 @@ and non-letters) before matching.
 
 The official `shared.nsh` Publisher `"Mozilla"` fallback is not a fixture:
 it applies only when `ARPPublisher` is undefined, and it stays.
+
+| F1-if.module.ver | F1 `%if` / `%else` / `%endif` | forbidden % directive |
+| F1-undefined-at.module.ver | F1 `Pepe@NOPE@` | undefined @X@ in company |
+| F2-system.branding.nsi | F2 `!system` touching `/tmp/dane-4k-f2-system-sentinel` | refused before makensis; sentinel must not be created |
+| F2-appendfile.branding.nsi | F2 `!appendfile` to `/tmp/dane-4k-f2-appendfile-sentinel` | refused before makensis; sentinel must not be created |
+| F3-ifdef.branding.nsi | F3 `!ifdef` in branding.nsi | refused (!if*) |
+| F4-non-ascii.branding.nsi | F4 Armenian օ in CompanyName | not printable ASCII after resolution |

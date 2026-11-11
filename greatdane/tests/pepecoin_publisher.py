@@ -1,25 +1,38 @@
 #!/usr/bin/env python3
-"""Resolve and normalize Windows publisher/company values for the 4j check.
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+"""Resolve and normalize Windows publisher/company values (round 4k).
 
 This is test tooling only. It is not shipped in the product.
 
-NSIS values are taken from `makensis -PPO` on a tiny wrapper that !includes
-the branding file and echoes ${CompanyName} and ${ARPPublisher}. If makensis
-is missing, callers must SKIP or FAIL — never PASS.
+NSIS values come from makensis -PPO on a tiny wrapper that sets
+`Unicode true`, !includes the branding file, and echoes ${CompanyName}
+and ${ARPPublisher}. The binary is chosen in this order: $MAKENSISU,
+then ~/.mozbuild/nsis/bin/makensis (the bootstrapped build tool), then
+PATH as a labelled fallback. If makensis is missing, callers must FAIL
+— never PASS. This is not a full build-environment mirror.
 
-module.ver values use a vendored copy of the parse/preprocess logic from
-Firefox ESR 153.7.0 `config/create_rc.py` (preprocess at lines 79–87,
-parse_module_ver at lines 89–97). That file is not in this snapshot (it
-imports buildconfig), so the marker-% substitution, %define, %include, and
-`#` comment split are reproduced here and cited below. If `config/create_rc.py`
-is later present and importable, it is preferred.
+Before makensis is invoked, every file in the include set is refused if
+it contains !system, !execute, !appendfile, !delfile, !makensis,
+!packhdr, !finalize, !uninstfinalize, !getdllversion, or !gettlbversion.
+branding.nsi is also refused if it contains any !if / !ifdef / !ifndef
+(or other !if* command).
 
-Values are normalized before matching: NFKC, casefold, Cyrillic/Greek (and
-common Latin-accent) lookalikes mapped to Latin, then zero-width and
-non-letter characters stripped (NGD 4i L6/L7). A publisher/company value
-that contains "pepecoin" or "mozilla" after that fold is a failure (L8).
-The official shared.nsh Publisher "Mozilla" fallback is the exception, and
-applies only when ARPPublisher is undefined.
+module.ver is parsed by a reimplementation of the small
+create_rc.parse_module_ver loop from Firefox ESR 153.7.0
+config/create_rc.py (lines 89–97), plus a marker-% expander that only
+allows %define and %include. Any other % directive, or an undefined @X@
+in a company or copyright value, is a failure. This is not a vendored
+copy of mozbuild.preprocessor.
+
+Values are normalized before matching: NFKC, casefold, Cyrillic/Greek
+(and common Latin-accent) lookalikes mapped to Latin, then zero-width
+and non-letter characters stripped. A company or publisher value must
+also be printable ASCII after resolution. A value that contains
+"pepecoin" or "mozilla" after the fold is a failure. The official
+shared.nsh Publisher "Mozilla" fallback is the exception, and applies
+only when ARPPublisher is undefined.
 """
 from __future__ import annotations
 
@@ -32,9 +45,9 @@ import unicodedata
 from pathlib import Path
 
 # Letters in "pepecoin" / "mozilla" and close confusables. Keys are
-# already-casefolded where possible; lookup uses casefold(ch).
+# already-casefolded where possible.
 _LOOKALIKE = {
-    # Cyrillic
+    # Cyrillic (no "п"→"n": that map was wrong)
     "а": "a",
     "е": "e",
     "о": "o",
@@ -49,7 +62,6 @@ _LOOKALIKE = {
     "һ": "h",
     "ӏ": "l",
     "м": "m",
-    "п": "n",  # visually a shako; used cautiously
     "л": "l",
     "ｚ": "z",
     # Greek
@@ -63,8 +75,7 @@ _LOOKALIKE = {
     "χ": "x",
     "κ": "k",
     "μ": "m",
-    "ѕ": "s",
-    # Latin accented (N16); also covered if we drop combining marks after NFKD
+    # Latin accented
     "é": "e",
     "è": "e",
     "ê": "e",
@@ -98,25 +109,88 @@ _LOOKALIKE = {
     "ñ": "n",
 }
 
+# Compile-time NSIS commands that can touch the filesystem or run a process.
+# Refuse these in the include set before invoking makensis (F2).
+FORBIDDEN_NSIS_COMMANDS = (
+    "!system",
+    "!execute",
+    "!appendfile",
+    "!delfile",
+    "!makensis",
+    "!packhdr",
+    "!finalize",
+    "!uninstfinalize",
+    "!getdllversion",
+    "!gettlbversion",
+)
+
+# Sentinels used by the F2 fixtures. The check must refuse those fixtures
+# and must not create these paths.
+F2_SYSTEM_SENTINEL = "/tmp/dane-4k-f2-system-sentinel"
+F2_APPENDFILE_SENTINEL = "/tmp/dane-4k-f2-appendfile-sentinel"
+
 
 class MakensisMissing(Exception):
-    """makensis is not on PATH."""
+    """No usable makensis ($MAKENSISU, ~/.mozbuild, or PATH)."""
 
 
 class MakensisError(Exception):
-    """makensis -PPO failed."""
+    """makensis -PPO failed, or the input was refused before invocation."""
+
+
+class ModuleVerError(Exception):
+    """module.ver contains a forbidden % directive or an undefined @X@."""
+
+
+def makensis_choice():
+    """Return (path, version, label) for the makensis that will run, or Nones.
+
+    Order: $MAKENSISU, then ~/.mozbuild/nsis/bin/makensis, then PATH
+    (labelled as a fallback). The first existing executable wins.
+    """
+    candidates = []
+    env = os.environ.get("MAKENSISU")
+    if env:
+        candidates.append((env, "$MAKENSISU"))
+    candidates.append(
+        (str(Path.home() / ".mozbuild/nsis/bin/makensis"), "~/.mozbuild/nsis/bin/makensis")
+    )
+    which = shutil.which("makensis")
+    if which:
+        candidates.append((which, "PATH fallback"))
+    seen = set()
+    for raw, label in candidates:
+        path = Path(raw).expanduser()
+        try:
+            resolved = str(path.resolve())
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if path.is_file() and os.access(path, os.X_OK):
+            r = subprocess.run([resolved, "-VERSION"], capture_output=True, text=True)
+            version = (r.stdout or r.stderr or "").strip() or "unknown"
+            return resolved, version, label
+    return None, None, None
 
 
 def makensis_path():
-    return shutil.which("makensis")
+    path, _version, _label = makensis_choice()
+    return path
 
 
 def makensis_version():
-    path = makensis_path()
+    _path, version, _label = makensis_choice()
+    return version
+
+
+def makensis_report():
+    """Human-readable 'path (version, label)' or None if no makensis."""
+    path, version, label = makensis_choice()
     if not path:
         return None
-    r = subprocess.run([path, "-VERSION"], capture_output=True, text=True)
-    return (r.stdout or r.stderr or "").strip() or None
+    return "%s (%s, %s)" % (path, version, label)
 
 
 def normalize_publisher(value):
@@ -126,17 +200,9 @@ def normalize_publisher(value):
     s = unicodedata.normalize("NFKC", str(value))
     s = s.casefold()
     s = "".join(_LOOKALIKE.get(ch, ch) for ch in s)
-    # Drop combining marks so a leftover acute (or NFKC-stable é already mapped)
-    # cannot keep a decorated letter in the string.
     s = unicodedata.normalize("NFKD", s)
     s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
-    out = []
-    for ch in s:
-        cat = unicodedata.category(ch)
-        if cat.startswith("L"):
-            out.append(ch)
-        # Cf/Cc/Zs/Pd and other non-letters (zero-width, spaces, hyphens) dropped
-    return "".join(out)
+    return "".join(ch for ch in s if unicodedata.category(ch).startswith("L"))
 
 
 def mentions_pepecoin(value):
@@ -147,13 +213,19 @@ def mentions_mozilla(value):
     return "mozilla" in normalize_publisher(value)
 
 
+def is_printable_ascii(value):
+    """True if every character is in the printable ASCII range 0x20–0x7E."""
+    if value is None:
+        return True
+    return all(32 <= ord(ch) <= 126 for ch in str(value))
+
+
 def is_empty_or_mozilla_publisher(value):
     """True if missing, empty, or the publisher contains 'mozilla' (L8)."""
     if value is None:
         return True
     if str(value).strip() == "":
         return True
-    # Unresolved NSIS ${Name} means the symbol was not defined.
     s = str(value).strip()
     if s.startswith("${") and s.endswith("}") and s[2:-1].isidentifier():
         return True
@@ -161,86 +233,62 @@ def is_empty_or_mozilla_publisher(value):
 
 
 # ---------------------------------------------------------------------------
-# module.ver: vendored from Firefox ESR 153.7.0 config/create_rc.py
-# preprocess(): lines 79–87 (Preprocessor marker="%", substitution filter)
-# parse_module_ver(): lines 89–97 (split # comments, key=value)
+# module.ver: reimplementation of create_rc.parse_module_ver
+# (Firefox ESR 153.7.0 config/create_rc.py lines 89–97), with a marker-%
+# expander that only accepts %define / %include. Not a vendored copy of
+# mozbuild.preprocessor; %if / %ifdef and friends are a failure, as is an
+# undefined @X@ in a company or copyright value.
 # ---------------------------------------------------------------------------
 
 _AT_SUBST = re.compile(r"@(\w+)@")
 
 
-def _expand_at(text, defines):
+def _expand_at(text, defines, *, require_defined=False):
     def repl(m):
         key = m.group(1)
         if key in defines:
             return str(defines[key])
+        if require_defined:
+            raise ModuleVerError("undefined @%s@" % key)
         return m.group(0)
 
     return _AT_SUBST.sub(repl, text)
 
 
 def _preprocess_module_ver(path, defines):
-    """Marker-% preprocess: %define, %include, @KEY@ substitution.
-
-    Mirrors create_rc.preprocess (marker '%', substitution filter). Input
-    encoding is latin1, as in create_rc.py.
-    """
+    """Expand %define / %include and @KEY@. Any other % directive fails."""
     defines = dict(defines)
     path = os.fspath(path)
     out_lines = []
     with open(path, encoding="latin1") as fh:
-        for line in fh:
+        for lineno, line in enumerate(fh, 1):
             stripped = line.lstrip()
             if stripped.startswith("%define"):
                 rest = stripped[len("%define") :].strip()
                 name, _, val = rest.partition(" ")
                 if name:
-                    defines[name] = _expand_at(val.strip(), defines)
+                    defines[name] = _expand_at(val.strip(), defines, require_defined=True)
                 continue
             if stripped.startswith("%include"):
                 inc = stripped[len("%include") :].strip().strip('"').strip("'")
                 inc_path = inc if os.path.isabs(inc) else os.path.join(os.path.dirname(path), inc)
-                out_lines.extend(_preprocess_module_ver(inc_path, defines))
+                more, defines = _preprocess_module_ver(inc_path, defines)
+                out_lines.extend(more)
                 continue
             if stripped.startswith("%"):
-                # Other % directives are not copied into parse_module_ver output
-                # once consumed by the preprocessor (same as mozbuild).
-                continue
-            out_lines.append(_expand_at(line, defines))
+                directive = stripped.split()[0] if stripped.split() else "%"
+                raise ModuleVerError(
+                    "%s:%s: forbidden %% directive %s (only %%define and %%include are allowed)"
+                    % (path, lineno, directive)
+                )
+            out_lines.append(_expand_at(line, defines, require_defined=False))
     return out_lines, defines
 
 
 def parse_module_ver(path, defines=None):
-    """Parse a module.ver the way create_rc.parse_module_ver does.
-
-    Tries config/create_rc.py in the same tree if it can be imported; otherwise
-    uses the vendored logic cited above.
-    """
+    """Parse module.ver. Raises ModuleVerError on forbidden % or undefined @X@
+    in company or copyright values."""
     defines = dict(defines or {})
-    tree_create_rc = None
-    # Walk up from the given file to a source root that has config/create_rc.py
-    cur = os.path.abspath(os.path.dirname(os.fspath(path)))
-    for _ in range(8):
-        candidate = os.path.join(cur, "config", "create_rc.py")
-        if os.path.isfile(candidate):
-            tree_create_rc = candidate
-            break
-        parent = os.path.dirname(cur)
-        if parent == cur:
-            break
-        cur = parent
-    if tree_create_rc:
-        try:
-            import importlib.util
-
-            spec = importlib.util.spec_from_file_location("_dane_create_rc", tree_create_rc)
-            mod = importlib.util.module_from_spec(spec)
-            # create_rc imports buildconfig at module level; this will usually fail
-            # in the snapshot. Fall through to the vendored copy.
-            spec.loader.exec_module(mod)
-            return mod.parse_module_ver(path, defines)
-        except Exception:
-            pass
     result = {}
     lines, _defs = _preprocess_module_ver(path, defines)
     for line in lines:
@@ -251,6 +299,12 @@ def parse_module_ver(path, defines=None):
             continue
         entry, value = content.split("=", 1)
         result[entry.strip()] = value.strip()
+    for key in ("WIN32_MODULE_COMPANYNAME", "WIN32_MODULE_COPYRIGHT"):
+        val = result.get(key)
+        if val and _AT_SUBST.search(val):
+            raise ModuleVerError(
+                "%s: undefined substitution in %s: %r" % (path, key, val)
+            )
     return result
 
 
@@ -267,36 +321,95 @@ def module_ver_copyright(path):
 
 
 # ---------------------------------------------------------------------------
-# NSIS: makensis -PPO
+# NSIS: refuse unsafe commands, then makensis -PPO
 # ---------------------------------------------------------------------------
 
 _PPO_COMPANY = re.compile(r'^!echo "PPO_CompanyName=(.*)"\s*$')
 _PPO_ARP = re.compile(r'^!echo "PPO_ARPPublisher=(.*)"\s*$')
+_FORBIDDEN_SET = {cmd.lower() for cmd in FORBIDDEN_NSIS_COMMANDS}
+
+
+def _nsis_command(line):
+    s = line.strip()
+    if not s or s.startswith(";") or s.startswith("#"):
+        return None
+    if not s.startswith("!"):
+        return None
+    return s.split()[0].lower()
+
+
+def include_set(branding_path):
+    """Files that would be visible to makensis for this branding input.
+
+    If the file is named branding.nsi, siblings in the same directory are
+    part of the set (!include / /file). A standalone *.branding.nsi fixture
+    is the only member — other fixtures in a shared directory are not.
+    """
+    branding_path = Path(branding_path).resolve()
+    files = [branding_path]
+    if branding_path.name == "branding.nsi":
+        for sib in branding_path.parent.iterdir():
+            if sib.is_file() and sib.resolve() != branding_path:
+                files.append(sib)
+    return files
+
+
+def forbidden_nsis_command_in(path):
+    """Return the first forbidden compile-time command in path, or None."""
+    text = Path(path).read_text(encoding="utf-8", errors="replace")
+    for line in text.splitlines():
+        tok = _nsis_command(line)
+        if tok in _FORBIDDEN_SET:
+            return tok
+    return None
+
+
+def ifdef_command_in(path):
+    """Return the first !if* command in path, or None."""
+    text = Path(path).read_text(encoding="utf-8", errors="replace")
+    for line in text.splitlines():
+        tok = _nsis_command(line)
+        if tok and tok.startswith("!if"):
+            return tok
+    return None
+
+
+def refuse_unsafe_nsis(branding_path):
+    """Raise MakensisError if the include set must not be handed to makensis."""
+    branding_path = Path(branding_path).resolve()
+    for path in include_set(branding_path):
+        cmd = forbidden_nsis_command_in(path)
+        if cmd:
+            raise MakensisError(
+                "refused to invoke makensis: %s contains %s" % (path, cmd)
+            )
+    cmd = ifdef_command_in(branding_path)
+    if cmd:
+        raise MakensisError(
+            "refused to invoke makensis: %s contains %s" % (branding_path, cmd)
+        )
 
 
 def resolve_branding_nsi(branding_path):
-    """Return (company, arp_publisher, ppo_stdout) from makensis -PPO.
-
-    The wrapper !includes the branding file and echoes the two symbols.
-    Sidecar files in the same directory (!include, /file) are available.
-    """
-    path = makensis_path()
+    """Return (company, arp_publisher, ppo_stdout) from makensis -PPO."""
+    path, _version, _label = makensis_choice()
     if not path:
         raise MakensisMissing(
-            "makensis is not on PATH; the publisher check cannot resolve NSIS values"
+            "no makensis found ($MAKENSISU, ~/.mozbuild/nsis/bin/makensis, or PATH)"
         )
     branding_path = Path(branding_path).resolve()
     if not branding_path.is_file():
         raise MakensisError("branding file not found: %s" % branding_path)
+    refuse_unsafe_nsis(branding_path)
     with tempfile.TemporaryDirectory(prefix="dane-ppo-") as td:
         td = Path(td)
-        for sib in branding_path.parent.iterdir():
-            if sib.is_file():
-                shutil.copy2(sib, td / sib.name)
+        for src in include_set(branding_path):
+            shutil.copy2(src, td / src.name)
         if branding_path.name != "branding.nsi":
             shutil.copy2(branding_path, td / "branding.nsi")
         wrapper = td / "wrapper.nsi"
         wrapper.write_text(
+            "Unicode true\n"
             '!include "branding.nsi"\n'
             '!echo "PPO_CompanyName=${CompanyName}"\n'
             '!echo "PPO_ARPPublisher=${ARPPublisher}"\n',

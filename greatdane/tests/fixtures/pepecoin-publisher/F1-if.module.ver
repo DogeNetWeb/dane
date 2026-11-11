@@ -1,0 +1,5 @@
+%if 1
+WIN32_MODULE_COMPANYNAME=Pepecoin
+%else
+WIN32_MODULE_COMPANYNAME=Dane
+%endif

@@ -136,3 +136,4 @@
 0136-GreatDANE-harden-the-Pepecoin-publisher-check-reject.patch
 0137-GreatDANE-drop-the-extra-blank-line-after-the-offici.patch
 0138-GreatDANE-resolve-publisher-values-with-makensis-PPO.patch
+0139-GreatDANE-tighten-the-publisher-check-F1-F4-makensis.patch
