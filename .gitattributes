@@ -1,0 +1,2 @@
+patches/*.patch -text
+patches/series text eol=lf
