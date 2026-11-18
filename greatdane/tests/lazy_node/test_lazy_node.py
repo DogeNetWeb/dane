@@ -7,6 +7,7 @@ DogeNet/PepeNet names, seeds, or nodes. No mach build.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import socket
@@ -27,6 +28,7 @@ from fake_node import (
 from lazy_policy import (
     DEFAULT_LAZY_TIMEOUT_SEC,
     FAIL,
+    LAZY_FETCH_FAILED_EDE,
     LAZY_LOADING_EDE,
     LAZY_NODE_CLI_FLAG,
     LAZY_NODE_ENV_NAME,
@@ -39,6 +41,9 @@ from lazy_policy import (
     classify_chain_failure,
     is_lazy_loading_dns,
     is_lazy_loading_status,
+    is_proxy_loading,
+    loading_retry_sec,
+    lazy_retry_ms,
     wait_for_tlsa,
     _spki_sha256_hex,
 )
@@ -56,7 +61,20 @@ OK_TLSA = {
     "data": GOOD_HASH,
 }
 BAD_TLSA = dict(OK_TLSA, data=BAD_HASH)
-LOADING_BODY = {"status": TLSA_STATUS_LOADING}
+LOADING_14 = {
+    "status": "loading",
+    "rcode": "SERVFAIL",
+    "ede": LAZY_LOADING_EDE,
+    "phase": "fetching",
+    "retry_ms": 1000,
+}
+LOADING_22 = {
+    "status": "loading",
+    "rcode": "SERVFAIL",
+    "ede": LAZY_FETCH_FAILED_EDE,
+    "phase": "fetch_failed",
+    "retry_ms": 1000,
+}
 
 
 def http_fetch(port, host, timeout):
@@ -91,31 +109,44 @@ def dns_query(port, name, timeout=5.0):
         sock.close()
 
 
+def proxy_connect(port, host, timeout=5.0):
+    """Issue a CONNECT like the browser's PAC proxy path."""
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+    try:
+        conn.request("CONNECT", f"{host}:443")
+        resp = conn.getresponse()
+        headers = {k: v for k, v in resp.getheaders()}
+        return resp.status, headers
+    finally:
+        conn.close()
+
+
 class PolicyConstantsTests(unittest.TestCase):
-    def test_placeholders_are_marked(self):
+    def test_confirmed_constants(self):
         self.assertEqual(LAZY_NODE_CLI_FLAG, "--lazy")
         self.assertEqual(LAZY_NODE_ENV_NAME, "GREATDANE_NODE_LAZY")
-        # 0 means not yet assigned: must not treat any EDE as loading.
-        self.assertEqual(LAZY_LOADING_EDE, 0)
+        self.assertEqual(LAZY_LOADING_EDE, 14)
+        self.assertEqual(LAZY_FETCH_FAILED_EDE, 22)
         self.assertEqual(DEFAULT_LAZY_TIMEOUT_SEC, 10)
 
     def test_http_status_loading_is_loading(self):
         self.assertTrue(is_lazy_loading_status({"status": "loading"}))
+        self.assertTrue(is_lazy_loading_status(LOADING_14))
+        self.assertTrue(is_lazy_loading_status(LOADING_22))
 
-    def test_plain_servfail_is_not_loading_while_ede_is_placeholder(self):
-        self.assertFalse(is_lazy_loading_status({"status": "error", "rcode": 2, "ede": 0}))
+    def test_servfail_plus_14_or_22_is_loading(self):
+        self.assertTrue(is_lazy_loading_status({"rcode": "SERVFAIL", "ede": 14}))
+        self.assertTrue(is_lazy_loading_status({"rcode": 2, "ede": 22}))
+        self.assertTrue(is_lazy_loading_dns(RCODE_SERVFAIL, 14))
+        self.assertTrue(is_lazy_loading_dns(RCODE_SERVFAIL, 22))
+
+    def test_plain_servfail_without_those_edes_is_not_loading(self):
+        self.assertFalse(is_lazy_loading_status({"status": "error", "rcode": 2}))
         self.assertFalse(is_lazy_loading_status({"rcode": "SERVFAIL", "ede": 0}))
-        self.assertFalse(is_lazy_loading_dns(RCODE_SERVFAIL, 0))
+        self.assertFalse(is_lazy_loading_status({"rcode": "SERVFAIL", "ede": 7}))
         self.assertFalse(is_lazy_loading_dns(RCODE_SERVFAIL, None))
-
-    def test_servfail_plus_assigned_ede_is_loading(self):
-        # Once TODO-KEEPER-EDE is replaced, this is the dnsd contract.
-        ede = 99
-        self.assertTrue(is_lazy_loading_status(
-            {"rcode": "SERVFAIL", "ede": ede}, loading_ede=ede))
-        self.assertTrue(is_lazy_loading_dns(RCODE_SERVFAIL, ede, loading_ede=ede))
-        self.assertFalse(is_lazy_loading_dns(RCODE_SERVFAIL, 7, loading_ede=ede))
-        self.assertFalse(is_lazy_loading_dns(RCODE_NXDOMAIN, ede, loading_ede=ede))
+        self.assertFalse(is_lazy_loading_dns(RCODE_SERVFAIL, 0))
+        self.assertFalse(is_lazy_loading_dns(RCODE_NXDOMAIN, 14))
 
     def test_classify_loading_is_not_a_security_error(self):
         self.assertEqual(classify_chain_failure("loading"), "GD_ZONE_LOADING")
@@ -123,15 +154,50 @@ class PolicyConstantsTests(unittest.TestCase):
             classify_chain_failure("loading", tls_fail=True),
             "GD_ZONE_LOADING",
         )
+        self.assertEqual(
+            classify_chain_failure(None, proxy_loading=True),
+            "GD_ZONE_LOADING",
+        )
         self.assertEqual(classify_chain_failure("unowned"), "GD_NAME_UNOWNED")
         self.assertEqual(classify_chain_failure("ok", tls_fail=True), "GD_TLS_UNTRUSTED")
         self.assertEqual(classify_chain_failure(""), "GD_TLS_UNTRUSTED")
 
+    def test_retry_ms_clamped_to_budget(self):
+        self.assertEqual(lazy_retry_ms({"retry_ms": 1000}, 10_000), 1000)
+        self.assertEqual(lazy_retry_ms({"retry_ms": 30_000}, 10_000), 10_000)
+        self.assertEqual(lazy_retry_ms({}, 10_000), 1000)
+        self.assertEqual(loading_retry_sec(retry_ms=1000), 1)
+        self.assertEqual(loading_retry_sec(retry_after=1), 1)
+        self.assertEqual(loading_retry_sec(retry_ms=2500), 3)
+        self.assertEqual(loading_retry_sec(retry_after=30, cap=10), 10)
+
+    def test_retry_ms_is_honored_in_wait_loop(self):
+        sleeps = []
+        t = [0.0]
+
+        def clock():
+            return t[0]
+
+        def sleep(s):
+            sleeps.append(s)
+            t[0] += s
+
+        def fetch():
+            return ("ok", dict(LOADING_14, retry_ms=250))
+
+        verdict = wait_for_tlsa(
+            fetch, LEAF_SPKI, lazy=True, timeout_sec=1, clock=clock, sleep=sleep
+        )
+        self.assertEqual(verdict, LOADING_TIMEOUT)
+        self.assertTrue(sleeps)
+        # Every pause should honor 250ms, except a possible leftover sliver.
+        self.assertTrue(any(abs(s - 0.250) < 1e-9 for s in sleeps))
+        self.assertTrue(all(s <= 0.250 + 1e-9 for s in sleeps))
+        self.assertGreaterEqual(sum(sleeps), 0.75)
+
 
 class FakeNodeTests(unittest.TestCase):
     def setUp(self):
-        assigned_ede = 99  # stand-in for TODO-KEEPER-EDE in the DNS cases
-        self.assigned_ede = assigned_ede
         records = {
             "lazytest-warm.pepe": {
                 "delay": 0,
@@ -145,9 +211,15 @@ class FakeNodeTests(unittest.TestCase):
             },
             "lazytest-slow.pepe": {
                 "delay": 0,
-                "http": LOADING_BODY,
+                "http": LOADING_14,
                 "dns_rcode": RCODE_SERVFAIL,
-                "dns_ede": assigned_ede,
+                "dns_ede": LAZY_LOADING_EDE,
+            },
+            "lazytest-failfetch.pepe": {
+                "delay": 0,
+                "http": LOADING_22,
+                "dns_rcode": RCODE_SERVFAIL,
+                "dns_ede": LAZY_FETCH_FAILED_EDE,
             },
             "lazytest-nx.pepe": {
                 "delay": 0,
@@ -163,13 +235,13 @@ class FakeNodeTests(unittest.TestCase):
                 "delay": 0,
                 "http": {"status": "error", "rcode": "SERVFAIL"},
                 "dns_rcode": RCODE_SERVFAIL,
-                # no EDE: existing fail-closed path
             },
         }
         names = [
             "lazytest-warm",
             "lazytest-cold",
             "lazytest-slow",
+            "lazytest-failfetch",
             "lazytest-nx",
             "lazytest-bad",
             "lazytest-other",
@@ -179,11 +251,8 @@ class FakeNodeTests(unittest.TestCase):
     def tearDown(self):
         self.node.stop()
 
-    def _wait(self, host, timeout_sec, lazy=True, loading_ede=LAZY_LOADING_EDE):
-        # Each HTTP attempt is allowed the remaining budget (mirrors C++).
+    def _wait(self, host, timeout_sec, lazy=True):
         def fetch():
-            # Use a slightly longer socket timeout than the policy budget
-            # so a delayed-but-successful answer (cold: 3s) is received.
             return http_fetch(self.node.http_port, host, timeout=timeout_sec + 1)
 
         t0 = time.monotonic()
@@ -192,7 +261,6 @@ class FakeNodeTests(unittest.TestCase):
             LEAF_SPKI,
             lazy=lazy,
             timeout_sec=timeout_sec,
-            loading_ede=loading_ede,
         )
         return verdict, time.monotonic() - t0
 
@@ -207,18 +275,50 @@ class FakeNodeTests(unittest.TestCase):
         self.assertGreaterEqual(elapsed, 2.8)
         self.assertLess(elapsed, 8.0)
 
-    def test_cold_too_slow_is_retryable_not_tlsa_failure(self):
-        # Node keeps answering "loading"; budget is short so the test stays cheap.
+    def test_cold_too_slow_ede14_is_retryable_not_tlsa_failure(self):
         verdict, elapsed = self._wait("lazytest-slow.pepe", timeout_sec=1)
         self.assertEqual(verdict, LOADING_TIMEOUT)
         self.assertNotEqual(verdict, FAIL)
         self.assertGreaterEqual(elapsed, 0.9)
         self.assertEqual(classify_chain_failure("loading"), "GD_ZONE_LOADING")
-        # Raw dnsd contract (with an assigned EDE stand-in): SERVFAIL+EDE.
         rcode, ede = dns_query(self.node.dns_port, "lazytest-slow.pepe", timeout=2)
         self.assertEqual(rcode, RCODE_SERVFAIL)
-        self.assertEqual(ede, self.assigned_ede)
-        self.assertTrue(is_lazy_loading_dns(rcode, ede, loading_ede=self.assigned_ede))
+        self.assertEqual(ede, LAZY_LOADING_EDE)
+        self.assertTrue(is_lazy_loading_dns(rcode, ede))
+        kind, body = http_fetch(self.node.http_port, "lazytest-slow.pepe", timeout=2)
+        self.assertEqual(kind, "ok")
+        self.assertEqual(body["phase"], "fetching")
+        self.assertEqual(body["retry_ms"], 1000)
+        self.assertEqual(body["ede"], 14)
+
+    def test_ede22_fetch_failed_is_also_retryable_loading(self):
+        verdict, _ = self._wait("lazytest-failfetch.pepe", timeout_sec=1)
+        self.assertEqual(verdict, LOADING_TIMEOUT)
+        rcode, ede = dns_query(self.node.dns_port, "lazytest-failfetch.pepe", timeout=2)
+        self.assertEqual(rcode, RCODE_SERVFAIL)
+        self.assertEqual(ede, LAZY_FETCH_FAILED_EDE)
+        self.assertTrue(is_lazy_loading_dns(rcode, ede))
+        kind, body = http_fetch(self.node.http_port, "lazytest-failfetch.pepe", timeout=2)
+        self.assertEqual(body["phase"], "fetch_failed")
+        self.assertEqual(body["ede"], 22)
+
+    def test_proxy_connect_503_is_zone_loading(self):
+        status, headers = proxy_connect(self.node.http_port, "lazytest-slow.pepe")
+        self.assertEqual(status, 503)
+        # header names from http.client are whatever the server sent
+        self.assertTrue(is_proxy_loading(status, headers))
+        norm = {k.lower(): v for k, v in headers.items()}
+        self.assertEqual(norm.get("x-greatdane-status"), "loading")
+        self.assertEqual(norm.get("retry-after"), "1")
+        self.assertEqual(
+            classify_chain_failure(None, proxy_loading=True),
+            "GD_ZONE_LOADING",
+        )
+        self.assertEqual(loading_retry_sec(retry_after=int(norm["retry-after"])), 1)
+        # A real NXDOMAIN CONNECT is not a loading 503.
+        status2, headers2 = proxy_connect(self.node.http_port, "lazytest-nx.pepe")
+        self.assertNotEqual(status2, 503)
+        self.assertFalse(is_proxy_loading(status2, headers2))
 
     def test_real_nxdomain_is_not_found(self):
         verdict, elapsed = self._wait("lazytest-nx.pepe", timeout_sec=5)
@@ -228,7 +328,7 @@ class FakeNodeTests(unittest.TestCase):
         rcode, ede = dns_query(self.node.dns_port, "lazytest-nx.pepe")
         self.assertEqual(rcode, RCODE_NXDOMAIN)
         self.assertIsNone(ede)
-        self.assertFalse(is_lazy_loading_dns(rcode, ede, loading_ede=self.assigned_ede))
+        self.assertFalse(is_lazy_loading_dns(rcode, ede))
 
     def test_bad_tlsa_is_rejected(self):
         verdict, elapsed = self._wait("lazytest-bad.pepe", timeout_sec=5)
@@ -243,15 +343,12 @@ class FakeNodeTests(unittest.TestCase):
         rcode, ede = dns_query(self.node.dns_port, "lazytest-servfail.pepe")
         self.assertEqual(rcode, RCODE_SERVFAIL)
         self.assertIsNone(ede)
-        self.assertFalse(is_lazy_loading_dns(rcode, ede, loading_ede=self.assigned_ede))
-        # HTTP body has SERVFAIL and no loading status / no matching EDE.
+        self.assertFalse(is_lazy_loading_dns(rcode, ede))
         kind, body = http_fetch(self.node.http_port, "lazytest-servfail.pepe", timeout=2)
         self.assertEqual(kind, "ok")
         self.assertFalse(is_lazy_loading_status(body))
-        self.assertFalse(is_lazy_loading_status(body, loading_ede=self.assigned_ede))
 
     def test_names_work_while_a_zone_is_still_loading(self):
-        # Namespace-only sync keeps the full name list; suggestions unchanged.
         url = f"http://127.0.0.1:{self.node.http_port}/gd/names?prefix=lazytest-&limit=10"
         with urllib.request.urlopen(url, timeout=2) as resp:
             data = json.loads(resp.read().decode("utf-8"))

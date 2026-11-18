@@ -193,6 +193,33 @@ class FakeNode:
                     return
                 self.send_error(404)
 
+            def do_CONNECT(self):
+                # Cold HTTPS CONNECT through the PAC proxy. Host is "name:port".
+                host = (self.path or "").split(":")[0]
+                rec = node._lookup(host)
+                delay = float((rec or {}).get("delay", 0))
+                if delay:
+                    time.sleep(delay)
+                loading = False
+                if rec is not None:
+                    http = rec.get("http")
+                    body = http() if callable(http) else dict(http or {})
+                    from lazy_policy import is_lazy_loading_status
+                    loading = is_lazy_loading_status(body) or rec.get("proxy_loading")
+                if loading:
+                    retry = str(int((rec or {}).get("retry_after", 1)))
+                    raw = b""
+                    self.send_response(503, "Service Unavailable")
+                    self.send_header("Retry-After", retry)
+                    self.send_header("X-GreatDANE-Status", "loading")
+                    self.send_header("Content-Length", "0")
+                    self.send_header("Connection", "close")
+                    self.end_headers()
+                    if raw:
+                        self.wfile.write(raw)
+                    return
+                self.send_error(404)
+
         return Handler
 
     def _dns_loop(self):

@@ -6,67 +6,120 @@
 import hashlib
 import time
 
-# TODO-KEEPER-FLAG: exact CLI flag or env name is not final.
-LAZY_NODE_CLI_FLAG = "--lazy"  # TODO-KEEPER-FLAG
-LAZY_NODE_ENV_NAME = "GREATDANE_NODE_LAZY"  # TODO-KEEPER-FLAG
+# Keeper/lazy-node: confirmed flag/env. Passed only when the pref is on.
+LAZY_NODE_CLI_FLAG = "--lazy"
+LAZY_NODE_ENV_NAME = "GREATDANE_NODE_LAZY"
 
-# TODO-KEEPER-EDE: dnsd signals "zone still fetching" as SERVFAIL plus this
-# Extended DNS Error code. 0 means not yet assigned: do not treat any EDE as
-# loading until this is replaced. Interim HTTP signal is /gd/tlsa status
-# "loading" (the node should translate SERVFAIL+EDE into that status).
-LAZY_LOADING_EDE = 0  # TODO-KEEPER-EDE
+# RFC 8914: 14 = Not Ready (fetch in flight); 22 = fetch failed, retrying.
+# Both are retryable loading. Plain SERVFAIL without these codes is not.
+LAZY_LOADING_EDE = 14
+LAZY_FETCH_FAILED_EDE = 22
+LAZY_LOADING_EDES = (LAZY_LOADING_EDE, LAZY_FETCH_FAILED_EDE)
 TLSA_STATUS_LOADING = "loading"
 DEFAULT_LAZY_TIMEOUT_SEC = 10
+DEFAULT_LAZY_RETRY_MS = 1000
 
 RCODE_NOERROR = 0
 RCODE_SERVFAIL = 2
 RCODE_NXDOMAIN = 3
 
-# Verdicts used by the verifier / interstitial classifier.
 MATCH = "match"
-FAIL = "fail"  # includes bad TLSA / plain SERVFAIL / unusable record
-LOADING_TIMEOUT = "loading_timeout"  # retryable, never a cert/pinning failure
+FAIL = "fail"
+LOADING_TIMEOUT = "loading_timeout"
 UNOWNED = "unowned"
 NO_TLSA = "no_tlsa"
 BAD_RECORD = "bad_record"
 
 
-def is_lazy_loading_status(body, loading_ede=LAZY_LOADING_EDE):
+def is_lazy_loading_ede(ede):
+    try:
+        return int(ede) in LAZY_LOADING_EDES
+    except (TypeError, ValueError):
+        return False
+
+
+def is_lazy_loading_status(body, loading_edes=LAZY_LOADING_EDES):
     """True when the node is still fetching this name's zone.
 
     A loading signal must never be classified as NXDOMAIN, no_tlsa, or a
-    TLSA/cert failure. Plain SERVFAIL without the Keeper EDE is False.
+    TLSA/cert failure. Plain SERVFAIL without EDE 14/22 is False.
     """
     if not isinstance(body, dict):
         return False
     if body.get("status") == TLSA_STATUS_LOADING:
         return True
-    if not loading_ede:
-        return False
     rcode = body.get("rcode")
+    servfail = rcode in (2, "2", "SERVFAIL", RCODE_SERVFAIL)
     try:
         ede = int(body.get("ede"))
     except (TypeError, ValueError):
         return False
-    servfail = rcode in (2, "2", "SERVFAIL", RCODE_SERVFAIL)
-    return servfail and ede == loading_ede
+    return servfail and ede in tuple(loading_edes)
 
 
-def is_lazy_loading_dns(rcode, ede, loading_ede=LAZY_LOADING_EDE):
-    """Raw dnsd contract: SERVFAIL + Keeper EDE is loading; plain SERVFAIL is not."""
-    if not loading_ede:
-        return False
+def is_lazy_loading_dns(rcode, ede, loading_edes=LAZY_LOADING_EDES):
+    """Raw dnsd contract: SERVFAIL + EDE 14 or 22 is loading."""
     try:
         ede = int(ede)
     except (TypeError, ValueError):
         return False
-    return rcode in (RCODE_SERVFAIL, 2, "SERVFAIL") and ede == loading_ede
+    return rcode in (RCODE_SERVFAIL, 2, "SERVFAIL") and ede in tuple(loading_edes)
 
 
-def classify_chain_failure(tlsa, tls_fail=None, block=None):
+def is_proxy_loading(http_status, headers):
+    """Cold CONNECT: 503 + X-GreatDANE-Status: loading (Retry-After: 1)."""
+    if not headers:
+        return False
+    # Header names are case-insensitive
+    norm = {str(k).lower(): str(v).strip() for k, v in headers.items()}
+    return norm.get("x-greatdane-status", "").lower() == "loading"
+
+
+def lazy_retry_ms(body, budget_ms):
+    n = DEFAULT_LAZY_RETRY_MS
+    try:
+        v = int(body.get("retry_ms"))
+        if v >= 1:
+            n = v
+    except (TypeError, ValueError, AttributeError):
+        pass
+    if budget_ms and budget_ms > 0 and n > budget_ms:
+        n = budget_ms
+    return max(1, n)
+
+
+def loading_retry_sec(retry_after=None, retry_ms=None, cap=DEFAULT_LAZY_TIMEOUT_SEC):
+    if retry_ms is not None:
+        try:
+            ms = float(retry_ms)
+            if ms >= 1:
+                sec = max(1, int((ms + 999) // 1000))  # ceil
+            else:
+                sec = 1
+        except (TypeError, ValueError):
+            sec = 1
+    elif retry_after is not None:
+        try:
+            sec = int(retry_after)
+        except (TypeError, ValueError):
+            sec = 1
+    else:
+        sec = 1
+    if cap < 1:
+        cap = DEFAULT_LAZY_TIMEOUT_SEC
+    if sec > cap:
+        sec = cap
+    if sec < 1:
+        sec = 1
+    return sec
+
+
+def classify_chain_failure(tlsa, tls_fail=None, block=None, proxy_loading=False):
     """Same decision as GreatDANEAbout.classifyChainFailure."""
     if block:
         return block
+    if proxy_loading:
+        return "GD_ZONE_LOADING"
     if tlsa is None:
         return "GD_NODE_NOT_READY"
     if tlsa == TLSA_STATUS_LOADING:
@@ -114,7 +167,7 @@ def verify_body(body, leaf_spki):
 
 
 def wait_for_tlsa(fetch, leaf_spki, lazy=True, timeout_sec=DEFAULT_LAZY_TIMEOUT_SEC,
-                  loading_ede=LAZY_LOADING_EDE, clock=time.monotonic, sleep=time.sleep):
+                  loading_edes=LAZY_LOADING_EDES, clock=time.monotonic, sleep=time.sleep):
     """Retry loop matching SSLServerCertVerification.cpp GreatDANEVerify.
 
     fetch() should return one of:
@@ -135,9 +188,13 @@ def wait_for_tlsa(fetch, leaf_spki, lazy=True, timeout_sec=DEFAULT_LAZY_TIMEOUT_
             break
         kind, body = fetch()
         if kind == "ok":
-            if is_lazy_loading_status(body, loading_ede=loading_ede):
+            if is_lazy_loading_status(body, loading_edes=loading_edes):
                 saw_loading = True
-                sleep(min(0.1, max(0.0, deadline - clock())))
+                wait = lazy_retry_ms(body, int(left * 1000)) / 1000.0
+                if wait > left:
+                    wait = left
+                if wait > 0:
+                    sleep(wait)
                 continue
             return verify_body(body, leaf_spki)
         if kind == "connect_fail":

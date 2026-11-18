@@ -1,0 +1,1034 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Wed, 18 Nov 2026 17:18:40 -0600
+Subject: [PATCH 157/162] GreatDANE: apply Keeper lazy-node contract (EDE
+ 14/22, retry, 503)
+
+Wire the confirmed keeper/lazy-node API. --lazy and
+GREATDANE_NODE_LAZY=1 stay, and are passed only when
+greatdane.node.lazy is on. Other node tunables keep their defaults.
+
+Treat SERVFAIL+EDE 14 (Not Ready) and EDE 22 (fetch failed, retrying)
+as retryable loading, never as NXDOMAIN, no_tlsa, or a TLSA/cert
+failure. Honor /gd/tlsa retry_ms inside the 10s budget. A proxy
+CONNECT 503 with X-GreatDANE-Status: loading and Retry-After becomes
+GD_ZONE_LOADING with auto-retry. In lazy mode, _synced uses the
+stdio namespace_synced field when present.
+
+Stub tests cover EDE 14/22, retry_ms, and the 503 loading response.
+Do not push.
+---
+ browser/app/profile/firefox.js                |  11 +-
+ .../components/greatdane/GreatDANE.sys.mjs    |  82 ++++++---
+ .../greatdane/GreatDANEAbout.sys.mjs          |  68 ++++++-
+ .../test/unit/test_greatdane_failclosed.js    |  37 +++-
+ greatdane/tests/lazy_node/README.md           |  43 ++---
+ greatdane/tests/lazy_node/fake_node.py        |  27 +++
+ greatdane/tests/lazy_node/lazy_policy.py      | 111 +++++++++---
+ greatdane/tests/lazy_node/test_lazy_node.py   | 169 ++++++++++++++----
+ .../manager/ssl/SSLServerCertVerification.cpp |  44 +++--
+ 9 files changed, 450 insertions(+), 142 deletions(-)
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index d46b3a9..c76f5a1 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -3640,13 +3640,14 @@ pref("greatdane.chains", "pep:pepe,doge:doge");
+ pref("greatdane.node.path", "");
+ pref("greatdane.node.dataDir", "");
+ // Lazy node: sync only the namespace; fetch a name's DNS zone when a
+-// query arrives, instead of syncing full zones up front. Default off
+-// until Keeper's node flag/API lands (TODO-KEEPER-FLAG).
++// query arrives, instead of syncing full zones up front. Default off.
++// When on, the node is launched with --lazy and GREATDANE_NODE_LAZY=1.
+ pref("greatdane.node.lazy", false);
+ // Bounded wait (seconds) for a cold zone fetch. The resolver and the
+-// TLSA verifier wait this long for a SERVFAIL+EDE(loading) or
+-// /gd/tlsa status "loading" to become a real answer. On timeout show
+-// a retryable "still loading" state, never a TLSA/cert failure.
++// TLSA verifier wait this long for SERVFAIL+EDE 14/22 or /gd/tlsa
++// status "loading" to become a real answer, honoring retry_ms inside
++// this budget. On timeout show a retryable "still loading" state,
++// never a TLSA/cert failure.
+ pref("greatdane.node.lazyTimeoutSec", 10);
+ // Per-chain node on/off (Dane settings pane). Off = that TLD fails closed.
+ pref("greatdane.pep.enabled", true);
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index 0bdd948..cd17b81 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -11,30 +11,43 @@ const EP_PREF = "security.greatdane.tlsa_endpoints";
+ const DEAD_PORT = 9; // discard; never a listener on loopback here
+ const log = (...a) => console.log("GreatDANE:", ...a);
+ 
+-// TODO-KEEPER-FLAG: exact CLI flag or env name is not final. Used only
+-// when greatdane.node.lazy is true. Do not pass either when the pref is off.
+-export const LAZY_NODE_CLI_FLAG = "--lazy"; // TODO-KEEPER-FLAG
+-export const LAZY_NODE_ENV_NAME = "GREATDANE_NODE_LAZY"; // TODO-KEEPER-FLAG
+-
+-// TODO-KEEPER-EDE: dnsd signals "zone still fetching" as SERVFAIL plus this
+-// Extended DNS Error code. 0 means not yet assigned: do not treat any EDE
+-// as loading until this is replaced. Interim HTTP signal is status "loading"
+-// on /gd/tlsa (the node should translate SERVFAIL+EDE into that status).
+-export const LAZY_LOADING_EDE = 0; // TODO-KEEPER-EDE
++// Keeper's lazy-node flag/env (keeper/lazy-node). Used only when
++// greatdane.node.lazy is true. Do not pass either when the pref is off.
++export const LAZY_NODE_CLI_FLAG = "--lazy";
++export const LAZY_NODE_ENV_NAME = "GREATDANE_NODE_LAZY";
++
++// dnsd "zone still fetching" signals (RFC 8914):
++//   14 = Not Ready (fetch in flight)
++//   22 = fetch failed, retrying
++// Both are retryable loading, never NXDOMAIN / no_tlsa / a cert failure.
++// Plain SERVFAIL without 14 or 22 stays on the existing fail-closed path.
++export const LAZY_LOADING_EDE = 14;
++export const LAZY_FETCH_FAILED_EDE = 22;
+ export const TLSA_STATUS_LOADING = "loading";
+ export const DEFAULT_LAZY_TIMEOUT_SEC = 10;
++export const DEFAULT_LAZY_RETRY_MS = 1000;
+ 
+-// True when the node is still fetching this name's zone. A loading signal
+-// must never be classified as NXDOMAIN, no_tlsa, or a TLSA/cert failure.
+-// Plain SERVFAIL without the Keeper EDE (or with a different EDE) is false.
++export function isLazyLoadingEDE(ede) {
++  let n = Number(ede);
++  return n === LAZY_LOADING_EDE || n === LAZY_FETCH_FAILED_EDE;
++}
++
++// True when the node is still fetching this name's zone.
+ export function isLazyLoadingStatus(j) {
+   if (!j || typeof j != "object") return false;
+   if (j.status == TLSA_STATUS_LOADING) return true;
+-  if (LAZY_LOADING_EDE === 0) return false;
+   let rcode = j.rcode;
+-  let ede = Number(j.ede);
+   let servfail = rcode === 2 || rcode === "2" || rcode === "SERVFAIL";
+-  return servfail && ede === LAZY_LOADING_EDE;
++  return servfail && isLazyLoadingEDE(j.ede);
++}
++
++// Honor /gd/tlsa retry_ms inside the remaining lazy budget (ms).
++export function lazyRetryMs(j, budgetMs) {
++  let n = Number(j?.retry_ms);
++  if (!Number.isFinite(n) || n < 1) n = DEFAULT_LAZY_RETRY_MS;
++  let cap = Number.isFinite(budgetMs) && budgetMs > 0 ? budgetMs : DEFAULT_LAZY_TIMEOUT_SEC * 1000;
++  if (n > cap) n = cap;
++  return Math.max(1, Math.floor(n));
+ }
+ 
+ export function lazyTimeoutSec() {
+@@ -109,7 +122,8 @@ export const GreatDANE = {
+     return Services.prefs.getBoolPref(PREF + "node.lazy", false);
+   },
+ 
+-  // TODO-KEEPER-FLAG: append the placeholder CLI flag only when the pref is on.
++  // Confirmed flag. Other lazy tunables (--lazy-wait-ms, cache caps, TTLs)
++  // keep the node's defaults; the zone cache lives under --data.
+   _lazyArgs() {
+     return this._lazyEnabled() ? [LAZY_NODE_CLI_FLAG] : [];
+   },
+@@ -349,7 +363,6 @@ export const GreatDANE = {
+         stdout: "pipe",
+         stderr: "pipe",
+       };
+-      // TODO-KEEPER-FLAG: also export the env name when the pref is on.
+       // environmentAppend keeps the inherited environment otherwise unchanged.
+       if (this._lazyEnabled()) {
+         spawnOpts.environmentAppend = true;
+@@ -435,11 +448,15 @@ export const GreatDANE = {
+     if (!st.height || st.height < (st.activation || 0)) return false;
+     // A node at the tip keeps its pass open to follow new blocks, so
+     // passes can stay 0 forever: a peer's height claim settles it alone.
++    if (this._lazyEnabled()) {
++      // Prefer the node's namespace_synced flag. If an older node omits it,
++      // fall back to the same height catch-up used in full mode (do not
++      // wait for a zone-walk pass that a lazy node may never run).
++      if (typeof st.namespace_synced == "boolean") return st.namespace_synced;
++      if (st.peer_height > 0) return st.height + 2 >= st.peer_height;
++      return true;
++    }
+     if (st.peer_height > 0) return st.height + 2 >= st.peer_height;
+-    // TODO-KEEPER-FLAG: a lazy node may never run a full zone-walk "pass".
+-    // Namespace-only sync is enough to suggest and resolve names on demand.
+-    // Prefer a future node field (e.g. namespace_synced) once Keeper publishes it.
+-    if (this._lazyEnabled()) return true;
+     return st.passes >= 1;
+   },
+ 
+@@ -487,10 +504,11 @@ export const GreatDANE = {
+ 
+   // Ask the node why a chain host failed: ok | unowned | no_tlsa |
+   // bad_record | bad_name | loading, "" if it answered without a status,
+-  // or null if the node can't be asked. "loading" is the interim mapping
+-  // of dnsd SERVFAIL+EDE (TODO-KEEPER-EDE) and must not be treated as
+-  // NXDOMAIN or a missing/bad TLSA.
+-  async tlsaStatus(host) {
++  // or null if the node can't be asked. "loading" is SERVFAIL+EDE 14/22
++  // (owned, zone not ready) and must not be treated as NXDOMAIN or a
++  // missing/bad TLSA. retry_ms is honored by the verifier and the
++  // interstitial, inside the 10s budget.
++  async tlsaInfo(host) {
+     let c = this._chainFor(host);
+     if (!c?.ports) return null;
+     try {
+@@ -499,14 +517,20 @@ export const GreatDANE = {
+         { cache: "no-store" }
+       );
+       let j = await r.json();
+-      if (isLazyLoadingStatus(j)) return TLSA_STATUS_LOADING;
+-      // Answered, but no usable status: "" (classified as a key mismatch).
+-      return typeof j?.status == "string" ? j.status : "";
++      if (isLazyLoadingStatus(j)) {
++        return { status: TLSA_STATUS_LOADING, retry_ms: lazyRetryMs(j, lazyTimeoutSec() * 1000), raw: j };
++      }
++      return { status: typeof j?.status == "string" ? j.status : "", raw: j };
+     } catch (e) {
+       return null;
+     }
+   },
+ 
++  async tlsaStatus(host) {
++    let info = await this.tlsaInfo(host);
++    return info ? info.status : null;
++  },
++
+   _chainFor(host) {
+     host = host.toLowerCase().replace(/\.$/, "");
+     for (let [tld, c] of this._chains) {
+diff --git a/browser/components/greatdane/GreatDANEAbout.sys.mjs b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+index 0fd874c..4ef2ba3 100644
+--- a/browser/components/greatdane/GreatDANEAbout.sys.mjs
++++ b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+@@ -3,7 +3,7 @@
+  * The page is generated in the parent, has no script and no override
+  * button; it meta-refreshes and auto-continues once the chain is usable. */
+ 
+-import { GreatDANE, TLSA_STATUS_LOADING } from "resource:///modules/GreatDANE.sys.mjs";
++import { GreatDANE, TLSA_STATUS_LOADING, lazyTimeoutSec } from "resource:///modules/GreatDANE.sys.mjs";
+ 
+ const CID = Components.ID("{6d1b6f0e-5a7e-4f43-9e64-2f1c3c0de6a1}");
+ const CONTRACT = "@mozilla.org/network/protocol/about;1?what=greatdane";
+@@ -47,8 +47,48 @@ function chainHostRe() {
+ //   block: GreatDANE.blockReason(c) or null; tlsa: node /gd/tlsa status
+ //   ("" if the node answered without one), or null if it could not be asked; tlsFail: true/false, or null if the
+ //   failure kind is unknown (treated as a TLS failure: fail closed).
+-export function classifyChainFailure({ block = null, tlsa = null, tlsFail = null } = {}) {
++// Seconds to wait before retrying a GD_ZONE_LOADING interstitial.
++// Honors Retry-After (seconds) or retry_ms, clamped to the 10s budget,
++// at least 1s so the page cannot tight-loop.
++export function loadingRetrySec({ retryAfter, retryMs } = {}) {
++  let sec;
++  let ms = Number(retryMs);
++  let ra = Number(retryAfter);
++  if (Number.isFinite(ms) && ms >= 1) sec = Math.max(1, Math.ceil(ms / 1000));
++  else if (Number.isFinite(ra) && ra >= 1) sec = Math.floor(ra);
++  else sec = 1; // node proxy sends Retry-After: 1
++  let cap = 10;
++  try { cap = lazyTimeoutSec(); } catch (e) {}
++  if (sec > cap) sec = cap;
++  if (sec < 1) sec = 1;
++  return sec;
++}
++
++// A cold CONNECT through the node's PAC proxy waits, then returns
++// 503 + Retry-After: 1 + X-GreatDANE-Status: loading. That is
++// retryable, not a generic network/cert error.
++export function proxyLoadingFromRequest(request) {
++  if (!request) return { loading: false, retryAfter: null, httpStatus: 0 };
++  let status = 0, gd = "", ra = "";
++  try {
++    let ch = request.QueryInterface(Ci.nsIHttpChannel);
++    try { status = ch.responseStatus; } catch (e) {}
++    try { gd = ch.getResponseHeader("X-GreatDANE-Status"); } catch (e) {}
++    try { ra = ch.getResponseHeader("Retry-After"); } catch (e) {}
++  } catch (e) {
++    return { loading: false, retryAfter: null, httpStatus: 0 };
++  }
++  let loading = String(gd).trim().toLowerCase() == "loading";
++  let retryAfter = null;
++  let n = parseInt(ra, 10);
++  if (Number.isInteger(n) && n >= 1) retryAfter = n;
++  return { loading, retryAfter, httpStatus: status };
++}
++
++export function classifyChainFailure({ block = null, tlsa = null, tlsFail = null, proxyLoading = false } = {}) {
+   if (block) return block;
++  // Proxy 503 + X-GreatDANE-Status: loading, or /gd/tlsa "loading".
++  if (proxyLoading) return "GD_ZONE_LOADING";
+   if (tlsa === null || tlsa === undefined) return "GD_NODE_NOT_READY";
+   // Zone still fetching: retryable, never a cert/TLSA rejection.
+   if (tlsa == TLSA_STATUS_LOADING || tlsa == "loading") return "GD_ZONE_LOADING";
+@@ -128,8 +168,10 @@ export function _render(uri) {
+     } else if (code == "GD_ZONE_LOADING" && target) {
+       // Retryable: try the site again shortly. If the zone is still
+       // fetching, the trap comes back here; this is not a security error.
+-      // Do not use content="0;url=" (that would tight-loop).
+-      head = `<meta http-equiv="refresh" content="3;url=${esc(target)}">`;
++      // Do not use content="0;url=" (that would tight-loop). Honor
++      // Retry-After / retry_ms via the retry= query param.
++      let retry = loadingRetrySec({ retryAfter: Number(q.get("retry")) });
++      head = `<meta http-equiv="refresh" content="${retry};url=${esc(target)}">`;
+     } else {
+       if (now) code = now; // e.g. not-ready became syncing
+       if (!ERRORS[code]) code = "GD_SITE_UNREACHABLE";
+@@ -233,16 +275,28 @@ export const ErrorTrap = {
+     // Unknown failure kind -> null -> treated as a key mismatch (fail closed).
+     let tlsFail = mod == 21 || (doc !== null && /^about:certerror|[?&]e=nss/.test(doc))
+       ? true : (doc === null || !statusKnown ? null : false);
+-    let go = code => {
++    let proxy = proxyLoadingFromRequest(request);
++    let go = (code, retrySec) => {
+       let u = "about:dane?e=" + code + "&u=" + encodeURIComponent(location.spec);
++      if (code == "GD_ZONE_LOADING") {
++        u += "&retry=" + loadingRetrySec({ retryAfter: retrySec });
++      }
+       browser.loadURI(Services.io.newURI(u), {
+         triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+         loadFlags: Ci.nsIWebNavigation.LOAD_FLAGS_REPLACE_HISTORY,
+       });
+     };
+     if (code) { go(code); return; }
+-    return GreatDANE.tlsaStatus(host).then(
+-      tlsa => go(classifyChainFailure({ tlsa, tlsFail })),
++    // Cold CONNECT: 503 + X-GreatDANE-Status: loading. Don't wait on
++    // /gd/tlsa and don't fall through to a generic net/cert interstitial.
++    if (proxy.loading) { go("GD_ZONE_LOADING", proxy.retryAfter); return; }
++    return GreatDANE.tlsaInfo(host).then(
++      info => {
++        if (!info) { go(classifyChainFailure({ tlsa: null, tlsFail })); return; }
++        let retrySec;
++        if (info.status == "loading") retrySec = loadingRetrySec({ retryMs: info.retry_ms });
++        go(classifyChainFailure({ tlsa: info.status, tlsFail }), retrySec);
++      },
+       e => {
+         console.error("GreatDANE: TLSA status query failed for", host, e);
+         go("GD_NODE_NOT_READY");
+diff --git a/browser/components/greatdane/test/unit/test_greatdane_failclosed.js b/browser/components/greatdane/test/unit/test_greatdane_failclosed.js
+index 8a21592..c513bd3 100644
+--- a/browser/components/greatdane/test/unit/test_greatdane_failclosed.js
++++ b/browser/components/greatdane/test/unit/test_greatdane_failclosed.js
+@@ -8,7 +8,8 @@
+ "use strict";
+ 
+ const { GreatDANE } = ChromeUtils.importESModule("resource:///modules/GreatDANE.sys.mjs");
+-const { ErrorTrap, _render, classifyChainFailure, listenCell } = ChromeUtils.importESModule(
++const { ErrorTrap, _render, classifyChainFailure, listenCell,
++        proxyLoadingFromRequest, loadingRetrySec } = ChromeUtils.importESModule(
+   "resource:///modules/GreatDANEAbout.sys.mjs"
+ );
+ 
+@@ -45,7 +46,7 @@ function setChains(...cs) {
+ }
+ 
+ // Drive the tab trap for a failed top-level load; return the interstitial code.
+-async function trap(url, { doc = "about:neterror?e=proxyConnectFailure", docThrows = false } = {}) {
++async function trap(url, { doc = "about:neterror?e=proxyConnectFailure", docThrows = false, request = null } = {}) {
+   let loaded = null;
+   let browser = {
+     get documentURI() {
+@@ -55,7 +56,7 @@ async function trap(url, { doc = "about:neterror?e=proxyConnectFailure", docThro
+     loadURI(u) { loaded = u.spec; },
+   };
+   await ErrorTrap.onLocationChange(
+-    browser, { isTopLevel: true }, null, Services.io.newURI(url),
++    browser, { isTopLevel: true }, request, Services.io.newURI(url),
+     Ci.nsIWebProgressListener.LOCATION_CHANGE_ERROR_PAGE
+   );
+   Assert.ok(loaded, "error page for " + url + " was replaced");
+@@ -132,6 +133,10 @@ add_task(function classify_unknowns_fail_closed() {
+     "loading is never a TLSA/cert failure, even after a cert error page");
+   Assert.equal(classifyChainFailure({ tlsa: "unowned" }), "GD_NAME_UNOWNED",
+     "real NXDOMAIN/unowned stays not-found");
++  Assert.equal(classifyChainFailure({ proxyLoading: true, tlsa: null }), "GD_ZONE_LOADING",
++    "proxy 503 loading is not a generic error");
++  Assert.equal(loadingRetrySec({ retryAfter: 1 }), 1);
++  Assert.equal(loadingRetrySec({ retryMs: 1000 }), 1);
+ });
+ 
+ add_task(async function zone_still_loading_is_retryable() {
+@@ -140,11 +145,35 @@ add_task(async function zone_still_loading_is_retryable() {
+   Assert.equal(code, "GD_ZONE_LOADING", "loading is not a pinning failure");
+   Assert.ok(html.includes("Still loading this name"), "retryable heading");
+   Assert.ok(html.includes("not a security error"), "must not look like a cert rejection");
+-  Assert.ok(/content="3;url=https:\/\/loading\.doge\//.test(html), "retries the site after 3s");
++  Assert.ok(/content="1;url=https:\/\/loading\.doge\//.test(html), "retries the site after Retry-After/retry_ms (1s)");
+   Assert.ok(!/content="0;url=/.test(html), "does not tight-loop");
+   Assert.ok(!/<a\b|<button|<script/i.test(html), "no override link/button/script");
+ });
+ 
++
++add_task(async function proxy_503_loading_is_retryable() {
++  setChains(chain("doge"));
++  let request = {
++    status: 0,
++    responseStatus: 503,
++    getResponseHeader(name) {
++      name = String(name).toLowerCase();
++      if (name == "x-greatdane-status") return "loading";
++      if (name == "retry-after") return "1";
++      throw Components.Exception("", Cr.NS_ERROR_NOT_AVAILABLE);
++    },
++    QueryInterface() { return this; },
++  };
++  Assert.ok(proxyLoadingFromRequest(request).loading, "header is recognized");
++  Assert.equal(proxyLoadingFromRequest(request).retryAfter, 1);
++  let { code, html } = await trap("https://cold.doge/", { doc: "about:neterror?e=proxyConnectFailure", request });
++  Assert.equal(code, "GD_ZONE_LOADING", "503 loading is not a generic net error");
++  Assert.ok(html.includes("Still loading this name"));
++  Assert.ok(html.includes("not a security error"));
++  Assert.ok(/content="1;url=https:\/\/cold\.doge\//.test(html), "auto-retries after 1s");
++  Assert.ok(!/content="0;url=/.test(html), "does not tight-loop");
++});
++
+ add_task(async function unknown_or_missing_status_is_mismatch() {
+   setChains(chain("doge"));
+   for (let h of ["nostatus.doge", "weird.doge"]) {
+diff --git a/greatdane/tests/lazy_node/README.md b/greatdane/tests/lazy_node/README.md
+index 9934ca6..337a82c 100644
+--- a/greatdane/tests/lazy_node/README.md
++++ b/greatdane/tests/lazy_node/README.md
+@@ -1,27 +1,28 @@
+ # Lazy-node contract (Dane side)
+ 
+-Parametric wiring for Keeper's on-demand zone fetch. The launch pref is
+-off until the node flag lands. This directory is a localhost-only stub
+-and a policy test; it does not start a real node or talk to the mesh.
++Dane wiring for Keeper's on-demand zone fetch (`keeper/lazy-node`).
++The launch pref `greatdane.node.lazy` is still off by default. This
++directory is a localhost-only stub and a policy test; it does not start
++a real mesh node.
+ 
+-## Placeholders
++## Confirmed contract
+ 
+-- `TODO-KEEPER-FLAG`: CLI flag `--lazy` and env `GREATDANE_NODE_LAZY=1`.
+-  Passed only when `greatdane.node.lazy` is true. Replace when Keeper
+-  publishes the real flag or env name.
+-- `TODO-KEEPER-EDE`: Extended DNS Error code constant is `0` (unassigned).
+-  While it is 0, Dane does **not** treat any EDE as loading. Interim
+-  signal is HTTP `/gd/tlsa` `{"status":"loading"}`, which the node should
+-  emit when dnsd returns SERVFAIL plus the loading EDE. Plain SERVFAIL
+-  without that EDE stays on the existing fail-closed path.
+-- Timeout pref: `greatdane.node.lazyTimeoutSec` (default 10).
+-
+-## Suggested node HTTP mapping
+-
+-`/gd/tlsa?host=` should return `status: "loading"` (and optionally
+-`rcode: "SERVFAIL"` plus `ede: <TODO-KEEPER-EDE>`) while the zone is
+-being fetched. Never `unowned` / `no_tlsa` for a name that is in the
+-namespace but whose zone is not here yet. `/gd/names` should keep
+-working from the namespace alone.
++- Flag/env: `--lazy` and `GREATDANE_NODE_LAZY=1`, passed only when the
++  pref is on. Other tunables (`--lazy-wait-ms`, cache caps, TTLs) keep
++  the node's defaults. The zone cache lives under `--data`.
++- EDE 14 (Not Ready, still fetching) and EDE 22 (fetch failed,
++  retrying) are both retryable loading. Plain SERVFAIL is not.
++- `/gd/tlsa` for an owned-but-not-ready name returns
++  `{status:"loading", rcode:"SERVFAIL", ede:14|22,
++  phase:"fetching"|"fetch_failed", retry_ms:1000}` and never
++  unowned/no_tlsa/bad_record. `retry_ms` is honored inside the 10s
++  budget.
++- A cold CONNECT through the PAC proxy waits, then returns
++  `503` + `Retry-After: 1` + `X-GreatDANE-Status: loading`. Dane shows
++  `GD_ZONE_LOADING` and auto-retries; this is not a security error.
++- Stdio status adds `lazy`, `namespace_synced`, `zones_cached`,
++  `zones_loading`, `zones_failed`. In lazy mode Dane uses
++  `namespace_synced` when present.
++- `/gd/names` is unchanged and works from the namespace alone.
+ 
+ Run: `python3 test_lazy_node.py` (binds 127.0.0.1 only).
+diff --git a/greatdane/tests/lazy_node/fake_node.py b/greatdane/tests/lazy_node/fake_node.py
+index c843334..699fe91 100644
+--- a/greatdane/tests/lazy_node/fake_node.py
++++ b/greatdane/tests/lazy_node/fake_node.py
+@@ -193,6 +193,33 @@ class FakeNode:
+                     return
+                 self.send_error(404)
+ 
++            def do_CONNECT(self):
++                # Cold HTTPS CONNECT through the PAC proxy. Host is "name:port".
++                host = (self.path or "").split(":")[0]
++                rec = node._lookup(host)
++                delay = float((rec or {}).get("delay", 0))
++                if delay:
++                    time.sleep(delay)
++                loading = False
++                if rec is not None:
++                    http = rec.get("http")
++                    body = http() if callable(http) else dict(http or {})
++                    from lazy_policy import is_lazy_loading_status
++                    loading = is_lazy_loading_status(body) or rec.get("proxy_loading")
++                if loading:
++                    retry = str(int((rec or {}).get("retry_after", 1)))
++                    raw = b""
++                    self.send_response(503, "Service Unavailable")
++                    self.send_header("Retry-After", retry)
++                    self.send_header("X-GreatDANE-Status", "loading")
++                    self.send_header("Content-Length", "0")
++                    self.send_header("Connection", "close")
++                    self.end_headers()
++                    if raw:
++                        self.wfile.write(raw)
++                    return
++                self.send_error(404)
++
+         return Handler
+ 
+     def _dns_loop(self):
+diff --git a/greatdane/tests/lazy_node/lazy_policy.py b/greatdane/tests/lazy_node/lazy_policy.py
+index d5f150d..fd0cb01 100644
+--- a/greatdane/tests/lazy_node/lazy_policy.py
++++ b/greatdane/tests/lazy_node/lazy_policy.py
+@@ -6,67 +6,120 @@
+ import hashlib
+ import time
+ 
+-# TODO-KEEPER-FLAG: exact CLI flag or env name is not final.
+-LAZY_NODE_CLI_FLAG = "--lazy"  # TODO-KEEPER-FLAG
+-LAZY_NODE_ENV_NAME = "GREATDANE_NODE_LAZY"  # TODO-KEEPER-FLAG
+-
+-# TODO-KEEPER-EDE: dnsd signals "zone still fetching" as SERVFAIL plus this
+-# Extended DNS Error code. 0 means not yet assigned: do not treat any EDE as
+-# loading until this is replaced. Interim HTTP signal is /gd/tlsa status
+-# "loading" (the node should translate SERVFAIL+EDE into that status).
+-LAZY_LOADING_EDE = 0  # TODO-KEEPER-EDE
++# Keeper/lazy-node: confirmed flag/env. Passed only when the pref is on.
++LAZY_NODE_CLI_FLAG = "--lazy"
++LAZY_NODE_ENV_NAME = "GREATDANE_NODE_LAZY"
++
++# RFC 8914: 14 = Not Ready (fetch in flight); 22 = fetch failed, retrying.
++# Both are retryable loading. Plain SERVFAIL without these codes is not.
++LAZY_LOADING_EDE = 14
++LAZY_FETCH_FAILED_EDE = 22
++LAZY_LOADING_EDES = (LAZY_LOADING_EDE, LAZY_FETCH_FAILED_EDE)
+ TLSA_STATUS_LOADING = "loading"
+ DEFAULT_LAZY_TIMEOUT_SEC = 10
++DEFAULT_LAZY_RETRY_MS = 1000
+ 
+ RCODE_NOERROR = 0
+ RCODE_SERVFAIL = 2
+ RCODE_NXDOMAIN = 3
+ 
+-# Verdicts used by the verifier / interstitial classifier.
+ MATCH = "match"
+-FAIL = "fail"  # includes bad TLSA / plain SERVFAIL / unusable record
+-LOADING_TIMEOUT = "loading_timeout"  # retryable, never a cert/pinning failure
++FAIL = "fail"
++LOADING_TIMEOUT = "loading_timeout"
+ UNOWNED = "unowned"
+ NO_TLSA = "no_tlsa"
+ BAD_RECORD = "bad_record"
+ 
+ 
+-def is_lazy_loading_status(body, loading_ede=LAZY_LOADING_EDE):
++def is_lazy_loading_ede(ede):
++    try:
++        return int(ede) in LAZY_LOADING_EDES
++    except (TypeError, ValueError):
++        return False
++
++
++def is_lazy_loading_status(body, loading_edes=LAZY_LOADING_EDES):
+     """True when the node is still fetching this name's zone.
+ 
+     A loading signal must never be classified as NXDOMAIN, no_tlsa, or a
+-    TLSA/cert failure. Plain SERVFAIL without the Keeper EDE is False.
++    TLSA/cert failure. Plain SERVFAIL without EDE 14/22 is False.
+     """
+     if not isinstance(body, dict):
+         return False
+     if body.get("status") == TLSA_STATUS_LOADING:
+         return True
+-    if not loading_ede:
+-        return False
+     rcode = body.get("rcode")
++    servfail = rcode in (2, "2", "SERVFAIL", RCODE_SERVFAIL)
+     try:
+         ede = int(body.get("ede"))
+     except (TypeError, ValueError):
+         return False
+-    servfail = rcode in (2, "2", "SERVFAIL", RCODE_SERVFAIL)
+-    return servfail and ede == loading_ede
++    return servfail and ede in tuple(loading_edes)
+ 
+ 
+-def is_lazy_loading_dns(rcode, ede, loading_ede=LAZY_LOADING_EDE):
+-    """Raw dnsd contract: SERVFAIL + Keeper EDE is loading; plain SERVFAIL is not."""
+-    if not loading_ede:
+-        return False
++def is_lazy_loading_dns(rcode, ede, loading_edes=LAZY_LOADING_EDES):
++    """Raw dnsd contract: SERVFAIL + EDE 14 or 22 is loading."""
+     try:
+         ede = int(ede)
+     except (TypeError, ValueError):
+         return False
+-    return rcode in (RCODE_SERVFAIL, 2, "SERVFAIL") and ede == loading_ede
++    return rcode in (RCODE_SERVFAIL, 2, "SERVFAIL") and ede in tuple(loading_edes)
++
++
++def is_proxy_loading(http_status, headers):
++    """Cold CONNECT: 503 + X-GreatDANE-Status: loading (Retry-After: 1)."""
++    if not headers:
++        return False
++    # Header names are case-insensitive
++    norm = {str(k).lower(): str(v).strip() for k, v in headers.items()}
++    return norm.get("x-greatdane-status", "").lower() == "loading"
+ 
+ 
+-def classify_chain_failure(tlsa, tls_fail=None, block=None):
++def lazy_retry_ms(body, budget_ms):
++    n = DEFAULT_LAZY_RETRY_MS
++    try:
++        v = int(body.get("retry_ms"))
++        if v >= 1:
++            n = v
++    except (TypeError, ValueError, AttributeError):
++        pass
++    if budget_ms and budget_ms > 0 and n > budget_ms:
++        n = budget_ms
++    return max(1, n)
++
++
++def loading_retry_sec(retry_after=None, retry_ms=None, cap=DEFAULT_LAZY_TIMEOUT_SEC):
++    if retry_ms is not None:
++        try:
++            ms = float(retry_ms)
++            if ms >= 1:
++                sec = max(1, int((ms + 999) // 1000))  # ceil
++            else:
++                sec = 1
++        except (TypeError, ValueError):
++            sec = 1
++    elif retry_after is not None:
++        try:
++            sec = int(retry_after)
++        except (TypeError, ValueError):
++            sec = 1
++    else:
++        sec = 1
++    if cap < 1:
++        cap = DEFAULT_LAZY_TIMEOUT_SEC
++    if sec > cap:
++        sec = cap
++    if sec < 1:
++        sec = 1
++    return sec
++
++
++def classify_chain_failure(tlsa, tls_fail=None, block=None, proxy_loading=False):
+     """Same decision as GreatDANEAbout.classifyChainFailure."""
+     if block:
+         return block
++    if proxy_loading:
++        return "GD_ZONE_LOADING"
+     if tlsa is None:
+         return "GD_NODE_NOT_READY"
+     if tlsa == TLSA_STATUS_LOADING:
+@@ -114,7 +167,7 @@ def verify_body(body, leaf_spki):
+ 
+ 
+ def wait_for_tlsa(fetch, leaf_spki, lazy=True, timeout_sec=DEFAULT_LAZY_TIMEOUT_SEC,
+-                  loading_ede=LAZY_LOADING_EDE, clock=time.monotonic, sleep=time.sleep):
++                  loading_edes=LAZY_LOADING_EDES, clock=time.monotonic, sleep=time.sleep):
+     """Retry loop matching SSLServerCertVerification.cpp GreatDANEVerify.
+ 
+     fetch() should return one of:
+@@ -135,9 +188,13 @@ def wait_for_tlsa(fetch, leaf_spki, lazy=True, timeout_sec=DEFAULT_LAZY_TIMEOUT_
+             break
+         kind, body = fetch()
+         if kind == "ok":
+-            if is_lazy_loading_status(body, loading_ede=loading_ede):
++            if is_lazy_loading_status(body, loading_edes=loading_edes):
+                 saw_loading = True
+-                sleep(min(0.1, max(0.0, deadline - clock())))
++                wait = lazy_retry_ms(body, int(left * 1000)) / 1000.0
++                if wait > left:
++                    wait = left
++                if wait > 0:
++                    sleep(wait)
+                 continue
+             return verify_body(body, leaf_spki)
+         if kind == "connect_fail":
+diff --git a/greatdane/tests/lazy_node/test_lazy_node.py b/greatdane/tests/lazy_node/test_lazy_node.py
+index 9a56b40..895a109 100755
+--- a/greatdane/tests/lazy_node/test_lazy_node.py
++++ b/greatdane/tests/lazy_node/test_lazy_node.py
+@@ -7,6 +7,7 @@ DogeNet/PepeNet names, seeds, or nodes. No mach build.
+ 
+ from __future__ import annotations
+ 
++import http.client
+ import json
+ import os
+ import socket
+@@ -27,6 +28,7 @@ from fake_node import (
+ from lazy_policy import (
+     DEFAULT_LAZY_TIMEOUT_SEC,
+     FAIL,
++    LAZY_FETCH_FAILED_EDE,
+     LAZY_LOADING_EDE,
+     LAZY_NODE_CLI_FLAG,
+     LAZY_NODE_ENV_NAME,
+@@ -39,6 +41,9 @@ from lazy_policy import (
+     classify_chain_failure,
+     is_lazy_loading_dns,
+     is_lazy_loading_status,
++    is_proxy_loading,
++    loading_retry_sec,
++    lazy_retry_ms,
+     wait_for_tlsa,
+     _spki_sha256_hex,
+ )
+@@ -56,7 +61,20 @@ OK_TLSA = {
+     "data": GOOD_HASH,
+ }
+ BAD_TLSA = dict(OK_TLSA, data=BAD_HASH)
+-LOADING_BODY = {"status": TLSA_STATUS_LOADING}
++LOADING_14 = {
++    "status": "loading",
++    "rcode": "SERVFAIL",
++    "ede": LAZY_LOADING_EDE,
++    "phase": "fetching",
++    "retry_ms": 1000,
++}
++LOADING_22 = {
++    "status": "loading",
++    "rcode": "SERVFAIL",
++    "ede": LAZY_FETCH_FAILED_EDE,
++    "phase": "fetch_failed",
++    "retry_ms": 1000,
++}
+ 
+ 
+ def http_fetch(port, host, timeout):
+@@ -91,31 +109,44 @@ def dns_query(port, name, timeout=5.0):
+         sock.close()
+ 
+ 
++def proxy_connect(port, host, timeout=5.0):
++    """Issue a CONNECT like the browser's PAC proxy path."""
++    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
++    try:
++        conn.request("CONNECT", f"{host}:443")
++        resp = conn.getresponse()
++        headers = {k: v for k, v in resp.getheaders()}
++        return resp.status, headers
++    finally:
++        conn.close()
++
++
+ class PolicyConstantsTests(unittest.TestCase):
+-    def test_placeholders_are_marked(self):
++    def test_confirmed_constants(self):
+         self.assertEqual(LAZY_NODE_CLI_FLAG, "--lazy")
+         self.assertEqual(LAZY_NODE_ENV_NAME, "GREATDANE_NODE_LAZY")
+-        # 0 means not yet assigned: must not treat any EDE as loading.
+-        self.assertEqual(LAZY_LOADING_EDE, 0)
++        self.assertEqual(LAZY_LOADING_EDE, 14)
++        self.assertEqual(LAZY_FETCH_FAILED_EDE, 22)
+         self.assertEqual(DEFAULT_LAZY_TIMEOUT_SEC, 10)
+ 
+     def test_http_status_loading_is_loading(self):
+         self.assertTrue(is_lazy_loading_status({"status": "loading"}))
++        self.assertTrue(is_lazy_loading_status(LOADING_14))
++        self.assertTrue(is_lazy_loading_status(LOADING_22))
++
++    def test_servfail_plus_14_or_22_is_loading(self):
++        self.assertTrue(is_lazy_loading_status({"rcode": "SERVFAIL", "ede": 14}))
++        self.assertTrue(is_lazy_loading_status({"rcode": 2, "ede": 22}))
++        self.assertTrue(is_lazy_loading_dns(RCODE_SERVFAIL, 14))
++        self.assertTrue(is_lazy_loading_dns(RCODE_SERVFAIL, 22))
+ 
+-    def test_plain_servfail_is_not_loading_while_ede_is_placeholder(self):
+-        self.assertFalse(is_lazy_loading_status({"status": "error", "rcode": 2, "ede": 0}))
++    def test_plain_servfail_without_those_edes_is_not_loading(self):
++        self.assertFalse(is_lazy_loading_status({"status": "error", "rcode": 2}))
+         self.assertFalse(is_lazy_loading_status({"rcode": "SERVFAIL", "ede": 0}))
+-        self.assertFalse(is_lazy_loading_dns(RCODE_SERVFAIL, 0))
++        self.assertFalse(is_lazy_loading_status({"rcode": "SERVFAIL", "ede": 7}))
+         self.assertFalse(is_lazy_loading_dns(RCODE_SERVFAIL, None))
+-
+-    def test_servfail_plus_assigned_ede_is_loading(self):
+-        # Once TODO-KEEPER-EDE is replaced, this is the dnsd contract.
+-        ede = 99
+-        self.assertTrue(is_lazy_loading_status(
+-            {"rcode": "SERVFAIL", "ede": ede}, loading_ede=ede))
+-        self.assertTrue(is_lazy_loading_dns(RCODE_SERVFAIL, ede, loading_ede=ede))
+-        self.assertFalse(is_lazy_loading_dns(RCODE_SERVFAIL, 7, loading_ede=ede))
+-        self.assertFalse(is_lazy_loading_dns(RCODE_NXDOMAIN, ede, loading_ede=ede))
++        self.assertFalse(is_lazy_loading_dns(RCODE_SERVFAIL, 0))
++        self.assertFalse(is_lazy_loading_dns(RCODE_NXDOMAIN, 14))
+ 
+     def test_classify_loading_is_not_a_security_error(self):
+         self.assertEqual(classify_chain_failure("loading"), "GD_ZONE_LOADING")
+@@ -123,15 +154,50 @@ class PolicyConstantsTests(unittest.TestCase):
+             classify_chain_failure("loading", tls_fail=True),
+             "GD_ZONE_LOADING",
+         )
++        self.assertEqual(
++            classify_chain_failure(None, proxy_loading=True),
++            "GD_ZONE_LOADING",
++        )
+         self.assertEqual(classify_chain_failure("unowned"), "GD_NAME_UNOWNED")
+         self.assertEqual(classify_chain_failure("ok", tls_fail=True), "GD_TLS_UNTRUSTED")
+         self.assertEqual(classify_chain_failure(""), "GD_TLS_UNTRUSTED")
+ 
++    def test_retry_ms_clamped_to_budget(self):
++        self.assertEqual(lazy_retry_ms({"retry_ms": 1000}, 10_000), 1000)
++        self.assertEqual(lazy_retry_ms({"retry_ms": 30_000}, 10_000), 10_000)
++        self.assertEqual(lazy_retry_ms({}, 10_000), 1000)
++        self.assertEqual(loading_retry_sec(retry_ms=1000), 1)
++        self.assertEqual(loading_retry_sec(retry_after=1), 1)
++        self.assertEqual(loading_retry_sec(retry_ms=2500), 3)
++        self.assertEqual(loading_retry_sec(retry_after=30, cap=10), 10)
++
++    def test_retry_ms_is_honored_in_wait_loop(self):
++        sleeps = []
++        t = [0.0]
++
++        def clock():
++            return t[0]
++
++        def sleep(s):
++            sleeps.append(s)
++            t[0] += s
++
++        def fetch():
++            return ("ok", dict(LOADING_14, retry_ms=250))
++
++        verdict = wait_for_tlsa(
++            fetch, LEAF_SPKI, lazy=True, timeout_sec=1, clock=clock, sleep=sleep
++        )
++        self.assertEqual(verdict, LOADING_TIMEOUT)
++        self.assertTrue(sleeps)
++        # Every pause should honor 250ms, except a possible leftover sliver.
++        self.assertTrue(any(abs(s - 0.250) < 1e-9 for s in sleeps))
++        self.assertTrue(all(s <= 0.250 + 1e-9 for s in sleeps))
++        self.assertGreaterEqual(sum(sleeps), 0.75)
++
+ 
+ class FakeNodeTests(unittest.TestCase):
+     def setUp(self):
+-        assigned_ede = 99  # stand-in for TODO-KEEPER-EDE in the DNS cases
+-        self.assigned_ede = assigned_ede
+         records = {
+             "lazytest-warm.pepe": {
+                 "delay": 0,
+@@ -145,9 +211,15 @@ class FakeNodeTests(unittest.TestCase):
+             },
+             "lazytest-slow.pepe": {
+                 "delay": 0,
+-                "http": LOADING_BODY,
++                "http": LOADING_14,
++                "dns_rcode": RCODE_SERVFAIL,
++                "dns_ede": LAZY_LOADING_EDE,
++            },
++            "lazytest-failfetch.pepe": {
++                "delay": 0,
++                "http": LOADING_22,
+                 "dns_rcode": RCODE_SERVFAIL,
+-                "dns_ede": assigned_ede,
++                "dns_ede": LAZY_FETCH_FAILED_EDE,
+             },
+             "lazytest-nx.pepe": {
+                 "delay": 0,
+@@ -163,13 +235,13 @@ class FakeNodeTests(unittest.TestCase):
+                 "delay": 0,
+                 "http": {"status": "error", "rcode": "SERVFAIL"},
+                 "dns_rcode": RCODE_SERVFAIL,
+-                # no EDE: existing fail-closed path
+             },
+         }
+         names = [
+             "lazytest-warm",
+             "lazytest-cold",
+             "lazytest-slow",
++            "lazytest-failfetch",
+             "lazytest-nx",
+             "lazytest-bad",
+             "lazytest-other",
+@@ -179,11 +251,8 @@ class FakeNodeTests(unittest.TestCase):
+     def tearDown(self):
+         self.node.stop()
+ 
+-    def _wait(self, host, timeout_sec, lazy=True, loading_ede=LAZY_LOADING_EDE):
+-        # Each HTTP attempt is allowed the remaining budget (mirrors C++).
++    def _wait(self, host, timeout_sec, lazy=True):
+         def fetch():
+-            # Use a slightly longer socket timeout than the policy budget
+-            # so a delayed-but-successful answer (cold: 3s) is received.
+             return http_fetch(self.node.http_port, host, timeout=timeout_sec + 1)
+ 
+         t0 = time.monotonic()
+@@ -192,7 +261,6 @@ class FakeNodeTests(unittest.TestCase):
+             LEAF_SPKI,
+             lazy=lazy,
+             timeout_sec=timeout_sec,
+-            loading_ede=loading_ede,
+         )
+         return verdict, time.monotonic() - t0
+ 
+@@ -207,18 +275,50 @@ class FakeNodeTests(unittest.TestCase):
+         self.assertGreaterEqual(elapsed, 2.8)
+         self.assertLess(elapsed, 8.0)
+ 
+-    def test_cold_too_slow_is_retryable_not_tlsa_failure(self):
+-        # Node keeps answering "loading"; budget is short so the test stays cheap.
++    def test_cold_too_slow_ede14_is_retryable_not_tlsa_failure(self):
+         verdict, elapsed = self._wait("lazytest-slow.pepe", timeout_sec=1)
+         self.assertEqual(verdict, LOADING_TIMEOUT)
+         self.assertNotEqual(verdict, FAIL)
+         self.assertGreaterEqual(elapsed, 0.9)
+         self.assertEqual(classify_chain_failure("loading"), "GD_ZONE_LOADING")
+-        # Raw dnsd contract (with an assigned EDE stand-in): SERVFAIL+EDE.
+         rcode, ede = dns_query(self.node.dns_port, "lazytest-slow.pepe", timeout=2)
+         self.assertEqual(rcode, RCODE_SERVFAIL)
+-        self.assertEqual(ede, self.assigned_ede)
+-        self.assertTrue(is_lazy_loading_dns(rcode, ede, loading_ede=self.assigned_ede))
++        self.assertEqual(ede, LAZY_LOADING_EDE)
++        self.assertTrue(is_lazy_loading_dns(rcode, ede))
++        kind, body = http_fetch(self.node.http_port, "lazytest-slow.pepe", timeout=2)
++        self.assertEqual(kind, "ok")
++        self.assertEqual(body["phase"], "fetching")
++        self.assertEqual(body["retry_ms"], 1000)
++        self.assertEqual(body["ede"], 14)
++
++    def test_ede22_fetch_failed_is_also_retryable_loading(self):
++        verdict, _ = self._wait("lazytest-failfetch.pepe", timeout_sec=1)
++        self.assertEqual(verdict, LOADING_TIMEOUT)
++        rcode, ede = dns_query(self.node.dns_port, "lazytest-failfetch.pepe", timeout=2)
++        self.assertEqual(rcode, RCODE_SERVFAIL)
++        self.assertEqual(ede, LAZY_FETCH_FAILED_EDE)
++        self.assertTrue(is_lazy_loading_dns(rcode, ede))
++        kind, body = http_fetch(self.node.http_port, "lazytest-failfetch.pepe", timeout=2)
++        self.assertEqual(body["phase"], "fetch_failed")
++        self.assertEqual(body["ede"], 22)
++
++    def test_proxy_connect_503_is_zone_loading(self):
++        status, headers = proxy_connect(self.node.http_port, "lazytest-slow.pepe")
++        self.assertEqual(status, 503)
++        # header names from http.client are whatever the server sent
++        self.assertTrue(is_proxy_loading(status, headers))
++        norm = {k.lower(): v for k, v in headers.items()}
++        self.assertEqual(norm.get("x-greatdane-status"), "loading")
++        self.assertEqual(norm.get("retry-after"), "1")
++        self.assertEqual(
++            classify_chain_failure(None, proxy_loading=True),
++            "GD_ZONE_LOADING",
++        )
++        self.assertEqual(loading_retry_sec(retry_after=int(norm["retry-after"])), 1)
++        # A real NXDOMAIN CONNECT is not a loading 503.
++        status2, headers2 = proxy_connect(self.node.http_port, "lazytest-nx.pepe")
++        self.assertNotEqual(status2, 503)
++        self.assertFalse(is_proxy_loading(status2, headers2))
+ 
+     def test_real_nxdomain_is_not_found(self):
+         verdict, elapsed = self._wait("lazytest-nx.pepe", timeout_sec=5)
+@@ -228,7 +328,7 @@ class FakeNodeTests(unittest.TestCase):
+         rcode, ede = dns_query(self.node.dns_port, "lazytest-nx.pepe")
+         self.assertEqual(rcode, RCODE_NXDOMAIN)
+         self.assertIsNone(ede)
+-        self.assertFalse(is_lazy_loading_dns(rcode, ede, loading_ede=self.assigned_ede))
++        self.assertFalse(is_lazy_loading_dns(rcode, ede))
+ 
+     def test_bad_tlsa_is_rejected(self):
+         verdict, elapsed = self._wait("lazytest-bad.pepe", timeout_sec=5)
+@@ -243,15 +343,12 @@ class FakeNodeTests(unittest.TestCase):
+         rcode, ede = dns_query(self.node.dns_port, "lazytest-servfail.pepe")
+         self.assertEqual(rcode, RCODE_SERVFAIL)
+         self.assertIsNone(ede)
+-        self.assertFalse(is_lazy_loading_dns(rcode, ede, loading_ede=self.assigned_ede))
+-        # HTTP body has SERVFAIL and no loading status / no matching EDE.
++        self.assertFalse(is_lazy_loading_dns(rcode, ede))
+         kind, body = http_fetch(self.node.http_port, "lazytest-servfail.pepe", timeout=2)
+         self.assertEqual(kind, "ok")
+         self.assertFalse(is_lazy_loading_status(body))
+-        self.assertFalse(is_lazy_loading_status(body, loading_ede=self.assigned_ede))
+ 
+     def test_names_work_while_a_zone_is_still_loading(self):
+-        # Namespace-only sync keeps the full name list; suggestions unchanged.
+         url = f"http://127.0.0.1:{self.node.http_port}/gd/names?prefix=lazytest-&limit=10"
+         with urllib.request.urlopen(url, timeout=2) as resp:
+             data = json.loads(resp.read().decode("utf-8"))
+diff --git a/security/manager/ssl/SSLServerCertVerification.cpp b/security/manager/ssl/SSLServerCertVerification.cpp
+index 8a8c363..664ca72 100644
+--- a/security/manager/ssl/SSLServerCertVerification.cpp
++++ b/security/manager/ssl/SSLServerCertVerification.cpp
+@@ -792,17 +792,16 @@ SECStatus SSLServerCertVerificationJob::Dispatch(
+ // greatdane-node folded from the chain (3 1 1 = SHA-256 of the SPKI). Anything
+ // else (unowned name, no TLSA, node unreachable, mismatch) fails closed with a
+ // non-overridable error. A "zone still fetching" answer (HTTP status
+-// "loading", or SERVFAIL plus TODO-KEEPER-EDE) is retried until
+-// greatdane.node.lazyTimeoutSec and, on timeout, fails as a retryable I/O
+-// timeout — never as key pinning. Names/validity are ignored, as RFC 7671
+-// says for EE.
++// "loading", or SERVFAIL plus EDE 14 / 22) is retried until
++// greatdane.node.lazyTimeoutSec, sleeping retry_ms (default 1000) between
++// attempts, and on timeout fails as a retryable I/O timeout — never as
++// key pinning. Names/validity are ignored, as RFC 7671 says for EE.
+ enum class GreatDANEVerdict { NotChain, Match, Fail, Loading };
+ 
+-// TODO-KEEPER-EDE: dnsd signals "zone still fetching" as SERVFAIL plus this
+-// Extended DNS Error code. 0 means not yet assigned: do not treat any EDE as
+-// loading until Keeper publishes the code. The interim HTTP signal is
+-// /gd/tlsa status "loading" (the node should translate SERVFAIL+EDE).
+-static const int32_t kGreatDANELazyLoadingEDE = 0;  // TODO-KEEPER-EDE
++// RFC 8914: 14 = Not Ready (fetch in flight), 22 = fetch failed / retrying.
++// Both are retryable loading. Plain SERVFAIL without these codes is not.
++static const int32_t kGreatDANELazyLoadingEDE = 14;
++static const int32_t kGreatDANELazyFetchFailedEDE = 22;
+ 
+ static bool GreatDANEEndpointFor(const nsACString& aHost, nsACString& aEndpoint) {
+   nsAutoCString host(aHost);
+@@ -970,20 +969,36 @@ bool GreatDANEIsChainHost(const nsACString& aHost) {
+   return GreatDANEEndpointFor(aHost, endpoint);
+ }
+ 
++static bool GreatDANEIsLoadingEDE(int32_t ede) {
++  return ede == kGreatDANELazyLoadingEDE || ede == kGreatDANELazyFetchFailedEDE;
++}
++
+ static bool GreatDANEIsLoadingBody(const nsACString& aBody) {
+   if (GreatDANEField(aBody, "status").EqualsLiteral("loading")) {
+     return true;
+   }
+-  // SERVFAIL + Keeper EDE, once the constant is no longer the 0 placeholder.
+-  if (kGreatDANELazyLoadingEDE == 0) return false;
+   nsAutoCString rcode = GreatDANEField(aBody, "rcode");
+   nsAutoCString edeStr = GreatDANEField(aBody, "ede");
+   nsresult err;
+   int32_t ede = edeStr.ToInteger(&err);
+-  if (NS_FAILED(err) || ede != kGreatDANELazyLoadingEDE) return false;
++  if (NS_FAILED(err) || !GreatDANEIsLoadingEDE(ede)) return false;
+   return rcode.EqualsLiteral("2") || rcode.EqualsLiteral("SERVFAIL");
+ }
+ 
++// Honor /gd/tlsa retry_ms (default 1000) inside the remaining budget.
++static int32_t GreatDANERetryMs(const nsACString& aBody, int32_t aBudgetMs) {
++  int32_t n = 1000;
++  nsAutoCString s = GreatDANEField(aBody, "retry_ms");
++  if (!s.IsEmpty()) {
++    nsresult err;
++    int32_t v = s.ToInteger(&err);
++    if (NS_SUCCEEDED(err) && v >= 1) n = v;
++  }
++  if (aBudgetMs > 0 && n > aBudgetMs) n = aBudgetMs;
++  if (n < 1) n = 1;
++  return n;
++}
++
+ // Compare a definitive /gd/tlsa body to the leaf SPKI (existing contract).
+ static GreatDANEVerdict GreatDANEVerifyBody(const nsTArray<uint8_t>& aLeaf,
+                                             const nsACString& aBody) {
+@@ -1049,7 +1064,10 @@ static GreatDANEVerdict GreatDANEVerify(const nsACString& aHost,
+     if (fr == GreatDANEFetchResult::Ok) {
+       if (GreatDANEIsLoadingBody(body)) {
+         sawLoading = true;
+-        PR_Sleep(PR_MillisecondsToInterval(100));
++        int32_t budgetMs = static_cast<int32_t>(left.ToMilliseconds());
++        if (budgetMs < 1) budgetMs = 1;
++        int32_t wait = GreatDANERetryMs(body, budgetMs);
++        PR_Sleep(PR_MillisecondsToInterval(static_cast<uint32_t>(wait)));
+         continue;
+       }
+       return GreatDANEVerifyBody(aLeaf, body);
