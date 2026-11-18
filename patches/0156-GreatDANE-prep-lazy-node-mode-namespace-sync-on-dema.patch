@@ -1,0 +1,1308 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Wed, 18 Nov 2026 15:45:22 -0600
+Subject: [PATCH 156/162] GreatDANE: prep lazy node mode (namespace sync,
+ on-demand zones)
+
+When greatdane.node.lazy is on (default false until Keeper's flag
+lands), spawn the embedded node with a placeholder CLI flag and env
+name (TODO-KEEPER-FLAG). The TLSA verifier and error trap treat
+SERVFAIL+EDE(loading) or /gd/tlsa status "loading" as "zone still
+fetching": wait up to greatdane.node.lazyTimeoutSec (default 10),
+then show a retryable GD_ZONE_LOADING page. That state is never a
+key-pinning or cert rejection. Plain SERVFAIL without the Keeper EDE
+(TODO-KEEPER-EDE, still 0/unassigned) stays on the existing
+fail-closed path.
+
+Name suggestions are unchanged: they read /gd/names from the
+namespace, which lazy sync still keeps complete.
+
+Local test: greatdane/tests/lazy_node (localhost stub, no mach, no
+real mesh). Do not push.
+---
+ browser/app/profile/firefox.js                |   9 +
+ .../components/greatdane/GreatDANE.sys.mjs    |  71 ++++-
+ .../greatdane/GreatDANEAbout.sys.mjs          |  11 +-
+ .../test/unit/test_greatdane_failclosed.js    |  18 +-
+ greatdane/tests/lazy_node/README.md           |  27 ++
+ greatdane/tests/lazy_node/fake_node.py        | 254 +++++++++++++++++
+ greatdane/tests/lazy_node/lazy_policy.py      | 158 +++++++++++
+ greatdane/tests/lazy_node/test_lazy_node.py   | 265 ++++++++++++++++++
+ .../manager/ssl/SSLServerCertVerification.cpp | 242 ++++++++++++----
+ 9 files changed, 991 insertions(+), 64 deletions(-)
+ create mode 100644 greatdane/tests/lazy_node/README.md
+ create mode 100644 greatdane/tests/lazy_node/fake_node.py
+ create mode 100644 greatdane/tests/lazy_node/lazy_policy.py
+ create mode 100755 greatdane/tests/lazy_node/test_lazy_node.py
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index 109e4d7..d46b3a9 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -3639,6 +3639,15 @@ pref("greatdane.enabled", true);
+ pref("greatdane.chains", "pep:pepe,doge:doge");
+ pref("greatdane.node.path", "");
+ pref("greatdane.node.dataDir", "");
++// Lazy node: sync only the namespace; fetch a name's DNS zone when a
++// query arrives, instead of syncing full zones up front. Default off
++// until Keeper's node flag/API lands (TODO-KEEPER-FLAG).
++pref("greatdane.node.lazy", false);
++// Bounded wait (seconds) for a cold zone fetch. The resolver and the
++// TLSA verifier wait this long for a SERVFAIL+EDE(loading) or
++// /gd/tlsa status "loading" to become a real answer. On timeout show
++// a retryable "still loading" state, never a TLSA/cert failure.
++pref("greatdane.node.lazyTimeoutSec", 10);
+ // Per-chain node on/off (Dane settings pane). Off = that TLD fails closed.
+ pref("greatdane.pep.enabled", true);
+ pref("greatdane.doge.enabled", true);
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index c3e2e4b..0bdd948 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -11,6 +11,39 @@ const EP_PREF = "security.greatdane.tlsa_endpoints";
+ const DEAD_PORT = 9; // discard; never a listener on loopback here
+ const log = (...a) => console.log("GreatDANE:", ...a);
+ 
++// TODO-KEEPER-FLAG: exact CLI flag or env name is not final. Used only
++// when greatdane.node.lazy is true. Do not pass either when the pref is off.
++export const LAZY_NODE_CLI_FLAG = "--lazy"; // TODO-KEEPER-FLAG
++export const LAZY_NODE_ENV_NAME = "GREATDANE_NODE_LAZY"; // TODO-KEEPER-FLAG
++
++// TODO-KEEPER-EDE: dnsd signals "zone still fetching" as SERVFAIL plus this
++// Extended DNS Error code. 0 means not yet assigned: do not treat any EDE
++// as loading until this is replaced. Interim HTTP signal is status "loading"
++// on /gd/tlsa (the node should translate SERVFAIL+EDE into that status).
++export const LAZY_LOADING_EDE = 0; // TODO-KEEPER-EDE
++export const TLSA_STATUS_LOADING = "loading";
++export const DEFAULT_LAZY_TIMEOUT_SEC = 10;
++
++// True when the node is still fetching this name's zone. A loading signal
++// must never be classified as NXDOMAIN, no_tlsa, or a TLSA/cert failure.
++// Plain SERVFAIL without the Keeper EDE (or with a different EDE) is false.
++export function isLazyLoadingStatus(j) {
++  if (!j || typeof j != "object") return false;
++  if (j.status == TLSA_STATUS_LOADING) return true;
++  if (LAZY_LOADING_EDE === 0) return false;
++  let rcode = j.rcode;
++  let ede = Number(j.ede);
++  let servfail = rcode === 2 || rcode === "2" || rcode === "SERVFAIL";
++  return servfail && ede === LAZY_LOADING_EDE;
++}
++
++export function lazyTimeoutSec() {
++  let s = Services.prefs.getIntPref(PREF + "node.lazyTimeoutSec", DEFAULT_LAZY_TIMEOUT_SEC);
++  if (!Number.isInteger(s) || s < 1) s = DEFAULT_LAZY_TIMEOUT_SEC;
++  if (s > 60) s = 60;
++  return s;
++}
++
+ const lazy = {};
+ ChromeUtils.defineESModuleGetters(lazy, {
+   registerAbout: "resource:///modules/GreatDANEAbout.sys.mjs",
+@@ -72,6 +105,15 @@ export const GreatDANE = {
+     return Number.isInteger(p) && p >= 1 && p <= 65535 ? ["--listen-port", String(p)] : [];
+   },
+ 
++  _lazyEnabled() {
++    return Services.prefs.getBoolPref(PREF + "node.lazy", false);
++  },
++
++  // TODO-KEEPER-FLAG: append the placeholder CLI flag only when the pref is on.
++  _lazyArgs() {
++    return this._lazyEnabled() ? [LAZY_NODE_CLI_FLAG] : [];
++  },
++
+   // Settings apply at spawn: stop the child; _spawn's exit path respawns it
+   // at once (no backoff) with the new flags.
+   restartChain(c) {
+@@ -126,6 +168,11 @@ export const GreatDANE = {
+ 
+   observe(subject, topic, data) {
+     if (topic == "nsPref:changed") {
++      if (data == PREF + "node.lazy") {
++        // Flag applies at spawn: restart every running chain with the new args.
++        for (let c of this._chains.values()) this.restartChain(c);
++        return;
++      }
+       let m = /^greatdane\.([a-z]+)\.(enabled|listen|listen_port)$/.exec(data);
+       let c = m && [...this._chains.values()].find(x => x.coin == m[1]);
+       if (!c) return;
+@@ -294,14 +341,21 @@ export const GreatDANE = {
+     c.state = "starting";
+     c.ports = null;
+     try {
+-      c.proc = await Subprocess.call({
++      let spawnOpts = {
+         command: this._nodePath(),
+         arguments: ["--data", this._dataDir(), "--only", c.coin, "--ephemeral-ports", "--dane-api", "--stdio",
+-                    ...this._listenArgs(c.coin)],
++                    ...this._listenArgs(c.coin), ...this._lazyArgs()],
+         stdin: "pipe",
+         stdout: "pipe",
+         stderr: "pipe",
+-      });
++      };
++      // TODO-KEEPER-FLAG: also export the env name when the pref is on.
++      // environmentAppend keeps the inherited environment otherwise unchanged.
++      if (this._lazyEnabled()) {
++        spawnOpts.environmentAppend = true;
++        spawnOpts.environment = { [LAZY_NODE_ENV_NAME]: "1" };
++      }
++      c.proc = await Subprocess.call(spawnOpts);
+       // Kill on profile-before-change if the node is still alive (Subprocess docs).
+       let proc = c.proc;
+       let blocker = () => proc.kill();
+@@ -382,6 +436,10 @@ export const GreatDANE = {
+     // A node at the tip keeps its pass open to follow new blocks, so
+     // passes can stay 0 forever: a peer's height claim settles it alone.
+     if (st.peer_height > 0) return st.height + 2 >= st.peer_height;
++    // TODO-KEEPER-FLAG: a lazy node may never run a full zone-walk "pass".
++    // Namespace-only sync is enough to suggest and resolve names on demand.
++    // Prefer a future node field (e.g. namespace_synced) once Keeper publishes it.
++    if (this._lazyEnabled()) return true;
+     return st.passes >= 1;
+   },
+ 
+@@ -428,8 +486,10 @@ export const GreatDANE = {
+   },
+ 
+   // Ask the node why a chain host failed: ok | unowned | no_tlsa |
+-  // bad_record | bad_name, "" if it answered without a status, or null if
+-  // the node can't be asked.
++  // bad_record | bad_name | loading, "" if it answered without a status,
++  // or null if the node can't be asked. "loading" is the interim mapping
++  // of dnsd SERVFAIL+EDE (TODO-KEEPER-EDE) and must not be treated as
++  // NXDOMAIN or a missing/bad TLSA.
+   async tlsaStatus(host) {
+     let c = this._chainFor(host);
+     if (!c?.ports) return null;
+@@ -439,6 +499,7 @@ export const GreatDANE = {
+         { cache: "no-store" }
+       );
+       let j = await r.json();
++      if (isLazyLoadingStatus(j)) return TLSA_STATUS_LOADING;
+       // Answered, but no usable status: "" (classified as a key mismatch).
+       return typeof j?.status == "string" ? j.status : "";
+     } catch (e) {
+diff --git a/browser/components/greatdane/GreatDANEAbout.sys.mjs b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+index 51331ef..0fd874c 100644
+--- a/browser/components/greatdane/GreatDANEAbout.sys.mjs
++++ b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+@@ -3,7 +3,7 @@
+  * The page is generated in the parent, has no script and no override
+  * button; it meta-refreshes and auto-continues once the chain is usable. */
+ 
+-import { GreatDANE } from "resource:///modules/GreatDANE.sys.mjs";
++import { GreatDANE, TLSA_STATUS_LOADING } from "resource:///modules/GreatDANE.sys.mjs";
+ 
+ const CID = Components.ID("{6d1b6f0e-5a7e-4f43-9e64-2f1c3c0de6a1}");
+ const CONTRACT = "@mozilla.org/network/protocol/about;1?what=greatdane";
+@@ -13,6 +13,8 @@ const ERRORS = {
+     "Dane resolves chain names with its own built-in node. It is starting (or restarting after a crash). This page will continue on its own when the node is up."],
+   GD_NODE_SYNCING: ["Still syncing the chain",
+     "Names are only trusted once the node has caught up with the network, so nothing for this site is loaded until then. This page will continue on its own when sync finishes."],
++  GD_ZONE_LOADING: ["Still loading this name",
++    "The name is on the chain, and Dane is fetching its DNS zone. This is not a security error. This page will try again shortly."],
+   GD_TLS_UNTRUSTED: ["This site's key does not match the chain",
+     "The server presented a key that does not match the TLSA record its owner published on chain. This can mean an impostor is answering for this name. Dane will not let you continue."],
+   GD_NAME_UNOWNED: ["Nobody owns this name",
+@@ -48,6 +50,8 @@ function chainHostRe() {
+ export function classifyChainFailure({ block = null, tlsa = null, tlsFail = null } = {}) {
+   if (block) return block;
+   if (tlsa === null || tlsa === undefined) return "GD_NODE_NOT_READY";
++  // Zone still fetching: retryable, never a cert/TLSA rejection.
++  if (tlsa == TLSA_STATUS_LOADING || tlsa == "loading") return "GD_ZONE_LOADING";
+   if (tlsa == "unowned" || tlsa == "bad_name") return "GD_NAME_UNOWNED";
+   if (tlsa == "no_tlsa") return "GD_NO_TLSA";
+   if (tlsa == "bad_record") return "GD_BAD_TLSA";
+@@ -121,6 +125,11 @@ export function _render(uri) {
+     if ((code == "GD_NODE_NOT_READY" || code == "GD_NODE_SYNCING") && c && !now) {
+       // cleared: continue to the site
+       head = `<meta http-equiv="refresh" content="0;url=${esc(target)}">`;
++    } else if (code == "GD_ZONE_LOADING" && target) {
++      // Retryable: try the site again shortly. If the zone is still
++      // fetching, the trap comes back here; this is not a security error.
++      // Do not use content="0;url=" (that would tight-loop).
++      head = `<meta http-equiv="refresh" content="3;url=${esc(target)}">`;
+     } else {
+       if (now) code = now; // e.g. not-ready became syncing
+       if (!ERRORS[code]) code = "GD_SITE_UNREACHABLE";
+diff --git a/browser/components/greatdane/test/unit/test_greatdane_failclosed.js b/browser/components/greatdane/test/unit/test_greatdane_failclosed.js
+index 84511a0..8a21592 100644
+--- a/browser/components/greatdane/test/unit/test_greatdane_failclosed.js
++++ b/browser/components/greatdane/test/unit/test_greatdane_failclosed.js
+@@ -13,7 +13,7 @@ const { ErrorTrap, _render, classifyChainFailure, listenCell } = ChromeUtils.imp
+ );
+ 
+ const MOCK = { "notlsa.doge": "no_tlsa", "mismatch.doge": "ok", "notlsa.pepe": "no_tlsa",
+-  "nostatus.doge": null, "weird.doge": "mystery" };
++  "nostatus.doge": null, "weird.doge": "mystery", "loading.doge": "loading" };
+ let mockPort = globalThis.GD_MOCK_PORT; // set by an external runner with its own mock
+ let server = null;
+ 
+@@ -127,6 +127,22 @@ add_task(function classify_unknowns_fail_closed() {
+   Assert.equal(classifyChainFailure({ tlsa: "weird", tlsFail: false }), "GD_TLS_UNTRUSTED",
+     "unknown status never reads as unreachable");
+   Assert.equal(classifyChainFailure({ block: "GD_NODE_SYNCING", tlsa: "ok" }), "GD_NODE_SYNCING");
++  Assert.equal(classifyChainFailure({ tlsa: "loading" }), "GD_ZONE_LOADING");
++  Assert.equal(classifyChainFailure({ tlsa: "loading", tlsFail: true }), "GD_ZONE_LOADING",
++    "loading is never a TLSA/cert failure, even after a cert error page");
++  Assert.equal(classifyChainFailure({ tlsa: "unowned" }), "GD_NAME_UNOWNED",
++    "real NXDOMAIN/unowned stays not-found");
++});
++
++add_task(async function zone_still_loading_is_retryable() {
++  setChains(chain("doge"));
++  let { code, html } = await trap("https://loading.doge/", { doc: "about:certerror?e=nssFailure2&u=x" });
++  Assert.equal(code, "GD_ZONE_LOADING", "loading is not a pinning failure");
++  Assert.ok(html.includes("Still loading this name"), "retryable heading");
++  Assert.ok(html.includes("not a security error"), "must not look like a cert rejection");
++  Assert.ok(/content="3;url=https:\/\/loading\.doge\//.test(html), "retries the site after 3s");
++  Assert.ok(!/content="0;url=/.test(html), "does not tight-loop");
++  Assert.ok(!/<a\b|<button|<script/i.test(html), "no override link/button/script");
+ });
+ 
+ add_task(async function unknown_or_missing_status_is_mismatch() {
+diff --git a/greatdane/tests/lazy_node/README.md b/greatdane/tests/lazy_node/README.md
+new file mode 100644
+index 0000000..9934ca6
+--- /dev/null
++++ b/greatdane/tests/lazy_node/README.md
+@@ -0,0 +1,27 @@
++# Lazy-node contract (Dane side)
++
++Parametric wiring for Keeper's on-demand zone fetch. The launch pref is
++off until the node flag lands. This directory is a localhost-only stub
++and a policy test; it does not start a real node or talk to the mesh.
++
++## Placeholders
++
++- `TODO-KEEPER-FLAG`: CLI flag `--lazy` and env `GREATDANE_NODE_LAZY=1`.
++  Passed only when `greatdane.node.lazy` is true. Replace when Keeper
++  publishes the real flag or env name.
++- `TODO-KEEPER-EDE`: Extended DNS Error code constant is `0` (unassigned).
++  While it is 0, Dane does **not** treat any EDE as loading. Interim
++  signal is HTTP `/gd/tlsa` `{"status":"loading"}`, which the node should
++  emit when dnsd returns SERVFAIL plus the loading EDE. Plain SERVFAIL
++  without that EDE stays on the existing fail-closed path.
++- Timeout pref: `greatdane.node.lazyTimeoutSec` (default 10).
++
++## Suggested node HTTP mapping
++
++`/gd/tlsa?host=` should return `status: "loading"` (and optionally
++`rcode: "SERVFAIL"` plus `ede: <TODO-KEEPER-EDE>`) while the zone is
++being fetched. Never `unowned` / `no_tlsa` for a name that is in the
++namespace but whose zone is not here yet. `/gd/names` should keep
++working from the namespace alone.
++
++Run: `python3 test_lazy_node.py` (binds 127.0.0.1 only).
+diff --git a/greatdane/tests/lazy_node/fake_node.py b/greatdane/tests/lazy_node/fake_node.py
+new file mode 100644
+index 0000000..c843334
+--- /dev/null
++++ b/greatdane/tests/lazy_node/fake_node.py
+@@ -0,0 +1,254 @@
++"""Localhost-only fake greatdane-node / dnsd for lazy-node tests.
++
++No real DogeNet/PepeNet names, seeds, or nodes. Binds 127.0.0.1 only.
++Answers /gd/tlsa, /gd/names, and a tiny DNS listener after a per-name delay.
++"""
++
++from __future__ import annotations
++
++import json
++import socket
++import struct
++import threading
++import time
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++from urllib.parse import parse_qs, urlparse
++
++from lazy_policy import (
++    LAZY_LOADING_EDE,
++    RCODE_NOERROR,
++    RCODE_NXDOMAIN,
++    RCODE_SERVFAIL,
++    TLSA_STATUS_LOADING,
++)
++
++# EDNS option code for Extended DNS Error (RFC 8914).
++EDNS_OPTION_EDE = 15
++
++
++def _encode_name(name: str) -> bytes:
++    out = bytearray()
++    for label in name.rstrip(".").split("."):
++        raw = label.encode("ascii")
++        if not raw or len(raw) > 63:
++            raise ValueError(f"bad label in {name!r}")
++        out.append(len(raw))
++        out.extend(raw)
++    out.append(0)
++    return bytes(out)
++
++
++def build_dns_response(query: bytes, rcode: int, ede=None) -> bytes:
++    """Minimal DNS response echoing the query question, with optional EDE."""
++    if len(query) < 12:
++        raise ValueError("short DNS query")
++    tid, flags, qdcount, *_ = struct.unpack("!HHHHHH", query[:12])
++    # Build a response: copy id, set QR=1, rcode, RA=1, keep question.
++    rflags = 0x8000 | 0x0080 | (rcode & 0xF)  # QR + RA + rcode
++    # Keep the question section as-is if we can find it; else empty.
++    # Find end of first question: after QNAME + QTYPE + QCLASS.
++    i = 12
++    try:
++        while i < len(query) and query[i] != 0:
++            i += 1 + query[i]
++        i += 1 + 4  # root + type/class
++        question = query[12:i] if qdcount else b""
++        qdc = 1 if question else 0
++    except Exception:
++        question, qdc = b"", 0
++
++    additional = b""
++    arcount = 0
++    if ede is not None:
++        # RFC 6891 OPT record + RFC 8914 EDE option (INFO-CODE only).
++        # NAME=root, TYPE=OPT (41), CLASS=udp payload, TTL=0, RDATA=option.
++        option_data = struct.pack("!H", int(ede))  # INFO-CODE, empty EXTRA-TEXT
++        option = struct.pack("!HH", EDNS_OPTION_EDE, len(option_data)) + option_data
++        additional = b"\x00" + struct.pack("!HHIH", 41, 1232, 0, len(option)) + option
++        arcount = 1
++
++    header = struct.pack("!HHHHHH", tid, rflags, qdc, 0, 0, arcount)
++    return header + question + additional
++
++
++def parse_qname(query: bytes) -> str:
++    if len(query) < 13:
++        return ""
++    labels = []
++    i = 12
++    while i < len(query) and query[i] != 0:
++        n = query[i]
++        if i + 1 + n > len(query):
++            return ""
++        labels.append(query[i + 1 : i + 1 + n].decode("ascii", "replace"))
++        i += 1 + n
++    return ".".join(labels).lower()
++
++
++def parse_ede(resp: bytes):
++    """Return the first EDE INFO-CODE in an OPT record, or None."""
++    if len(resp) < 12:
++        return None
++    *_, arcount = struct.unpack("!HHHHHH", resp[:12])
++    if arcount < 1:
++        return None
++    # Skip questions, no answers/authority in our stub.
++    _, flags, qdcount, ancount, nscount, _ = struct.unpack("!HHHHHH", resp[:12])
++    i = 12
++    for _ in range(qdcount):
++        while i < len(resp) and resp[i] != 0:
++            i += 1 + resp[i]
++        i += 1 + 4
++    # No AN/NS in our replies; additional starts here.
++    if i >= len(resp) or resp[i] != 0:
++        return None
++    i += 1
++    if i + 8 > len(resp):
++        return None
++    typ, _cls, _ttl, rdlen = struct.unpack("!HHIH", resp[i : i + 10])
++    i += 10
++    if typ != 41:
++        return None
++    end = i + rdlen
++    while i + 4 <= end:
++        opt, optlen = struct.unpack("!HH", resp[i : i + 4])
++        i += 4
++        if opt == EDNS_OPTION_EDE and optlen >= 2:
++            return struct.unpack("!H", resp[i : i + 2])[0]
++        i += optlen
++    return None
++
++
++def dns_rcode(resp: bytes) -> int:
++    if len(resp) < 12:
++        return -1
++    flags = struct.unpack("!HHHHHH", resp[:12])[1]
++    return flags & 0xF
++
++
++class FakeNode:
++    """Configurable per-host delayed answers for /gd/tlsa, /gd/names, and DNS."""
++
++    def __init__(self, records, names=None):
++        # records: host -> dict with keys:
++        #   delay (sec), http (dict body or callable),
++        #   dns_rcode, dns_ede (optional)
++        self.records = {k.lower().rstrip("."): v for k, v in records.items()}
++        self.names = list(names or [])
++        self.http = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
++        self.dns = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
++        self.dns.bind(("127.0.0.1", 0))
++        self._stop = threading.Event()
++        self._threads = []
++        self.http_port = self.http.server_address[1]
++        self.dns_port = self.dns.getsockname()[1]
++
++    def _lookup(self, host):
++        return self.records.get(host.lower().rstrip("."))
++
++    def _handler(self):
++        node = self
++
++        class Handler(BaseHTTPRequestHandler):
++            def log_message(self, fmt, *args):
++                return  # keep tests quiet; no hostnames to the console needed
++
++            def do_GET(self):
++                u = urlparse(self.path)
++                if u.path == "/gd/tlsa":
++                    host = parse_qs(u.query).get("host", [""])[0]
++                    rec = node._lookup(host)
++                    if rec is None:
++                        body = {"status": "unowned"}
++                        delay = 0
++                    else:
++                        delay = float(rec.get("delay", 0))
++                        http = rec.get("http")
++                        body = http() if callable(http) else dict(http)
++                    if delay:
++                        time.sleep(delay)
++                    raw = json.dumps(body).encode("utf-8")
++                    self.send_response(200)
++                    self.send_header("Content-Type", "application/json")
++                    self.send_header("Content-Length", str(len(raw)))
++                    self.end_headers()
++                    self.wfile.write(raw)
++                    return
++                if u.path == "/gd/names":
++                    # Namespace-only: the full name list is available even
++                    # when individual zones are still being fetched.
++                    qs = parse_qs(u.query)
++                    prefix = (qs.get("prefix", [""])[0] or "").lower()
++                    try:
++                        limit = int(qs.get("limit", ["5"])[0])
++                    except ValueError:
++                        limit = 5
++                    names = [n for n in node.names if n.startswith(prefix)][:limit]
++                    raw = json.dumps({"status": "ok", "names": names}).encode("utf-8")
++                    self.send_response(200)
++                    self.send_header("Content-Type", "application/json")
++                    self.send_header("Content-Length", str(len(raw)))
++                    self.end_headers()
++                    self.wfile.write(raw)
++                    return
++                self.send_error(404)
++
++        return Handler
++
++    def _dns_loop(self):
++        self.dns.settimeout(0.2)
++        while not self._stop.is_set():
++            try:
++                data, addr = self.dns.recvfrom(2048)
++            except socket.timeout:
++                continue
++            except OSError:
++                break
++            qname = parse_qname(data)
++            rec = self._lookup(qname)
++            if rec is None:
++                rcode, ede, delay = RCODE_NXDOMAIN, None, 0
++            else:
++                delay = float(rec.get("delay", 0))
++                rcode = rec.get("dns_rcode", RCODE_NOERROR)
++                ede = rec.get("dns_ede")
++            if delay:
++                time.sleep(delay)
++            try:
++                self.dns.sendto(build_dns_response(data, rcode, ede), addr)
++            except OSError:
++                break
++
++    def start(self):
++        t_http = threading.Thread(target=self.http.serve_forever, daemon=True)
++        t_dns = threading.Thread(target=self._dns_loop, daemon=True)
++        t_http.start()
++        t_dns.start()
++        self._threads = [t_http, t_dns]
++        return self
++
++    def stop(self):
++        self._stop.set()
++        try:
++            self.http.shutdown()
++        except Exception:
++            pass
++        try:
++            self.http.server_close()
++        except Exception:
++            pass
++        try:
++            self.dns.close()
++        except Exception:
++            pass
++
++    def __enter__(self):
++        return self.start()
++
++    def __exit__(self, *exc):
++        self.stop()
++
++
++def build_dns_query(name: str, qtype: int = 1) -> bytes:
++    header = struct.pack("!HHHHHH", 0x4242, 0x0100, 1, 0, 0, 0)
++    return header + _encode_name(name) + struct.pack("!HH", qtype, 1)
+diff --git a/greatdane/tests/lazy_node/lazy_policy.py b/greatdane/tests/lazy_node/lazy_policy.py
+new file mode 100644
+index 0000000..d5f150d
+--- /dev/null
++++ b/greatdane/tests/lazy_node/lazy_policy.py
+@@ -0,0 +1,158 @@
++# Mirrors the Dane lazy-node contract in
++# browser/components/greatdane/GreatDANE.sys.mjs and
++# security/manager/ssl/SSLServerCertVerification.cpp.
++# Keep these constants in sync. No Firefox runtime required.
++
++import hashlib
++import time
++
++# TODO-KEEPER-FLAG: exact CLI flag or env name is not final.
++LAZY_NODE_CLI_FLAG = "--lazy"  # TODO-KEEPER-FLAG
++LAZY_NODE_ENV_NAME = "GREATDANE_NODE_LAZY"  # TODO-KEEPER-FLAG
++
++# TODO-KEEPER-EDE: dnsd signals "zone still fetching" as SERVFAIL plus this
++# Extended DNS Error code. 0 means not yet assigned: do not treat any EDE as
++# loading until this is replaced. Interim HTTP signal is /gd/tlsa status
++# "loading" (the node should translate SERVFAIL+EDE into that status).
++LAZY_LOADING_EDE = 0  # TODO-KEEPER-EDE
++TLSA_STATUS_LOADING = "loading"
++DEFAULT_LAZY_TIMEOUT_SEC = 10
++
++RCODE_NOERROR = 0
++RCODE_SERVFAIL = 2
++RCODE_NXDOMAIN = 3
++
++# Verdicts used by the verifier / interstitial classifier.
++MATCH = "match"
++FAIL = "fail"  # includes bad TLSA / plain SERVFAIL / unusable record
++LOADING_TIMEOUT = "loading_timeout"  # retryable, never a cert/pinning failure
++UNOWNED = "unowned"
++NO_TLSA = "no_tlsa"
++BAD_RECORD = "bad_record"
++
++
++def is_lazy_loading_status(body, loading_ede=LAZY_LOADING_EDE):
++    """True when the node is still fetching this name's zone.
++
++    A loading signal must never be classified as NXDOMAIN, no_tlsa, or a
++    TLSA/cert failure. Plain SERVFAIL without the Keeper EDE is False.
++    """
++    if not isinstance(body, dict):
++        return False
++    if body.get("status") == TLSA_STATUS_LOADING:
++        return True
++    if not loading_ede:
++        return False
++    rcode = body.get("rcode")
++    try:
++        ede = int(body.get("ede"))
++    except (TypeError, ValueError):
++        return False
++    servfail = rcode in (2, "2", "SERVFAIL", RCODE_SERVFAIL)
++    return servfail and ede == loading_ede
++
++
++def is_lazy_loading_dns(rcode, ede, loading_ede=LAZY_LOADING_EDE):
++    """Raw dnsd contract: SERVFAIL + Keeper EDE is loading; plain SERVFAIL is not."""
++    if not loading_ede:
++        return False
++    try:
++        ede = int(ede)
++    except (TypeError, ValueError):
++        return False
++    return rcode in (RCODE_SERVFAIL, 2, "SERVFAIL") and ede == loading_ede
++
++
++def classify_chain_failure(tlsa, tls_fail=None, block=None):
++    """Same decision as GreatDANEAbout.classifyChainFailure."""
++    if block:
++        return block
++    if tlsa is None:
++        return "GD_NODE_NOT_READY"
++    if tlsa == TLSA_STATUS_LOADING:
++        return "GD_ZONE_LOADING"
++    if tlsa in ("unowned", "bad_name"):
++        return "GD_NAME_UNOWNED"
++    if tlsa == "no_tlsa":
++        return "GD_NO_TLSA"
++    if tlsa == "bad_record":
++        return "GD_BAD_TLSA"
++    if tlsa == "ok":
++        return "GD_SITE_UNREACHABLE" if tls_fail is False else "GD_TLS_UNTRUSTED"
++    return "GD_TLS_UNTRUSTED"
++
++
++def _spki_sha256_hex(spki_bytes):
++    return hashlib.sha256(spki_bytes).hexdigest()
++
++
++def verify_body(body, leaf_spki):
++    """Definitive /gd/tlsa body vs leaf SPKI (C++ GreatDANEVerifyBody)."""
++    if not isinstance(body, dict):
++        return FAIL
++    if is_lazy_loading_status(body):
++        raise ValueError("verify_body called on a loading signal")
++    status = body.get("status")
++    if status == "unowned" or status == "bad_name":
++        return UNOWNED
++    if status == "no_tlsa":
++        return NO_TLSA
++    if status == "bad_record":
++        return BAD_RECORD
++    if (
++        status != "ok"
++        or str(body.get("usage")) != "3"
++        or str(body.get("selector")) != "1"
++        or str(body.get("mtype")) != "1"
++    ):
++        return FAIL
++    want = str(body.get("data") or "").lower()
++    if len(want) != 64:
++        return FAIL
++    got = _spki_sha256_hex(leaf_spki)
++    return MATCH if got == want else FAIL
++
++
++def wait_for_tlsa(fetch, leaf_spki, lazy=True, timeout_sec=DEFAULT_LAZY_TIMEOUT_SEC,
++                  loading_ede=LAZY_LOADING_EDE, clock=time.monotonic, sleep=time.sleep):
++    """Retry loop matching SSLServerCertVerification.cpp GreatDANEVerify.
++
++    fetch() should return one of:
++      ("ok", dict_body)
++      ("connect_fail", None)
++      ("timeout", None)
++      ("bad_response", None)
++    """
++    if timeout_sec < 1:
++        timeout_sec = DEFAULT_LAZY_TIMEOUT_SEC
++    if timeout_sec > 60:
++        timeout_sec = 60
++    deadline = clock() + (timeout_sec if lazy else 5)
++    saw_loading = False
++    while True:
++        left = deadline - clock()
++        if left <= 0:
++            break
++        kind, body = fetch()
++        if kind == "ok":
++            if is_lazy_loading_status(body, loading_ede=loading_ede):
++                saw_loading = True
++                sleep(min(0.1, max(0.0, deadline - clock())))
++                continue
++            return verify_body(body, leaf_spki)
++        if kind == "connect_fail":
++            if saw_loading:
++                sleep(min(0.1, max(0.0, deadline - clock())))
++                continue
++            return FAIL
++        if kind == "timeout" and (lazy or saw_loading):
++            saw_loading = True
++            sleep(min(0.1, max(0.0, deadline - clock())))
++            continue
++        if kind == "bad_response" and saw_loading:
++            sleep(min(0.1, max(0.0, deadline - clock())))
++            continue
++        return FAIL
++    if saw_loading or lazy:
++        return LOADING_TIMEOUT
++    return FAIL
+diff --git a/greatdane/tests/lazy_node/test_lazy_node.py b/greatdane/tests/lazy_node/test_lazy_node.py
+new file mode 100755
+index 0000000..9a56b40
+--- /dev/null
++++ b/greatdane/tests/lazy_node/test_lazy_node.py
+@@ -0,0 +1,265 @@
++#!/usr/bin/env python3
++"""Local, no-network tests for Dane lazy-node loading / TLSA policy.
++
++Binds 127.0.0.1 only. Uses synthetic names (lazytest-*.pepe), never real
++DogeNet/PepeNet names, seeds, or nodes. No mach build.
++"""
++
++from __future__ import annotations
++
++import json
++import os
++import socket
++import sys
++import time
++import unittest
++import urllib.error
++import urllib.request
++
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++
++from fake_node import (
++    FakeNode,
++    build_dns_query,
++    dns_rcode,
++    parse_ede,
++)
++from lazy_policy import (
++    DEFAULT_LAZY_TIMEOUT_SEC,
++    FAIL,
++    LAZY_LOADING_EDE,
++    LAZY_NODE_CLI_FLAG,
++    LAZY_NODE_ENV_NAME,
++    LOADING_TIMEOUT,
++    MATCH,
++    RCODE_NXDOMAIN,
++    RCODE_SERVFAIL,
++    TLSA_STATUS_LOADING,
++    UNOWNED,
++    classify_chain_failure,
++    is_lazy_loading_dns,
++    is_lazy_loading_status,
++    wait_for_tlsa,
++    _spki_sha256_hex,
++)
++
++# Synthetic SPKI bytes — not a key file, just material for a SHA-256 compare.
++LEAF_SPKI = b"lazy-node-test-spki-v1"
++GOOD_HASH = _spki_sha256_hex(LEAF_SPKI)
++BAD_HASH = "ab" * 32
++
++OK_TLSA = {
++    "status": "ok",
++    "usage": "3",
++    "selector": "1",
++    "mtype": "1",
++    "data": GOOD_HASH,
++}
++BAD_TLSA = dict(OK_TLSA, data=BAD_HASH)
++LOADING_BODY = {"status": TLSA_STATUS_LOADING}
++
++
++def http_fetch(port, host, timeout):
++    url = f"http://127.0.0.1:{port}/gd/tlsa?host={host}"
++    try:
++        with urllib.request.urlopen(url, timeout=timeout) as resp:
++            return ("ok", json.loads(resp.read().decode("utf-8")))
++    except socket.timeout:
++        return ("timeout", None)
++    except TimeoutError:
++        return ("timeout", None)
++    except urllib.error.URLError as e:
++        reason = e.reason
++        if isinstance(reason, (socket.timeout, TimeoutError)):
++            return ("timeout", None)
++        if isinstance(reason, ConnectionRefusedError):
++            return ("connect_fail", None)
++        if reason is not None and "timed out" in str(reason).lower():
++            return ("timeout", None)
++        return ("connect_fail", None)
++
++
++def dns_query(port, name, timeout=5.0):
++    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
++    sock.bind(("127.0.0.1", 0))
++    sock.settimeout(timeout)
++    try:
++        sock.sendto(build_dns_query(name), ("127.0.0.1", port))
++        resp, _ = sock.recvfrom(2048)
++        return dns_rcode(resp), parse_ede(resp)
++    finally:
++        sock.close()
++
++
++class PolicyConstantsTests(unittest.TestCase):
++    def test_placeholders_are_marked(self):
++        self.assertEqual(LAZY_NODE_CLI_FLAG, "--lazy")
++        self.assertEqual(LAZY_NODE_ENV_NAME, "GREATDANE_NODE_LAZY")
++        # 0 means not yet assigned: must not treat any EDE as loading.
++        self.assertEqual(LAZY_LOADING_EDE, 0)
++        self.assertEqual(DEFAULT_LAZY_TIMEOUT_SEC, 10)
++
++    def test_http_status_loading_is_loading(self):
++        self.assertTrue(is_lazy_loading_status({"status": "loading"}))
++
++    def test_plain_servfail_is_not_loading_while_ede_is_placeholder(self):
++        self.assertFalse(is_lazy_loading_status({"status": "error", "rcode": 2, "ede": 0}))
++        self.assertFalse(is_lazy_loading_status({"rcode": "SERVFAIL", "ede": 0}))
++        self.assertFalse(is_lazy_loading_dns(RCODE_SERVFAIL, 0))
++        self.assertFalse(is_lazy_loading_dns(RCODE_SERVFAIL, None))
++
++    def test_servfail_plus_assigned_ede_is_loading(self):
++        # Once TODO-KEEPER-EDE is replaced, this is the dnsd contract.
++        ede = 99
++        self.assertTrue(is_lazy_loading_status(
++            {"rcode": "SERVFAIL", "ede": ede}, loading_ede=ede))
++        self.assertTrue(is_lazy_loading_dns(RCODE_SERVFAIL, ede, loading_ede=ede))
++        self.assertFalse(is_lazy_loading_dns(RCODE_SERVFAIL, 7, loading_ede=ede))
++        self.assertFalse(is_lazy_loading_dns(RCODE_NXDOMAIN, ede, loading_ede=ede))
++
++    def test_classify_loading_is_not_a_security_error(self):
++        self.assertEqual(classify_chain_failure("loading"), "GD_ZONE_LOADING")
++        self.assertEqual(
++            classify_chain_failure("loading", tls_fail=True),
++            "GD_ZONE_LOADING",
++        )
++        self.assertEqual(classify_chain_failure("unowned"), "GD_NAME_UNOWNED")
++        self.assertEqual(classify_chain_failure("ok", tls_fail=True), "GD_TLS_UNTRUSTED")
++        self.assertEqual(classify_chain_failure(""), "GD_TLS_UNTRUSTED")
++
++
++class FakeNodeTests(unittest.TestCase):
++    def setUp(self):
++        assigned_ede = 99  # stand-in for TODO-KEEPER-EDE in the DNS cases
++        self.assigned_ede = assigned_ede
++        records = {
++            "lazytest-warm.pepe": {
++                "delay": 0,
++                "http": OK_TLSA,
++                "dns_rcode": 0,
++            },
++            "lazytest-cold.pepe": {
++                "delay": 3.0,
++                "http": OK_TLSA,
++                "dns_rcode": 0,
++            },
++            "lazytest-slow.pepe": {
++                "delay": 0,
++                "http": LOADING_BODY,
++                "dns_rcode": RCODE_SERVFAIL,
++                "dns_ede": assigned_ede,
++            },
++            "lazytest-nx.pepe": {
++                "delay": 0,
++                "http": {"status": "unowned"},
++                "dns_rcode": RCODE_NXDOMAIN,
++            },
++            "lazytest-bad.pepe": {
++                "delay": 0,
++                "http": BAD_TLSA,
++                "dns_rcode": 0,
++            },
++            "lazytest-servfail.pepe": {
++                "delay": 0,
++                "http": {"status": "error", "rcode": "SERVFAIL"},
++                "dns_rcode": RCODE_SERVFAIL,
++                # no EDE: existing fail-closed path
++            },
++        }
++        names = [
++            "lazytest-warm",
++            "lazytest-cold",
++            "lazytest-slow",
++            "lazytest-nx",
++            "lazytest-bad",
++            "lazytest-other",
++        ]
++        self.node = FakeNode(records, names=names).start()
++
++    def tearDown(self):
++        self.node.stop()
++
++    def _wait(self, host, timeout_sec, lazy=True, loading_ede=LAZY_LOADING_EDE):
++        # Each HTTP attempt is allowed the remaining budget (mirrors C++).
++        def fetch():
++            # Use a slightly longer socket timeout than the policy budget
++            # so a delayed-but-successful answer (cold: 3s) is received.
++            return http_fetch(self.node.http_port, host, timeout=timeout_sec + 1)
++
++        t0 = time.monotonic()
++        verdict = wait_for_tlsa(
++            fetch,
++            LEAF_SPKI,
++            lazy=lazy,
++            timeout_sec=timeout_sec,
++            loading_ede=loading_ede,
++        )
++        return verdict, time.monotonic() - t0
++
++    def test_warm_immediate_match(self):
++        verdict, elapsed = self._wait("lazytest-warm.pepe", timeout_sec=10)
++        self.assertEqual(verdict, MATCH)
++        self.assertLess(elapsed, 1.5)
++
++    def test_cold_waits_and_tlsa_passes(self):
++        verdict, elapsed = self._wait("lazytest-cold.pepe", timeout_sec=10)
++        self.assertEqual(verdict, MATCH)
++        self.assertGreaterEqual(elapsed, 2.8)
++        self.assertLess(elapsed, 8.0)
++
++    def test_cold_too_slow_is_retryable_not_tlsa_failure(self):
++        # Node keeps answering "loading"; budget is short so the test stays cheap.
++        verdict, elapsed = self._wait("lazytest-slow.pepe", timeout_sec=1)
++        self.assertEqual(verdict, LOADING_TIMEOUT)
++        self.assertNotEqual(verdict, FAIL)
++        self.assertGreaterEqual(elapsed, 0.9)
++        self.assertEqual(classify_chain_failure("loading"), "GD_ZONE_LOADING")
++        # Raw dnsd contract (with an assigned EDE stand-in): SERVFAIL+EDE.
++        rcode, ede = dns_query(self.node.dns_port, "lazytest-slow.pepe", timeout=2)
++        self.assertEqual(rcode, RCODE_SERVFAIL)
++        self.assertEqual(ede, self.assigned_ede)
++        self.assertTrue(is_lazy_loading_dns(rcode, ede, loading_ede=self.assigned_ede))
++
++    def test_real_nxdomain_is_not_found(self):
++        verdict, elapsed = self._wait("lazytest-nx.pepe", timeout_sec=5)
++        self.assertEqual(verdict, UNOWNED)
++        self.assertLess(elapsed, 1.5)
++        self.assertEqual(classify_chain_failure("unowned"), "GD_NAME_UNOWNED")
++        rcode, ede = dns_query(self.node.dns_port, "lazytest-nx.pepe")
++        self.assertEqual(rcode, RCODE_NXDOMAIN)
++        self.assertIsNone(ede)
++        self.assertFalse(is_lazy_loading_dns(rcode, ede, loading_ede=self.assigned_ede))
++
++    def test_bad_tlsa_is_rejected(self):
++        verdict, elapsed = self._wait("lazytest-bad.pepe", timeout_sec=5)
++        self.assertEqual(verdict, FAIL)
++        self.assertLess(elapsed, 1.5)
++        self.assertEqual(classify_chain_failure("ok", tls_fail=True), "GD_TLS_UNTRUSTED")
++
++    def test_plain_servfail_without_ede_is_existing_fail_path(self):
++        verdict, _ = self._wait("lazytest-servfail.pepe", timeout_sec=5)
++        self.assertEqual(verdict, FAIL)
++        self.assertNotEqual(verdict, LOADING_TIMEOUT)
++        rcode, ede = dns_query(self.node.dns_port, "lazytest-servfail.pepe")
++        self.assertEqual(rcode, RCODE_SERVFAIL)
++        self.assertIsNone(ede)
++        self.assertFalse(is_lazy_loading_dns(rcode, ede, loading_ede=self.assigned_ede))
++        # HTTP body has SERVFAIL and no loading status / no matching EDE.
++        kind, body = http_fetch(self.node.http_port, "lazytest-servfail.pepe", timeout=2)
++        self.assertEqual(kind, "ok")
++        self.assertFalse(is_lazy_loading_status(body))
++        self.assertFalse(is_lazy_loading_status(body, loading_ede=self.assigned_ede))
++
++    def test_names_work_while_a_zone_is_still_loading(self):
++        # Namespace-only sync keeps the full name list; suggestions unchanged.
++        url = f"http://127.0.0.1:{self.node.http_port}/gd/names?prefix=lazytest-&limit=10"
++        with urllib.request.urlopen(url, timeout=2) as resp:
++            data = json.loads(resp.read().decode("utf-8"))
++        self.assertEqual(data["status"], "ok")
++        self.assertIn("lazytest-slow", data["names"])
++        self.assertIn("lazytest-warm", data["names"])
++        self.assertIn("lazytest-other", data["names"])
++
++
++if __name__ == "__main__":
++    unittest.main(verbosity=2)
+diff --git a/security/manager/ssl/SSLServerCertVerification.cpp b/security/manager/ssl/SSLServerCertVerification.cpp
+index af2c9d0..8a8c363 100644
+--- a/security/manager/ssl/SSLServerCertVerification.cpp
++++ b/security/manager/ssl/SSLServerCertVerification.cpp
+@@ -111,8 +111,11 @@
+ #include "prio.h"
+ #include "prnetdb.h"
+ #include "mozilla/Assertions.h"
++#include "mozilla/Preferences.h"
+ #include "mozilla/RefPtr.h"
+ #include "mozilla/StaticPrefs_security.h"
++#include "mozilla/TimeStamp.h"
++#include "prerror.h"
+ #include "mozilla/UniquePtr.h"
+ #include "mozilla/glean/SecurityManagerSslMetrics.h"
+ #include "nsComponentManagerUtils.h"
+@@ -788,8 +791,18 @@ SECStatus SSLServerCertVerificationJob::Dispatch(
+ // PKI is never consulted: the leaf's SPKI must match the TLSA record the local
+ // greatdane-node folded from the chain (3 1 1 = SHA-256 of the SPKI). Anything
+ // else (unowned name, no TLSA, node unreachable, mismatch) fails closed with a
+-// non-overridable error. Names/validity are ignored, as RFC 7671 says for EE.
+-enum class GreatDANEVerdict { NotChain, Match, Fail };
++// non-overridable error. A "zone still fetching" answer (HTTP status
++// "loading", or SERVFAIL plus TODO-KEEPER-EDE) is retried until
++// greatdane.node.lazyTimeoutSec and, on timeout, fails as a retryable I/O
++// timeout — never as key pinning. Names/validity are ignored, as RFC 7671
++// says for EE.
++enum class GreatDANEVerdict { NotChain, Match, Fail, Loading };
++
++// TODO-KEEPER-EDE: dnsd signals "zone still fetching" as SERVFAIL plus this
++// Extended DNS Error code. 0 means not yet assigned: do not treat any EDE as
++// loading until Keeper publishes the code. The interim HTTP signal is
++// /gd/tlsa status "loading" (the node should translate SERVFAIL+EDE).
++static const int32_t kGreatDANELazyLoadingEDE = 0;  // TODO-KEEPER-EDE
+ 
+ static bool GreatDANEEndpointFor(const nsACString& aHost, nsACString& aEndpoint) {
+   nsAutoCString host(aHost);
+@@ -815,60 +828,91 @@ static bool GreatDANEEndpointFor(const nsACString& aHost, nsACString& aEndpoint)
+   return false;
+ }
+ 
++enum class GreatDANEFetchResult { Ok, ConnectFail, Timeout, BadResponse };
++
+ // Blocking loopback GET; runs on a cert verification thread, never main.
+-static bool GreatDANEFetch(const nsACString& aEndpoint, const nsACString& aHost,
+-                           nsACString& aBody) {
++static GreatDANEFetchResult GreatDANEFetch(const nsACString& aEndpoint,
++                                           const nsACString& aHost,
++                                           nsACString& aBody,
++                                           PRIntervalTime aTimeout) {
+   int32_t colon = aEndpoint.RFindChar(':');
+-  if (colon <= 0) return false;
++  if (colon <= 0) return GreatDANEFetchResult::BadResponse;
+   nsAutoCString ip(Substring(aEndpoint, 0, colon));
+   nsresult err;
+   int32_t port = nsAutoCString(Substring(aEndpoint, colon + 1)).ToInteger(&err);
+-  if (NS_FAILED(err) || port <= 0 || port > 65535) return false;
+-  if (!ip.EqualsLiteral("127.0.0.1")) return false;  // loopback only
++  if (NS_FAILED(err) || port <= 0 || port > 65535) {
++    return GreatDANEFetchResult::BadResponse;
++  }
++  if (!ip.EqualsLiteral("127.0.0.1")) return GreatDANEFetchResult::BadResponse;  // loopback only
+   for (uint32_t i = 0; i < aHost.Length(); i++) {
+     char ch = aHost.CharAt(i);
+-    if (!(isalnum((unsigned char)ch) || ch == '.' || ch == '-')) return false;
++    if (!(isalnum((unsigned char)ch) || ch == '.' || ch == '-')) {
++      return GreatDANEFetchResult::BadResponse;
++    }
++  }
++  PRIntervalTime to = aTimeout;
++  if (to < PR_MillisecondsToInterval(100)) {
++    to = PR_MillisecondsToInterval(100);
+   }
+   PRNetAddr addr;
+-  if (PR_StringToNetAddr(ip.get(), &addr) != PR_SUCCESS) return false;
++  if (PR_StringToNetAddr(ip.get(), &addr) != PR_SUCCESS) {
++    return GreatDANEFetchResult::BadResponse;
++  }
+   addr.inet.port = PR_htons((uint16_t)port);
+   PRFileDesc* fd = PR_OpenTCPSocket(PR_AF_INET);
+-  if (!fd) return false;
+-  bool ok = false;
+-  PRIntervalTime to = PR_SecondsToInterval(5);
+-  if (PR_Connect(fd, &addr, to) == PR_SUCCESS) {
+-    nsAutoCString req;
+-    req.AppendLiteral("GET /gd/tlsa?host=");
+-    req.Append(aHost);
+-    req.AppendLiteral(" HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n");
+-    if (PR_Send(fd, req.get(), req.Length(), 0, to) == (int32_t)req.Length()) {
+-      nsAutoCString resp;
+-      char buf[1024];
+-      int32_t n;
+-      while (resp.Length() < 16384 &&
+-             (n = PR_Recv(fd, buf, sizeof buf, 0, to)) > 0) {
+-        resp.Append(buf, n);
+-      }
+-      // Accept HTTP/1.0 or 1.1 with exactly status 200. Anything we can't
+-      // read unambiguously (truncated, oversized, chunked, odd status line)
+-      // fails closed.
+-      int32_t b = resp.Find("\r\n\r\n");
+-      bool statusOk = (StringBeginsWith(resp, "HTTP/1.1 200"_ns) ||
+-                       StringBeginsWith(resp, "HTTP/1.0 200"_ns)) &&
+-                      resp.Length() > 12 &&
+-                      (resp[12] == ' ' || resp[12] == '\r');
+-      if (statusOk && b > 0 && resp.Length() < 16384) {
+-        nsAutoCString headers(Substring(resp, 0, b));
+-        ToLowerCase(headers);
+-        if (headers.Find("transfer-encoding") < 0) {
+-          aBody.Assign(Substring(resp, b + 4));
+-          ok = true;
+-        }
+-      }
++  if (!fd) return GreatDANEFetchResult::ConnectFail;
++  GreatDANEFetchResult rv = GreatDANEFetchResult::ConnectFail;
++  if (PR_Connect(fd, &addr, to) != PR_SUCCESS) {
++    PRErrorCode e = PR_GetError();
++    rv = (e == PR_IO_TIMEOUT_ERROR || e == PR_CONNECT_TIMEOUT_ERROR)
++             ? GreatDANEFetchResult::Timeout
++             : GreatDANEFetchResult::ConnectFail;
++    PR_Close(fd);
++    return rv;
++  }
++  nsAutoCString req;
++  req.AppendLiteral("GET /gd/tlsa?host=");
++  req.Append(aHost);
++  req.AppendLiteral(" HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n");
++  if (PR_Send(fd, req.get(), req.Length(), 0, to) != (int32_t)req.Length()) {
++    PRErrorCode e = PR_GetError();
++    rv = (e == PR_IO_TIMEOUT_ERROR) ? GreatDANEFetchResult::Timeout
++                                    : GreatDANEFetchResult::BadResponse;
++    PR_Close(fd);
++    return rv;
++  }
++  nsAutoCString resp;
++  char buf[1024];
++  int32_t n;
++  bool timedOut = false;
++  while (resp.Length() < 16384) {
++    n = PR_Recv(fd, buf, sizeof buf, 0, to);
++    if (n > 0) {
++      resp.Append(buf, n);
++      continue;
+     }
++    if (n < 0 && PR_GetError() == PR_IO_TIMEOUT_ERROR) timedOut = true;
++    break;
+   }
+   PR_Close(fd);
+-  return ok;
++  if (resp.IsEmpty() && timedOut) return GreatDANEFetchResult::Timeout;
++  // Accept HTTP/1.0 or 1.1 with exactly status 200. Anything we can't
++  // read unambiguously (truncated, oversized, chunked, odd status line)
++  // fails closed.
++  int32_t b = resp.Find("\r\n\r\n");
++  bool statusOk = (StringBeginsWith(resp, "HTTP/1.1 200"_ns) ||
++                   StringBeginsWith(resp, "HTTP/1.0 200"_ns)) &&
++                  resp.Length() > 12 &&
++                  (resp[12] == ' ' || resp[12] == '\r');
++  if (statusOk && b > 0 && resp.Length() < 16384) {
++    nsAutoCString headers(Substring(resp, 0, b));
++    ToLowerCase(headers);
++    if (headers.Find("transfer-encoding") < 0) {
++      aBody.Assign(Substring(resp, b + 4));
++      return GreatDANEFetchResult::Ok;
++    }
++  }
++  return GreatDANEFetchResult::BadResponse;
+ }
+ 
+ // The node emits flat JSON; pull one string or number field out of it.
+@@ -926,21 +970,30 @@ bool GreatDANEIsChainHost(const nsACString& aHost) {
+   return GreatDANEEndpointFor(aHost, endpoint);
+ }
+ 
+-static GreatDANEVerdict GreatDANEVerify(const nsACString& aHost,
+-                                        const nsTArray<uint8_t>& aLeaf) {
+-  nsAutoCString endpoint;
+-  if (!GreatDANEEndpointFor(aHost, endpoint)) return GreatDANEVerdict::NotChain;
+-  nsAutoCString body;
+-  if (endpoint.IsEmpty() || !GreatDANEFetch(endpoint, aHost, body)) {
+-    return GreatDANEVerdict::Fail;
++static bool GreatDANEIsLoadingBody(const nsACString& aBody) {
++  if (GreatDANEField(aBody, "status").EqualsLiteral("loading")) {
++    return true;
+   }
+-  if (!GreatDANEField(body, "status").EqualsLiteral("ok") ||
+-      !GreatDANEField(body, "usage").EqualsLiteral("3") ||
+-      !GreatDANEField(body, "selector").EqualsLiteral("1") ||
+-      !GreatDANEField(body, "mtype").EqualsLiteral("1")) {
++  // SERVFAIL + Keeper EDE, once the constant is no longer the 0 placeholder.
++  if (kGreatDANELazyLoadingEDE == 0) return false;
++  nsAutoCString rcode = GreatDANEField(aBody, "rcode");
++  nsAutoCString edeStr = GreatDANEField(aBody, "ede");
++  nsresult err;
++  int32_t ede = edeStr.ToInteger(&err);
++  if (NS_FAILED(err) || ede != kGreatDANELazyLoadingEDE) return false;
++  return rcode.EqualsLiteral("2") || rcode.EqualsLiteral("SERVFAIL");
++}
++
++// Compare a definitive /gd/tlsa body to the leaf SPKI (existing contract).
++static GreatDANEVerdict GreatDANEVerifyBody(const nsTArray<uint8_t>& aLeaf,
++                                            const nsACString& aBody) {
++  if (!GreatDANEField(aBody, "status").EqualsLiteral("ok") ||
++      !GreatDANEField(aBody, "usage").EqualsLiteral("3") ||
++      !GreatDANEField(aBody, "selector").EqualsLiteral("1") ||
++      !GreatDANEField(aBody, "mtype").EqualsLiteral("1")) {
+     return GreatDANEVerdict::Fail;
+   }
+-  nsAutoCString want = GreatDANEField(body, "data");
++  nsAutoCString want = GreatDANEField(aBody, "data");
+   ToLowerCase(want);
+   if (want.Length() != 64) return GreatDANEVerdict::Fail;
+ 
+@@ -965,6 +1018,73 @@ static GreatDANEVerdict GreatDANEVerify(const nsACString& aHost,
+   return got.Equals(want) ? GreatDANEVerdict::Match : GreatDANEVerdict::Fail;
+ }
+ 
++static GreatDANEVerdict GreatDANEVerify(const nsACString& aHost,
++                                        const nsTArray<uint8_t>& aLeaf) {
++  nsAutoCString endpoint;
++  if (!GreatDANEEndpointFor(aHost, endpoint)) return GreatDANEVerdict::NotChain;
++  if (endpoint.IsEmpty()) return GreatDANEVerdict::Fail;
++
++  // When lazy mode is off, keep the historical single 5s fetch. A loading
++  // signal is still never turned into a key-pinning failure (see below).
++  bool lazy = Preferences::GetBool("greatdane.node.lazy", false);
++  int32_t timeoutSec = Preferences::GetInt("greatdane.node.lazyTimeoutSec", 10);
++  if (timeoutSec < 1) timeoutSec = 10;
++  if (timeoutSec > 60) timeoutSec = 60;
++
++  TimeStamp deadline =
++      TimeStamp::Now() + TimeDuration::FromSeconds(lazy ? timeoutSec : 5);
++  bool sawLoading = false;
++
++  for (;;) {
++    TimeDuration left = deadline - TimeStamp::Now();
++    if (left <= TimeDuration::FromMilliseconds(0)) {
++      break;
++    }
++    double ms = left.ToMilliseconds();
++    if (ms < 100.0) ms = 100.0;
++    PRIntervalTime to = PR_MillisecondsToInterval(static_cast<uint32_t>(ms));
++
++    nsAutoCString body;
++    GreatDANEFetchResult fr = GreatDANEFetch(endpoint, aHost, body, to);
++    if (fr == GreatDANEFetchResult::Ok) {
++      if (GreatDANEIsLoadingBody(body)) {
++        sawLoading = true;
++        PR_Sleep(PR_MillisecondsToInterval(100));
++        continue;
++      }
++      return GreatDANEVerifyBody(aLeaf, body);
++    }
++    if (fr == GreatDANEFetchResult::ConnectFail) {
++      // Node is not reachable: existing fail-closed path, unless a previous
++      // attempt already said the zone was still fetching.
++      if (sawLoading) {
++        PR_Sleep(PR_MillisecondsToInterval(100));
++        continue;
++      }
++      return GreatDANEVerdict::Fail;
++    }
++    // A blocked query (I/O timeout) in lazy mode, or any timeout after an
++    // explicit loading signal, is retried until the budget runs out and
++    // then reported as retryable Loading — never as key pinning.
++    // A malformed response is the existing fail-closed path unless we
++    // already know the zone is still being fetched.
++    if (fr == GreatDANEFetchResult::Timeout && (lazy || sawLoading)) {
++      sawLoading = true;
++      PR_Sleep(PR_MillisecondsToInterval(100));
++      continue;
++    }
++    if (fr == GreatDANEFetchResult::BadResponse && sawLoading) {
++      PR_Sleep(PR_MillisecondsToInterval(100));
++      continue;
++    }
++    return GreatDANEVerdict::Fail;
++  }
++  // Budget exhausted after a loading signal (or a lazy-mode wait with no
++  // definitive answer): retryable "still loading", not a cert rejection.
++  if (sawLoading || lazy) return GreatDANEVerdict::Loading;
++  return GreatDANEVerdict::Fail;
++}
++
+ NS_IMETHODIMP
+ SSLServerCertVerificationJob::Run() {
+   // Runs on a cert verification thread and only on parent process.
+@@ -988,17 +1108,25 @@ SSLServerCertVerificationJob::Run() {
+     if (v != GreatDANEVerdict::NotChain) {
+       MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
+               ("[%" PRIx64 "] GreatDANE %s", mAddrForLogging,
+-               v == GreatDANEVerdict::Match ? "match" : "fail"));
++               v == GreatDANEVerdict::Match
++                   ? "match"
++                   : (v == GreatDANEVerdict::Loading ? "loading" : "fail")));
+       nsTArray<nsTArray<uint8_t>> builtChain;
+       if (v == GreatDANEVerdict::Match) {
+         builtChain.AppendElement(mPeerCertChain.ElementAt(0).Clone());
+       }
+       bool ok = v == GreatDANEVerdict::Match;
++      // Loading is retryable and must not be reported as key pinning.
++      PRErrorCode gdErr = 0;
++      if (v == GreatDANEVerdict::Fail) {
++        gdErr = (PRErrorCode)MOZILLA_PKIX_ERROR_KEY_PINNING_FAILURE;
++      } else if (v == GreatDANEVerdict::Loading) {
++        gdErr = PR_IO_TIMEOUT_ERROR;
++      }
+       nsresult rv = mResultTask->Dispatch(
+           std::move(builtChain), std::move(mPeerCertChain),
+           nsITransportSecurityInfo::CERTIFICATE_TRANSPARENCY_NOT_APPLICABLE,
+-          EVStatus::NotEV, ok,
+-          ok ? 0 : (PRErrorCode)MOZILLA_PKIX_ERROR_KEY_PINNING_FAILURE,
++          EVStatus::NotEV, ok, gdErr,
+           nsITransportSecurityInfo::OverridableErrorCategory::ERROR_UNSET,
+           false, mProviderFlags, false);
+       if (NS_FAILED(rv)) {
