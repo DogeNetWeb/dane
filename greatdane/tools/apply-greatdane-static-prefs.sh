@@ -80,27 +80,28 @@ else
   fi
 fi
 
+# Loud post-apply (or already-applied) checks. The generator reads only
+# StaticPrefList.yaml, and headers exist only for pref_groups.
+# Count entries so a duplicate insertion is a hard failure. These run in
+# --check mode too, so --check on an already-applied tree that carries a
+# duplicate (or a wrong type) fails instead of reporting OK.
+count_pref() {
+  grep -c "$1" "$YAML" || true
+}
+n_lazy=$(count_pref '^[[:space:]]*- name: greatdane\.node\.lazy$')
+n_to=$(count_pref '^[[:space:]]*- name: greatdane\.node\.lazyTimeoutSec$')
+[ "$n_lazy" -eq 1 ] || die "expected exactly one greatdane.node.lazy in StaticPrefList.yaml, found $n_lazy"
+[ "$n_to" -eq 1 ] || die "expected exactly one greatdane.node.lazyTimeoutSec, found $n_to"
+awk '/name: greatdane\.node\.lazy$/{n=1} n&&/type:/{print; exit}' "$YAML" | grep -q RelaxedAtomicBool \
+  || die "greatdane.node.lazy must be RelaxedAtomicBool"
+awk '/name: greatdane\.node\.lazyTimeoutSec$/{n=1} n&&/type:/{print; exit}' "$YAML" | grep -q RelaxedAtomicInt32 \
+  || die "greatdane.node.lazyTimeoutSec must be RelaxedAtomicInt32"
+grep -q '"greatdane"' "$MOZ" || die "pref_groups is missing \"greatdane\" in moz.build"
 if [ -n "$CHECK" ]; then
   # Already-applied path in --check mode: no writes happened.
   echo "apply-greatdane-static-prefs: --check OK (already applied)"
   exit 0
 fi
-
-# Loud post-apply (or already-applied) checks. The generator reads only
-# StaticPrefList.yaml, and headers exist only for pref_groups.
-# Count entries so a duplicate insertion is a hard failure.
-count_pref() {
-  grep -c "$1" "$YAML" || true
-}
-n_lazy=$(count_pref '^[[:space:]]*- name: greatdane.node.lazy$')
-n_to=$(count_pref '^[[:space:]]*- name: greatdane.node.lazyTimeoutSec$')
-[ "$n_lazy" -eq 1 ] || die "expected exactly one greatdane.node.lazy in StaticPrefList.yaml, found $n_lazy"
-[ "$n_to" -eq 1 ] || die "expected exactly one greatdane.node.lazyTimeoutSec, found $n_to"
-awk '/name: greatdane.node.lazy$/{n=1} n&&/type:/{print; exit}' "$YAML" | grep -q RelaxedAtomicBool \
-  || die "greatdane.node.lazy must be RelaxedAtomicBool"
-awk '/name: greatdane.node.lazyTimeoutSec$/{n=1} n&&/type:/{print; exit}' "$YAML" | grep -q RelaxedAtomicInt32 \
-  || die "greatdane.node.lazyTimeoutSec must be RelaxedAtomicInt32"
-grep -q '"greatdane"' "$MOZ" || die "pref_groups is missing \"greatdane\" in moz.build"
 if [ "$already_yp" -eq 1 ]; then
   echo "apply-greatdane-static-prefs: already applied, skipped in $TREE"
 else

@@ -1,0 +1,659 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Thu, 19 Nov 2026 12:13:14 -0600
+Subject: [PATCH 163/163] GreatDANE: commit the StaticPrefs libpref edits; wire
+ the overlay hook
+
+Round-3 conditions (C1 and the LOW note).
+
+Commit the libpref edits into the series: StaticPrefList.yaml gets
+greatdane.node.lazy (RelaxedAtomicBool, false) and
+greatdane.node.lazyTimeoutSec (RelaxedAtomicInt32, 10), and moz.build
+pref_groups gets "greatdane". These are exactly what the overlay
+patches apply (yaml cfd51e265d70, moz.build d41cd906de04 from
+ee74e0dce6aa / 79b7b9fdffb5), so a tree built from the series carries
+them and its HEAD tree is the tree that is built.
+
+Add greatdane/tools/apply-dane-series.sh as the build entry point: it
+git am's patches/series, then runs apply-greatdane-overlay.sh --check
+(fail closed, no writes) and the hook, and commits any change to the
+two libpref paths. It refuses a dirty tree and any other hook change.
+--hook-only runs just the hook step, for pipelines that apply the
+series themselves, after their last product commit and before
+clobber / configure. greatdane/tools/OVERLAY-HOOK.md says where the
+pinned Linux pipeline gets the call at its next re-pin.
+
+LOW: --check on an already-applied tree now runs the exact-count and
+type checks before reporting OK, so a duplicated entry fails. Escape
+the dots in those patterns.
+
+Tests: test_overlay_hook.py (synthetic libpref trees, no network)
+covers the hook wiring, fail-closed cases, the commit, and --check on
+a duplicated tree. test_static_prefs_patch.py has no default Firefox
+tree path any more; set GREATDANE_FIREFOX_SRC.
+
+No mach.
+---
+ greatdane/tests/lazy_node/README.md           |  15 +-
+ .../tests/lazy_node/test_overlay_hook.py      | 278 ++++++++++++++++++
+ .../lazy_node/test_static_prefs_patch.py      |   6 +-
+ greatdane/tools/OVERLAY-HOOK.md               |  42 +++
+ greatdane/tools/apply-dane-series.sh          |  93 ++++++
+ greatdane/tools/apply-greatdane-overlay.sh    |  21 +-
+ .../tools/apply-greatdane-static-prefs.sh     |  23 +-
+ modules/libpref/init/StaticPrefList.yaml      |  21 ++
+ modules/libpref/moz.build                     |   1 +
+ 9 files changed, 473 insertions(+), 27 deletions(-)
+ create mode 100755 greatdane/tests/lazy_node/test_overlay_hook.py
+ create mode 100644 greatdane/tools/OVERLAY-HOOK.md
+ create mode 100755 greatdane/tools/apply-dane-series.sh
+
+diff --git a/greatdane/tests/lazy_node/README.md b/greatdane/tests/lazy_node/README.md
+index 48d457c..7a6c59a 100644
+--- a/greatdane/tests/lazy_node/README.md
++++ b/greatdane/tests/lazy_node/README.md
+@@ -47,11 +47,24 @@ a real mesh node.
+   idempotent and all-or-nothing: a second run is a no-op success;
+   a partial pre-state fails before any write. The script fails
+   loudly if the patches do not apply or the result is missing or
+-  duplicated. Names stay under `greatdane.*`.
++  duplicated, in `--check` mode too. Names stay under `greatdane.*`.
++  Patch 0163 commits the same libpref edits into the series, so on a
++  tree built from the series the hook reports "already applied".
++  `greatdane/tools/apply-dane-series.sh` runs the hook after the
++  series and before clobber / configure (`--hook-only` for pipelines
++  that apply the series themselves), fails closed, and commits the
++  result. See `greatdane/tools/OVERLAY-HOOK.md`.
+ - `/gd/names` is unchanged and works from the namespace alone.
+ 
+ Run: `python3 test_lazy_node.py` (binds 127.0.0.1 only).
+ 
++`python3 test_overlay_hook.py` checks the hook wiring with small
++synthetic libpref files in temp git repos (no Firefox tree, no
++network). With `GREATDANE_FIREFOX_SRC` set to an unpatched Firefox
++tree, it also checks that the series' libpref hunks leave the hook
++nothing to do. `test_static_prefs_patch.py` needs
++`GREATDANE_FIREFOX_SRC` for its apply cases (there is no default tree).
++
+ Against a real `greatdane-node` (private netns, throwaway `--data`, no
+ real seeds/mesh):
+ 
+diff --git a/greatdane/tests/lazy_node/test_overlay_hook.py b/greatdane/tests/lazy_node/test_overlay_hook.py
+new file mode 100755
+index 0000000..fe45893
+--- /dev/null
++++ b/greatdane/tests/lazy_node/test_overlay_hook.py
+@@ -0,0 +1,278 @@
++#!/usr/bin/env python3
++"""Round-3 C1 / LOW: the overlay hook is wired into the series entry point
++(greatdane/tools/apply-dane-series.sh), fails closed, commits its result,
++and --check on an already-applied tree still runs the exact-count check.
++
++Hermetic: uses small synthetic libpref files in temp git repos (no Firefox
++tree, no network). When GREATDANE_FIREFOX_SRC points at an unpatched
++Firefox tree, it also checks that the series' own libpref hunks (0003,
++0016, 0163) leave the hook with nothing to do."""
++from __future__ import annotations
++
++import os
++import shutil
++import subprocess
++import tempfile
++import unittest
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++REPO = HERE.parents[2]
++APPLY = REPO / "greatdane/tools/apply-greatdane-static-prefs.sh"
++OVERLAY = REPO / "greatdane/tools/apply-greatdane-overlay.sh"
++SERIES_TOOL = REPO / "greatdane/tools/apply-dane-series.sh"
++HOOK_DOC = REPO / "greatdane/tools/OVERLAY-HOOK.md"
++PATCHES = REPO / "patches"
++YAML_REL = "modules/libpref/init/StaticPrefList.yaml"
++MOZ_REL = "modules/libpref/moz.build"
++
++SYN_YAML = """\
++#---------------------------------------------------------------------------
++# Prefs starting with "gl."
++#---------------------------------------------------------------------------
++
++- name: gl.synthetic
++  type: bool
++  value: true
++  mirror: always
++
++#---------------------------------------------------------------------------
++# Prefs starting with "html5."
++#---------------------------------------------------------------------------
++
++- name: html5.synthetic
++  type: bool
++  value: true
++  mirror: always
++"""
++
++SYN_MOZ = """\
++pref_groups = [
++    "geo",
++    "gfx",
++    "gl",
++    "html5",
++    "idle_period",
++    "image",
++]
++"""
++
++ENV = dict(os.environ, GIT_AUTHOR_NAME="gd-test", GIT_AUTHOR_EMAIL="gd-test@invalid",
++           GIT_COMMITTER_NAME="gd-test", GIT_COMMITTER_EMAIL="gd-test@invalid")
++
++
++def run(*args, cwd=None):
++    return subprocess.run([str(a) for a in args], cwd=cwd, env=ENV, check=False,
++                          capture_output=True, text=True)
++
++
++def git(td, *args):
++    r = run("git", "-C", td, *args)
++    if r.returncode != 0:
++        raise AssertionError(f"git {args}: {r.stdout}{r.stderr}")
++    return r.stdout.strip()
++
++
++def make_tree(yaml=SYN_YAML, moz=SYN_MOZ) -> Path:
++    td = Path(tempfile.mkdtemp(prefix="gd-overlay-hook-"))
++    (td / "modules/libpref/init").mkdir(parents=True)
++    (td / YAML_REL).write_text(yaml)
++    (td / MOZ_REL).write_text(moz)
++    git(td, "init", "-q")
++    git(td, "add", "-A")
++    git(td, "commit", "-q", "-m", "base")
++    return td
++
++
++def count(td: Path, name: str) -> int:
++    return sum(1 for ln in (td / YAML_REL).read_text().splitlines()
++               if ln.strip() == f"- name: {name}")
++
++
++def dup_lazy_block(td: Path):
++    """Append a second greatdane.node.lazy entry (an already-applied tree
++    that also carries a duplicate)."""
++    with open(td / YAML_REL, "a") as f:
++        f.write("\n- name: greatdane.node.lazy\n  type: RelaxedAtomicBool\n"
++                "  value: false\n  mirror: always\n")
++
++
++class TestOverlayHook(unittest.TestCase):
++    def setUp(self):
++        self.dirs = []
++
++    def tearDown(self):
++        for d in self.dirs:
++            shutil.rmtree(d, ignore_errors=True)
++
++    def tree(self, **kw):
++        td = make_tree(**kw)
++        self.dirs.append(td)
++        return td
++
++    # --- LOW: --check on an already-applied tree runs the count check ---
++    def test_check_on_applied_tree_with_duplicate_fails(self):
++        td = self.tree()
++        r = run(APPLY, td)
++        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
++        r = run(APPLY, "--check", td)
++        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
++        self.assertIn("--check OK (already applied)", r.stdout)
++        dup_lazy_block(td)
++        before = (td / YAML_REL).read_text()
++        for tool in (APPLY, OVERLAY):
++            r = run(tool, "--check", td)
++            self.assertNotEqual(r.returncode, 0, f"{tool.name}: {r.stdout}{r.stderr}")
++            self.assertIn("expected exactly one greatdane.node.lazy", r.stderr)
++            self.assertNotIn("check OK", r.stdout)
++        self.assertEqual((td / YAML_REL).read_text(), before, "--check must not write")
++
++    def test_check_on_applied_tree_with_wrong_type_fails(self):
++        td = self.tree()
++        self.assertEqual(run(APPLY, td).returncode, 0)
++        y = (td / YAML_REL).read_text().replace("type: RelaxedAtomicInt32", "type: int32_t")
++        (td / YAML_REL).write_text(y)
++        git(td, "commit", "-qam", "drift")
++        # The forward/reverse patch checks now fail on the type line, so this
++        # must not report OK either way.
++        r = run(APPLY, "--check", td)
++        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
++
++    # --- C1: hook wired into the series entry point, fail closed, commits ---
++    def test_hook_only_applies_and_commits_then_is_noop(self):
++        td = self.tree()
++        base = git(td, "rev-parse", "HEAD")
++        r = run(SERIES_TOOL, "--hook-only", td)
++        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
++        self.assertIn("committed the overlay hook result", r.stdout)
++        self.assertIn("ready for clobber / configure", r.stdout)
++        head = git(td, "rev-parse", "HEAD")
++        self.assertNotEqual(head, base)
++        self.assertEqual(git(td, "status", "--porcelain"), "")
++        files = git(td, "diff", "--name-only", base, head).splitlines()
++        self.assertEqual(sorted(files), sorted([YAML_REL, MOZ_REL]))
++        self.assertEqual((count(td, "greatdane.node.lazy"), count(td, "greatdane.node.lazyTimeoutSec")), (1, 1))
++        self.assertIn('"greatdane"', (td / MOZ_REL).read_text())
++        r = run(SERIES_TOOL, "--hook-only", td)
++        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
++        self.assertIn("made no changes", r.stdout)
++        self.assertEqual(git(td, "rev-parse", "HEAD"), head)
++
++    def test_hook_only_refuses_dirty_tree(self):
++        td = self.tree()
++        (td / MOZ_REL).write_text(SYN_MOZ + "# local edit\n")
++        r = run(SERIES_TOOL, "--hook-only", td)
++        self.assertNotEqual(r.returncode, 0)
++        self.assertIn("tracked changes", r.stderr)
++        self.assertEqual(count(td, "greatdane.node.lazy"), 0)
++
++    def test_hook_check_failure_fails_closed(self):
++        # Drifted moz.build: the hook's --check fails, nothing is written or committed.
++        td = self.tree(moz=SYN_MOZ.replace('    "gl",\n', ""))
++        base = git(td, "rev-parse", "HEAD")
++        r = run(SERIES_TOOL, "--hook-only", td)
++        self.assertNotEqual(r.returncode, 0, r.stdout)
++        self.assertIn("--check failed", r.stderr)
++        self.assertEqual(git(td, "rev-parse", "HEAD"), base)
++        self.assertEqual(git(td, "status", "--porcelain"), "")
++
++    def test_duplicate_tree_fails_closed_in_hook(self):
++        td = self.tree()
++        self.assertEqual(run(APPLY, td).returncode, 0)
++        dup_lazy_block(td)
++        git(td, "commit", "-qam", "dup")
++        base = git(td, "rev-parse", "HEAD")
++        r = run(SERIES_TOOL, "--hook-only", td)
++        self.assertNotEqual(r.returncode, 0, r.stdout)
++        self.assertEqual(git(td, "rev-parse", "HEAD"), base)
++
++    def test_full_mode_runs_series_then_hook(self):
++        td = self.tree()
++        # A one-patch series made in a scratch clone of the tree.
++        work = Path(tempfile.mkdtemp(prefix="gd-overlay-series-"))
++        self.dirs.append(work)
++        clone = work / "c"
++        self.assertEqual(run("git", "clone", "-q", td, clone).returncode, 0)
++        (clone / "README.dane").write_text("dane\n")
++        git(clone, "add", "README.dane")
++        git(clone, "commit", "-qm", "add README.dane")
++        pdir = work / "patches"
++        pdir.mkdir()
++        git(clone, "format-patch", "-q", "-1", "-o", pdir)
++        names = sorted(p.name for p in pdir.glob("*.patch"))
++        (pdir / "series").write_text("# test series\n" + "\n".join(names) + "\n")
++        r = run(SERIES_TOOL, "--patches", pdir, td)
++        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
++        self.assertIn("applied 1 patches", r.stdout)
++        self.assertIn("committed the overlay hook result", r.stdout)
++        log = git(td, "log", "--format=%s").splitlines()
++        self.assertEqual(log[1], "add README.dane")
++        self.assertTrue(log[0].startswith("GreatDANE: StaticPrefs overlay hook"))
++        self.assertEqual(git(td, "status", "--porcelain"), "")
++
++    def test_full_mode_am_failure_stops_before_hook(self):
++        td = self.tree()
++        pdir = Path(tempfile.mkdtemp(prefix="gd-overlay-bad-"))
++        self.dirs.append(pdir)
++        (pdir / "0001-bad.patch").write_text(
++            "From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001\n"
++            "From: gd-test <gd-test@invalid>\nDate: Thu, 19 Nov 2026 12:00:00 -0600\n"
++            "Subject: [PATCH] bad\n\n---\n"
++            "diff --git a/nope b/nope\n--- a/nope\n+++ b/nope\n@@ -1 +1 @@\n-x\n+y\n")
++        (pdir / "series").write_text("0001-bad.patch\n")
++        base = git(td, "rev-parse", "HEAD")
++        r = run(SERIES_TOOL, "--patches", pdir, td)
++        self.assertNotEqual(r.returncode, 0)
++        self.assertIn("overlay hook did not run", r.stderr)
++        self.assertEqual(git(td, "rev-parse", "HEAD"), base)
++        self.assertEqual(count(td, "greatdane.node.lazy"), 0)
++
++    def test_series_carries_libpref_patch(self):
++        names = [n.strip() for n in (PATCHES / "series").read_text().splitlines()
++                 if n.strip() and not n.startswith("#")]
++        hits = []
++        for n in names:
++            t = (PATCHES / n).read_text(encoding="utf-8", errors="replace")
++            if (f"diff --git a/{YAML_REL} b/{YAML_REL}" in t and f"diff --git a/{MOZ_REL} b/{MOZ_REL}" in t
++                    and "+- name: greatdane.node.lazy\n" in t and '+    "greatdane",\n' in t):
++                hits.append(n)
++        self.assertEqual(len(hits), 1, hits)
++        self.assertTrue(hits[0].startswith("0163-"), hits)
++
++    def test_docs_and_tools_have_no_box_paths(self):
++        for p in (OVERLAY, SERIES_TOOL, APPLY, HOOK_DOC):
++            self.assertNotIn("/workspace", p.read_text(), p)
++        doc = HOOK_DOC.read_text()
++        self.assertIn("prepare-final-pin-sequence.sh", doc)
++        self.assertIn("prepare-final-pin-sequence-r9.sh", doc)
++
++    def test_series_libpref_hunks_leave_hook_nothing_to_do(self):
++        env = os.environ.get("GREATDANE_FIREFOX_SRC")
++        if not env:
++            self.skipTest("no Firefox tree (set GREATDANE_FIREFOX_SRC)")
++        src = Path(env)
++        td = make_tree(yaml=(src / YAML_REL).read_text(), moz=(src / MOZ_REL).read_text())
++        self.dirs.append(td)
++        for n in (PATCHES / "series").read_text().splitlines():
++            n = n.strip()
++            if not n or n.startswith("#"):
++                continue
++            t = (PATCHES / n).read_text(encoding="utf-8", errors="replace")
++            if f"diff --git a/{YAML_REL} " in t or f"diff --git a/{MOZ_REL} " in t:
++                r = run("git", "-C", td, "apply", f"--include={YAML_REL}", f"--include={MOZ_REL}",
++                        PATCHES / n)
++                self.assertEqual(r.returncode, 0, f"{n}: {r.stderr}")
++        git(td, "commit", "-qam", "series libpref hunks")
++        r = run(OVERLAY, "--check", td)
++        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
++        self.assertIn("already applied", r.stdout)
++        head = git(td, "rev-parse", "HEAD")
++        r = run(SERIES_TOOL, "--hook-only", td)
++        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
++        self.assertIn("made no changes", r.stdout)
++        self.assertEqual(git(td, "rev-parse", "HEAD"), head)
++        self.assertEqual((count(td, "greatdane.node.lazy"), count(td, "greatdane.node.lazyTimeoutSec")), (1, 1))
++
++
++if __name__ == "__main__":
++    unittest.main(verbosity=2)
+diff --git a/greatdane/tests/lazy_node/test_static_prefs_patch.py b/greatdane/tests/lazy_node/test_static_prefs_patch.py
+index 41d8b05..0264b64 100644
+--- a/greatdane/tests/lazy_node/test_static_prefs_patch.py
++++ b/greatdane/tests/lazy_node/test_static_prefs_patch.py
+@@ -19,7 +19,7 @@ INC = REPO / "modules/libpref/init/StaticPrefList-greatdane-node.inc.yaml"
+ APPLY = REPO / "greatdane/tools/apply-greatdane-static-prefs.sh"
+ OVERLAY = REPO / "greatdane/tools/apply-greatdane-overlay.sh"
+ SSL = REPO / "security/manager/ssl/SSLServerCertVerification.cpp"
+-DEFAULT_FIREFOX_SRC = Path("/workspace/dane-linux/src")
++DEFAULT_FIREFOX_SRC = None  # no default tree; set GREATDANE_FIREFOX_SRC
+ SSL_REL = "security/manager/ssl/SSLServerCertVerification.cpp"
+ 
+ 
+@@ -77,7 +77,9 @@ def _ssl_text():
+ 
+ def firefox_src():
+     env = os.environ.get("GREATDANE_FIREFOX_SRC")
+-    p = Path(env) if env else DEFAULT_FIREFOX_SRC
++    if not env and DEFAULT_FIREFOX_SRC is None:
++        return None
++    p = Path(env) if env else Path(DEFAULT_FIREFOX_SRC)
+     yaml = p / "modules/libpref/init/StaticPrefList.yaml"
+     moz = p / "modules/libpref/moz.build"
+     if yaml.is_file() and moz.is_file():
+diff --git a/greatdane/tools/OVERLAY-HOOK.md b/greatdane/tools/OVERLAY-HOOK.md
+new file mode 100644
+index 0000000..c1e5cef
+--- /dev/null
++++ b/greatdane/tools/OVERLAY-HOOK.md
+@@ -0,0 +1,42 @@
++# GreatDANE overlay hook: where it runs
++
++The StaticPrefs overlay (`greatdane.node.lazy`, `greatdane.node.lazyTimeoutSec` and the `greatdane`
++`pref_groups` entry) has two parts:
++
++- `patches/0163-*` commits the libpref edits themselves (`modules/libpref/init/StaticPrefList.yaml`
++  and `modules/libpref/moz.build`), so a tree built from the series already carries them.
++- `greatdane/tools/apply-greatdane-overlay.sh` (which runs `apply-greatdane-static-prefs.sh`) verifies
++  them, and applies them to a tree that does not carry 0163. It is idempotent: on a tree with 0163 it
++  reports "already applied" and still runs the exact-count and type checks, in `--check` mode too.
++
++## In this repo
++
++`greatdane/tools/apply-dane-series.sh <firefox-src>` is the build entry point. It `git am`s the series,
++then runs the hook: `--check` first (fail closed, no writes), then apply, then commits any change to the
++two libpref paths so the HEAD tree is the tree that gets configured. It refuses a dirty tree and any hook
++change outside those two paths. Pipelines that apply the series themselves call
++`apply-dane-series.sh --hook-only <firefox-src>` after their last product commit and before
++clobber / configure.
++
++No allowlist in this repo restricts which paths a patch may touch, so 0163 needs no allowlist entry here.
++
++## Pinned Linux pipeline (next re-pin)
++
++The pinned Linux pin-sequence scripts live outside this repo and were not edited. Per the reviewer's
++round-3 call-site notes, they get one hook call each at the next re-pin (and a new review of that pin):
++
++- `prepare-final-pin-sequence.sh`: after the v3 commit (after the "v3 applied" echo, about line 213)
++  and before the clobber + configure block (about lines 225-228). Follow it with
++  `git add modules/libpref/init/StaticPrefList.yaml modules/libpref/moz.build` and a commit
++  (`--hook-only` does both). Not after line 179: that is before the v3 acceptance gate, which can exit
++  and leave a modified tree, and the v3 commit only adds six named files.
++- `prepare-final-pin-sequence-r9.sh`: after the changed-path / mode+blob check (ends about line 905)
++  and before the inode / clobber / `run_mach configure` steps (configure at about line 955). Not after
++  line 746: the 5b-5e invariants, the L5 am/apply and the v3.6 am/apply still run after it. Add the two
++  libpref paths to that script's changed-path allowlist ("apple 15 paths + v3.6 files"), or the check
++  refuses them. Commit there too.
++- The same relative spots in the earlier r3-r8 copies, if any of them is re-pinned.
++
++The lazy-node commits are not in the pinned 5b-5e / L5 / v3.6 series yet, so the hook and 0163 only
++exist in that pipeline once those commits are added. If the libpref edits stay uncommitted, the pin's
++tree hash will not match what is actually built.
+diff --git a/greatdane/tools/apply-dane-series.sh b/greatdane/tools/apply-dane-series.sh
+new file mode 100755
+index 0000000..9630be6
+--- /dev/null
++++ b/greatdane/tools/apply-dane-series.sh
+@@ -0,0 +1,93 @@
++#!/bin/sh
++# Apply the Dane patch series to a Firefox ESR source tree and run the
++# GreatDANE overlay hook, so the tree is ready for clobber / configure.
++# This is the repo's build entry point for the series (see README.md,
++# "Applying"). It never runs mach, clobber or configure itself.
++#
++#   apply-dane-series.sh [--patches <dir>] <firefox-src>
++#       git am --keep-cr every patch in <dir>/series (default: this
++#       repo's patches/), then run the hook step below.
++#   apply-dane-series.sh --hook-only <firefox-src>
++#       Only the hook step, for pipelines that apply the series
++#       themselves. Call it after the last product commit and before
++#       clobber / configure.
++#
++# Hook step (fail closed):
++#   1. the tracked tree must be clean;
++#   2. apply-greatdane-overlay.sh --check must pass (no writes);
++#   3. apply-greatdane-overlay.sh applies (or verifies already-applied);
++#   4. if the hook changed modules/libpref/init/StaticPrefList.yaml or
++#      modules/libpref/moz.build, those two paths are committed, so the
++#      HEAD tree is the tree that gets configured and built. Any other
++#      change is refused.
++# Commits use the tree's git identity (user.name / user.email).
++set -eu
++HERE=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
++OVL="$HERE/greatdane/tools/apply-greatdane-overlay.sh"
++PATCHES="$HERE/patches"
++HOOK_ONLY=
++die() { echo "apply-dane-series: $*" >&2; exit 1; }
++usage() {
++  echo "apply-dane-series: usage: $0 [--patches <dir>] <firefox-src> | --hook-only <firefox-src>" >&2
++  exit 2
++}
++while [ $# -gt 0 ]; do
++  case "$1" in
++    --hook-only) HOOK_ONLY=1; shift ;;
++    --patches) [ $# -ge 2 ] || usage; PATCHES=$2; shift 2 ;;
++    --) shift; break ;;
++    -*) usage ;;
++    *) break ;;
++  esac
++done
++[ $# -eq 1 ] && [ -d "$1" ] || usage
++TREE=$(CDPATH= cd -- "$1" && pwd)
++[ -x "$OVL" ] || die "missing $OVL"
++git -C "$TREE" rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$TREE is not a git work tree"
++[ "$(git -C "$TREE" rev-parse --show-toplevel)" = "$TREE" ] || die "$TREE is not the top of its git work tree"
++
++YAML_REL=modules/libpref/init/StaticPrefList.yaml
++MOZ_REL=modules/libpref/moz.build
++
++tracked_clean() {
++  [ -z "$(git -C "$TREE" status --porcelain --untracked-files=no)" ]
++}
++
++if [ -z "$HOOK_ONLY" ]; then
++  SERIES="$PATCHES/series"
++  [ -f "$SERIES" ] || die "missing $SERIES"
++  tracked_clean || die "tracked changes in $TREE; refusing to apply the series"
++  n=0
++  while IFS= read -r p || [ -n "$p" ]; do
++    case "$p" in ''|'#'*) continue ;; esac
++    [ -f "$PATCHES/$p" ] || die "series names a missing patch: $p"
++    if ! git -C "$TREE" am --keep-cr -q "$PATCHES/$p"; then
++      git -C "$TREE" am --abort >/dev/null 2>&1 || true
++      die "git am failed at $p (aborted; the overlay hook did not run)"
++    fi
++    n=$((n + 1))
++  done < "$SERIES"
++  echo "apply-dane-series: applied $n patches from $SERIES"
++fi
++
++# Hook step.
++tracked_clean || die "tracked changes in $TREE before the overlay hook; refusing"
++"$OVL" --check "$TREE" || die "overlay hook --check failed; tree left unchanged"
++"$OVL" "$TREE" || die "overlay hook failed"
++changed=$(git -C "$TREE" status --porcelain --untracked-files=no | awk '{print $2}')
++for f in $changed; do
++  case "$f" in
++    "$YAML_REL"|"$MOZ_REL") ;;
++    *) die "overlay hook changed an unexpected path: $f" ;;
++  esac
++done
++if [ -n "$changed" ]; then
++  git -C "$TREE" add -- "$YAML_REL" "$MOZ_REL"
++  git -C "$TREE" commit -q -m "GreatDANE: StaticPrefs overlay hook (greatdane.node.lazy prefs, greatdane pref group)" \
++    || die "could not commit the overlay hook result"
++  echo "apply-dane-series: committed the overlay hook result ($(git -C "$TREE" rev-parse --short HEAD))"
++else
++  echo "apply-dane-series: overlay hook made no changes (series already carries them)"
++fi
++tracked_clean || die "tree is not clean after the overlay hook"
++echo "apply-dane-series: ready for clobber / configure in $TREE"
+diff --git a/greatdane/tools/apply-greatdane-overlay.sh b/greatdane/tools/apply-greatdane-overlay.sh
+index 0c065c3..7dad7be 100755
+--- a/greatdane/tools/apply-greatdane-overlay.sh
++++ b/greatdane/tools/apply-greatdane-overlay.sh
+@@ -1,20 +1,15 @@
+ #!/bin/sh
+ # In-repo GreatDANE overlay apply hook for a Firefox source tree.
+-# Run this after the product commits have been git-am'd (or the overlay
+-# files copied) and before mach configure / mach build.
++# Run this after the Dane patch series has been applied (git am) and
++# before clobber / mach configure / mach build.
+ #
+ # This is the hook that runs apply-greatdane-static-prefs.sh (N1).
+-# The historical dane-linux pin sequences live outside this repo and
+-# were not modified. What is still needed: one invocation of this
+-# script against the Linux tree, after product git am and before
+-# ./mach configure, at:
+-#   /workspace/dane-linux/prepare-final-pin-sequence.sh:179
+-#     (right after 'Product commits applied...') and again after v3
+-#     before the clobber+configure block (~line 228);
+-#   /workspace/dane-linux/prepare-final-pin-sequence-r9.sh:746
+-#     (after 'git am of 5b-5e completed') and before
+-#     run_mach configure at line 955
+-# (and the same relative spots in the r3–r8 copies).
++# The repo's own entry point, greatdane/tools/apply-dane-series.sh,
++# calls it after the series and commits the result. Pipelines that apply
++# the series themselves should call
++#   greatdane/tools/apply-dane-series.sh --hook-only <firefox-src>
++# at the same point; see greatdane/tools/OVERLAY-HOOK.md for where the
++# pinned Linux pipeline gets the call at its next re-pin.
+ #
+ #   apply-greatdane-overlay.sh <firefox-src>
+ #   apply-greatdane-overlay.sh --check <firefox-src>
+diff --git a/greatdane/tools/apply-greatdane-static-prefs.sh b/greatdane/tools/apply-greatdane-static-prefs.sh
+index b63b1d6..3e5d699 100755
+--- a/greatdane/tools/apply-greatdane-static-prefs.sh
++++ b/greatdane/tools/apply-greatdane-static-prefs.sh
+@@ -80,27 +80,28 @@ else
+   fi
+ fi
+ 
+-if [ -n "$CHECK" ]; then
+-  # Already-applied path in --check mode: no writes happened.
+-  echo "apply-greatdane-static-prefs: --check OK (already applied)"
+-  exit 0
+-fi
+-
+ # Loud post-apply (or already-applied) checks. The generator reads only
+ # StaticPrefList.yaml, and headers exist only for pref_groups.
+-# Count entries so a duplicate insertion is a hard failure.
++# Count entries so a duplicate insertion is a hard failure. These run in
++# --check mode too, so --check on an already-applied tree that carries a
++# duplicate (or a wrong type) fails instead of reporting OK.
+ count_pref() {
+   grep -c "$1" "$YAML" || true
+ }
+-n_lazy=$(count_pref '^[[:space:]]*- name: greatdane.node.lazy$')
+-n_to=$(count_pref '^[[:space:]]*- name: greatdane.node.lazyTimeoutSec$')
++n_lazy=$(count_pref '^[[:space:]]*- name: greatdane\.node\.lazy$')
++n_to=$(count_pref '^[[:space:]]*- name: greatdane\.node\.lazyTimeoutSec$')
+ [ "$n_lazy" -eq 1 ] || die "expected exactly one greatdane.node.lazy in StaticPrefList.yaml, found $n_lazy"
+ [ "$n_to" -eq 1 ] || die "expected exactly one greatdane.node.lazyTimeoutSec, found $n_to"
+-awk '/name: greatdane.node.lazy$/{n=1} n&&/type:/{print; exit}' "$YAML" | grep -q RelaxedAtomicBool \
++awk '/name: greatdane\.node\.lazy$/{n=1} n&&/type:/{print; exit}' "$YAML" | grep -q RelaxedAtomicBool \
+   || die "greatdane.node.lazy must be RelaxedAtomicBool"
+-awk '/name: greatdane.node.lazyTimeoutSec$/{n=1} n&&/type:/{print; exit}' "$YAML" | grep -q RelaxedAtomicInt32 \
++awk '/name: greatdane\.node\.lazyTimeoutSec$/{n=1} n&&/type:/{print; exit}' "$YAML" | grep -q RelaxedAtomicInt32 \
+   || die "greatdane.node.lazyTimeoutSec must be RelaxedAtomicInt32"
+ grep -q '"greatdane"' "$MOZ" || die "pref_groups is missing \"greatdane\" in moz.build"
++if [ -n "$CHECK" ]; then
++  # Already-applied path in --check mode: no writes happened.
++  echo "apply-greatdane-static-prefs: --check OK (already applied)"
++  exit 0
++fi
+ if [ "$already_yp" -eq 1 ]; then
+   echo "apply-greatdane-static-prefs: already applied, skipped in $TREE"
+ else
+diff --git a/modules/libpref/init/StaticPrefList.yaml b/modules/libpref/init/StaticPrefList.yaml
+index d3890b1..959e492 100644
+--- a/modules/libpref/init/StaticPrefList.yaml
++++ b/modules/libpref/init/StaticPrefList.yaml
+@@ -8706,6 +8706,27 @@
+   value: 0
+   mirror: always
+ 
++#---------------------------------------------------------------------------
++# Prefs starting with "greatdane."
++#---------------------------------------------------------------------------
++
++# Lazy node: sync only the namespace; fetch a name's DNS zone when a query
++# arrives, instead of syncing full zones up front. Default off.
++# These are mirror:always so the TLS verifier can read them off the cert
++# thread (Preferences::Get* is main-thread-only and would assert/crash).
++# Defaults are owned here; do not also pref() them in firefox.js.
++- name: greatdane.node.lazy
++  type: RelaxedAtomicBool
++  value: false
++  mirror: always
++
++# Bounded wait (seconds) for a cold zone fetch. The C++ verifier still
++# clamps this to [1, 60].
++- name: greatdane.node.lazyTimeoutSec
++  type: RelaxedAtomicInt32
++  value: 10
++  mirror: always
++
+ #---------------------------------------------------------------------------
+ # Prefs starting with "html5."
+ #---------------------------------------------------------------------------
+diff --git a/modules/libpref/moz.build b/modules/libpref/moz.build
+index fa05921..6dd57ad 100644
+--- a/modules/libpref/moz.build
++++ b/modules/libpref/moz.build
+@@ -50,6 +50,7 @@ pref_groups = [
+     "geo",
+     "gfx",
+     "gl",
++    "greatdane",
+     "html5",
+     "idle_period",
+     "image",
+-- 
+2.47.3
+

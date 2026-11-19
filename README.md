@@ -39,10 +39,16 @@ Upstream ESR commits and merges are left out.
 git clone --branch esr153 --single-branch https://github.com/mozilla-firefox/firefox.git
 cd firefox
 git checkout -b dane 3bd39ccf6af8b2c836e2f96d928bc9282adaf28e
-git am --keep-cr /path/to/dane/patches/*.patch      # or loop over patches/series
+/path/to/dane/greatdane/tools/apply-dane-series.sh .   # git am the series, then the overlay hook
+# or by hand: git am --keep-cr /path/to/dane/patches/*.patch, then
+#   /path/to/dane/greatdane/tools/apply-dane-series.sh --hook-only .
 # apply without committing (this is how the series was verified):
 #   for p in $(cat /path/to/dane/patches/series); do git apply --check /path/to/dane/patches/$p && git apply /path/to/dane/patches/$p; done
 ```
+
+`apply-dane-series.sh` runs the GreatDANE overlay hook after the series and before any clobber or
+configure. The hook fails closed, and the script commits anything it changes, so the HEAD tree is the tree
+you build. See `greatdane/tools/OVERLAY-HOOK.md`.
 
 Build Dane the same way as Firefox (`./mach build`), using the mozconfig files that the series adds.
 macOS signing needs your own Developer ID identity. No keys or certificates are included.

@@ -19,7 +19,7 @@ INC = REPO / "modules/libpref/init/StaticPrefList-greatdane-node.inc.yaml"
 APPLY = REPO / "greatdane/tools/apply-greatdane-static-prefs.sh"
 OVERLAY = REPO / "greatdane/tools/apply-greatdane-overlay.sh"
 SSL = REPO / "security/manager/ssl/SSLServerCertVerification.cpp"
-DEFAULT_FIREFOX_SRC = Path("/workspace/dane-linux/src")
+DEFAULT_FIREFOX_SRC = None  # no default tree; set GREATDANE_FIREFOX_SRC
 SSL_REL = "security/manager/ssl/SSLServerCertVerification.cpp"
 
 
@@ -77,7 +77,9 @@ def _ssl_text():
 
 def firefox_src():
     env = os.environ.get("GREATDANE_FIREFOX_SRC")
-    p = Path(env) if env else DEFAULT_FIREFOX_SRC
+    if not env and DEFAULT_FIREFOX_SRC is None:
+        return None
+    p = Path(env) if env else Path(DEFAULT_FIREFOX_SRC)
     yaml = p / "modules/libpref/init/StaticPrefList.yaml"
     moz = p / "modules/libpref/moz.build"
     if yaml.is_file() and moz.is_file():

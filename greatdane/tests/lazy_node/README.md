@@ -47,10 +47,23 @@ a real mesh node.
   idempotent and all-or-nothing: a second run is a no-op success;
   a partial pre-state fails before any write. The script fails
   loudly if the patches do not apply or the result is missing or
-  duplicated. Names stay under `greatdane.*`.
+  duplicated, in `--check` mode too. Names stay under `greatdane.*`.
+  Patch 0163 commits the same libpref edits into the series, so on a
+  tree built from the series the hook reports "already applied".
+  `greatdane/tools/apply-dane-series.sh` runs the hook after the
+  series and before clobber / configure (`--hook-only` for pipelines
+  that apply the series themselves), fails closed, and commits the
+  result. See `greatdane/tools/OVERLAY-HOOK.md`.
 - `/gd/names` is unchanged and works from the namespace alone.
 
 Run: `python3 test_lazy_node.py` (binds 127.0.0.1 only).
+
+`python3 test_overlay_hook.py` checks the hook wiring with small
+synthetic libpref files in temp git repos (no Firefox tree, no
+network). With `GREATDANE_FIREFOX_SRC` set to an unpatched Firefox
+tree, it also checks that the series' libpref hunks leave the hook
+nothing to do. `test_static_prefs_patch.py` needs
+`GREATDANE_FIREFOX_SRC` for its apply cases (there is no default tree).
 
 Against a real `greatdane-node` (private netns, throwaway `--data`, no
 real seeds/mesh):

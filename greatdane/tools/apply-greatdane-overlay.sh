@@ -1,20 +1,15 @@
 #!/bin/sh
 # In-repo GreatDANE overlay apply hook for a Firefox source tree.
-# Run this after the product commits have been git-am'd (or the overlay
-# files copied) and before mach configure / mach build.
+# Run this after the Dane patch series has been applied (git am) and
+# before clobber / mach configure / mach build.
 #
 # This is the hook that runs apply-greatdane-static-prefs.sh (N1).
-# The historical dane-linux pin sequences live outside this repo and
-# were not modified. What is still needed: one invocation of this
-# script against the Linux tree, after product git am and before
-# ./mach configure, at:
-#   /workspace/dane-linux/prepare-final-pin-sequence.sh:179
-#     (right after 'Product commits applied...') and again after v3
-#     before the clobber+configure block (~line 228);
-#   /workspace/dane-linux/prepare-final-pin-sequence-r9.sh:746
-#     (after 'git am of 5b-5e completed') and before
-#     run_mach configure at line 955
-# (and the same relative spots in the r3–r8 copies).
+# The repo's own entry point, greatdane/tools/apply-dane-series.sh,
+# calls it after the series and commits the result. Pipelines that apply
+# the series themselves should call
+#   greatdane/tools/apply-dane-series.sh --hook-only <firefox-src>
+# at the same point; see greatdane/tools/OVERLAY-HOOK.md for where the
+# pinned Linux pipeline gets the call at its next re-pin.
 #
 #   apply-greatdane-overlay.sh <firefox-src>
 #   apply-greatdane-overlay.sh --check <firefox-src>
