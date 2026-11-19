@@ -1,0 +1,624 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Wed, 18 Nov 2026 19:48:53 -0600
+Subject: [PATCH 160/162] GreatDANE: H1 StaticPrefs, H2 activation floor, M1/M3
+
+H1: read greatdane.node.lazy and lazyTimeoutSec via StaticPrefs
+(mirror: always) on the cert thread; drop the main-thread-only
+Preferences::Get* calls. Defaults move out of firefox.js into
+modules/libpref/init/StaticPrefList.yaml (patch + fragment; this
+overlay does not vendor the 20k-line file). The [1,60] clamp stays
+in C++.
+
+H2: restore the height >= activation floor in lazy mode. A test-only
+pref/env (greatdane.node.lazyAllowPreActivation /
+GREATDANE_LAZY_ALLOW_PRE_ACTIVATION, default off) allows pre-activation
+fixtures. Fallback for a missing namespace_synced flag matches full
+mode (floor + passes >= 1). Also require height+2 >= best_known_height
+when that field is present and > 0.
+
+M1: a cert/NSS failure is never relabelled as GD_ZONE_LOADING.
+M3: lazy sync rules follow the mode the node was spawned with
+(c.lazy / status.lazy), not the live pref.
+
+M2, M4, and M5 are deferred (no mach).
+---
+ browser/app/profile/firefox.js                | 18 ++--
+ .../components/greatdane/GreatDANE.sys.mjs    | 81 ++++++++++++++----
+ .../greatdane/GreatDANEAbout.sys.mjs          | 12 ++-
+ .../test/unit/test_greatdane_failclosed.js    | 16 +++-
+ greatdane/tests/lazy_node/README.md           | 10 ++-
+ greatdane/tests/lazy_node/lazy_policy.py      | 82 ++++++++++++++++---
+ greatdane/tests/lazy_node/test_lazy_node.py   | 73 +++++++++++++----
+ .../tests/lazy_node/test_lazy_node_e2e.py     |  7 +-
+ .../StaticPrefList-greatdane-node.inc.yaml    | 22 +++++
+ .../libpref/init/StaticPrefList.yaml.patch    | 35 ++++++++
+ .../manager/ssl/SSLServerCertVerification.cpp |  8 +-
+ 11 files changed, 300 insertions(+), 64 deletions(-)
+ create mode 100644 modules/libpref/init/StaticPrefList-greatdane-node.inc.yaml
+ create mode 100644 modules/libpref/init/StaticPrefList.yaml.patch
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index 6736c1e..c26a550 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -3644,13 +3644,17 @@ pref("greatdane.node.dataDir", "");
+ // When on, the node is launched with --lazy, GREATDANE_NODE_LAZY=1,
+ // and --lazy-cache-dir <node data dir>. Other lazy tunables stay at
+ // the node's defaults.
+-pref("greatdane.node.lazy", false);
+-// Bounded wait (seconds) for a cold zone fetch. The resolver and the
+-// TLSA verifier wait this long for SERVFAIL+EDE 14/22 or /gd/tlsa
+-// status "loading" to become a real answer, honoring retry_ms inside
+-// this budget. On timeout show a retryable "still loading" state,
+-// never a TLSA/cert failure.
+-pref("greatdane.node.lazyTimeoutSec", 10);
++// Defaults for greatdane.node.lazy (false) and
++// greatdane.node.lazyTimeoutSec (10) live in
++// modules/libpref/init/StaticPrefList.yaml (mirror: always) so the
++// TLS verifier can read them off the cert thread. Do not pref() them
++// here with different values. JS can still read them via Services.prefs.
++// TEST ONLY, default off. Lets lazy mode treat a pre-activation
++// namespace_synced fixture (height > 0 but height < activation) as
++// synced. Never enable for users. An env alias,
++// GREATDANE_LAZY_ALLOW_PRE_ACTIVATION, exists for the Python policy
++// tests only.
++pref("greatdane.node.lazyAllowPreActivation", false);
+ // Per-chain node on/off (Dane settings pane). Off = that TLD fails closed.
+ pref("greatdane.pep.enabled", true);
+ pref("greatdane.doge.enabled", true);
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index 1abaa87..99b190e 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -52,18 +52,46 @@ export function lazyRetryMs(j, budgetMs) {
+   return Math.max(1, Math.floor(n));
+ }
+ 
+-// Live lazy-mode sync decision (never latched). The node owns the
+-// online/offline rule and reports namespace_synced plus
+-// namespace_sync_basis / best_known_height on each status line.
+-// Follow the flag when present — including height below activation
+-// (an isolated offline node can be synced at a fixture tip).
+-// Older nodes that omit the flag fall back to height catch-up.
+-export function lazyNamespaceSynced(st) {
++// Activation floor: a node below the chain's activation height is
++// not synced, unless the test-only override is on (fixtures).
++export function activationFloorOk(st, allowPreActivation = false) {
++  if (!st || !st.height) return false;
++  let floor = st.activation || 0;
++  if (st.height >= floor) return true;
++  return !!(allowPreActivation && st.height > 0);
++}
++
++// When the node reports best_known_height (> 0), require height+2 >= that
++// tip. 0 or a missing field means no peer tip was ever seen.
++export function bestKnownOk(st) {
++  if (!st) return false;
++  let b = st.best_known_height;
++  if (typeof b != "number" || !Number.isFinite(b) || b <= 0) return true;
++  return st.height + 2 >= b;
++}
++
++// Full-mode sync rule, also used as the fallback when a lazy node omits
++// namespace_synced. Never weaker than full mode.
++export function fullNamespaceSynced(st) {
+   if (!st || typeof st != "object") return false;
+-  if (typeof st.namespace_synced == "boolean") return st.namespace_synced;
+-  if (!st.height) return false;
++  if (!activationFloorOk(st, false)) return false;
++  if (!bestKnownOk(st)) return false;
+   if (st.peer_height > 0) return st.height + 2 >= st.peer_height;
+-  return true;
++  return st.passes >= 1;
++}
++
++// Live lazy-mode sync decision (never latched). Follows the node's
++// namespace_synced flag when present, plus the activation floor and
++// best_known_height check. The test-only allowPreActivation override
++// (greatdane.node.lazyAllowPreActivation / GREATDANE_LAZY_ALLOW_PRE_ACTIVATION)
++// is the only way to accept a fixture tip below activation. Older nodes
++// that omit the flag use the full-mode rule.
++export function lazyNamespaceSynced(st, { allowPreActivation = false } = {}) {
++  if (!st || typeof st != "object") return false;
++  if (!activationFloorOk(st, allowPreActivation)) return false;
++  if (!bestKnownOk(st)) return false;
++  if (typeof st.namespace_synced == "boolean") return st.namespace_synced;
++  return fullNamespaceSynced(st);
+ }
+ 
+ 
+@@ -139,6 +167,25 @@ export const GreatDANE = {
+     return Services.prefs.getBoolPref(PREF + "node.lazy", false);
+   },
+ 
++  // TEST ONLY. Default false. See greatdane.node.lazyAllowPreActivation.
++  _allowPreActivation() {
++    try {
++      return Services.prefs.getBoolPref(PREF + "node.lazyAllowPreActivation", false);
++    } catch (e) {
++      return false;
++    }
++  },
++
++  // Gate lazy sync rules on the mode this chain was actually started in
++  // (c.lazy at spawn, or status.lazy from the running node), not the live
++  // pref, which can change before the respawn finishes.
++  _lazyModeActive(c) {
++    if (c?.status && (c.status.lazy === 1 || c.status.lazy === true)) return true;
++    if (c?.status && (c.status.lazy === 0 || c.status.lazy === false)) return false;
++    if (typeof c?.lazy == "boolean") return c.lazy;
++    return this._lazyEnabled();
++  },
++
+   // Confirmed flags. Other lazy tunables (--lazy-wait-ms, cache caps, TTLs)
+   // keep the node's defaults. --lazy-cache-dir points at this run's --data
+   // dir so the zone cache (lazy-zones-<coin>.db) stays with the profile.
+@@ -373,6 +420,7 @@ export const GreatDANE = {
+   async _spawn(c) {
+     c.state = "starting";
+     c.ports = null;
++    c.lazy = this._lazyEnabled();
+     try {
+       let spawnOpts = {
+         command: this._nodePath(),
+@@ -466,14 +514,11 @@ export const GreatDANE = {
+   _synced(c) {
+     let st = c.status;
+     if (c.state != "ready" || !st) return false;
+-    if (this._lazyEnabled()) return lazyNamespaceSynced(st);
+-    // Full mode: an empty or pre-activation chain is never "synced",
+-    // even with no peers to ask.
+-    if (!st.height || st.height < (st.activation || 0)) return false;
+-    // A node at the tip keeps its pass open to follow new blocks, so
+-    // passes can stay 0 forever: a peer's height claim settles it alone.
+-    if (st.peer_height > 0) return st.height + 2 >= st.peer_height;
+-    return st.passes >= 1;
++    // Use the mode the running node was started in (M3), not the live pref.
++    if (this._lazyModeActive(c)) {
++      return lazyNamespaceSynced(st, { allowPreActivation: this._allowPreActivation() });
++    }
++    return fullNamespaceSynced(st);
+   },
+ 
+   // What a navigation to a chain host would hit right now, or null if open.
+diff --git a/browser/components/greatdane/GreatDANEAbout.sys.mjs b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+index 7d652d0..f648357 100644
+--- a/browser/components/greatdane/GreatDANEAbout.sys.mjs
++++ b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+@@ -87,6 +87,9 @@ export function proxyLoadingFromRequest(request) {
+ 
+ export function classifyChainFailure({ block = null, tlsa = null, tlsFail = null, proxyLoading = false } = {}) {
+   if (block) return block;
++  // A cert/NSS failure means the verifier already rejected the key.
++  // Never relabel that as "still loading" / "not a security error".
++  if (tlsFail === true) return "GD_TLS_UNTRUSTED";
+   // Proxy 503 + X-GreatDANE-Status: loading, or /gd/tlsa "loading".
+   if (proxyLoading) return "GD_ZONE_LOADING";
+   if (tlsa === null || tlsa === undefined) return "GD_NODE_NOT_READY";
+@@ -307,8 +310,13 @@ export const ErrorTrap = {
+     };
+     if (code) { go(code); return; }
+     // Cold CONNECT: 503 + X-GreatDANE-Status: loading. Don't wait on
+-    // /gd/tlsa and don't fall through to a generic net/cert interstitial.
+-    if (proxy.loading) { go("GD_ZONE_LOADING", proxy.retryAfter); return; }
++    // /gd/tlsa and don't fall through to a generic net error. A cert
++    // failure still wins (classifyChainFailure) so a mismatch is not
++    // relabelled as loading.
++    if (proxy.loading) {
++      go(classifyChainFailure({ proxyLoading: true, tlsFail }), proxy.retryAfter);
++      return;
++    }
+     return GreatDANE.tlsaInfo(host).then(
+       info => {
+         if (!info) { go(classifyChainFailure({ tlsa: null, tlsFail })); return; }
+diff --git a/browser/components/greatdane/test/unit/test_greatdane_failclosed.js b/browser/components/greatdane/test/unit/test_greatdane_failclosed.js
+index c513bd3..a090dde 100644
+--- a/browser/components/greatdane/test/unit/test_greatdane_failclosed.js
++++ b/browser/components/greatdane/test/unit/test_greatdane_failclosed.js
+@@ -129,8 +129,10 @@ add_task(function classify_unknowns_fail_closed() {
+     "unknown status never reads as unreachable");
+   Assert.equal(classifyChainFailure({ block: "GD_NODE_SYNCING", tlsa: "ok" }), "GD_NODE_SYNCING");
+   Assert.equal(classifyChainFailure({ tlsa: "loading" }), "GD_ZONE_LOADING");
+-  Assert.equal(classifyChainFailure({ tlsa: "loading", tlsFail: true }), "GD_ZONE_LOADING",
+-    "loading is never a TLSA/cert failure, even after a cert error page");
++  Assert.equal(classifyChainFailure({ tlsa: "loading", tlsFail: true }), "GD_TLS_UNTRUSTED",
++    "a cert/NSS failure is never relabelled as loading");
++  Assert.equal(classifyChainFailure({ proxyLoading: true, tlsFail: true }), "GD_TLS_UNTRUSTED",
++    "proxy 503 loading does not hide a pinning failure");
+   Assert.equal(classifyChainFailure({ tlsa: "unowned" }), "GD_NAME_UNOWNED",
+     "real NXDOMAIN/unowned stays not-found");
+   Assert.equal(classifyChainFailure({ proxyLoading: true, tlsa: null }), "GD_ZONE_LOADING",
+@@ -141,7 +143,7 @@ add_task(function classify_unknowns_fail_closed() {
+ 
+ add_task(async function zone_still_loading_is_retryable() {
+   setChains(chain("doge"));
+-  let { code, html } = await trap("https://loading.doge/", { doc: "about:certerror?e=nssFailure2&u=x" });
++  let { code, html } = await trap("https://loading.doge/", { doc: "about:neterror?e=proxyConnectFailure" });
+   Assert.equal(code, "GD_ZONE_LOADING", "loading is not a pinning failure");
+   Assert.ok(html.includes("Still loading this name"), "retryable heading");
+   Assert.ok(html.includes("not a security error"), "must not look like a cert rejection");
+@@ -151,6 +153,14 @@ add_task(async function zone_still_loading_is_retryable() {
+ });
+ 
+ 
++add_task(async function cert_mismatch_is_not_relabelled_as_loading() {
++  setChains(chain("doge"));
++  let { code, html } = await trap("https://loading.doge/", { doc: "about:certerror?e=nssFailure2&u=x" });
++  Assert.equal(code, "GD_TLS_UNTRUSTED", "cert error page wins over a later loading status");
++  assertBlocked(html, "GD_TLS_UNTRUSTED", "does not match the chain");
++  Assert.ok(!html.includes("not a security error"), "must not look like a harmless loading page");
++});
++
+ add_task(async function proxy_503_loading_is_retryable() {
+   setChains(chain("doge"));
+   let request = {
+diff --git a/greatdane/tests/lazy_node/README.md b/greatdane/tests/lazy_node/README.md
+index 5d3c778..bfdd47d 100644
+--- a/greatdane/tests/lazy_node/README.md
++++ b/greatdane/tests/lazy_node/README.md
+@@ -25,9 +25,13 @@ a real mesh node.
+ - Stdio status adds `lazy`, `namespace_synced`, `zones_cached`,
+   `zones_loading`, `zones_failed`, `namespace_sync_basis`
+   (`peers`/`offline`/`none`), and `best_known_height`. In lazy mode
+-  Dane follows the live `namespace_synced` flag and does not latch it
+-  or re-apply the height < activation gate (an offline fixture tip
+-  below activation can be synced).
++  Dane follows the live `namespace_synced` flag and does not latch it.
++  Lazy mode also restores the height >= activation floor (a test-only
++  pref/env, `greatdane.node.lazyAllowPreActivation` /
++  `GREATDANE_LAZY_ALLOW_PRE_ACTIVATION`, default off, is required for a
++  pre-activation fixture). A missing flag uses the full-mode rule
++  (`passes >= 1` and the same floor). `best_known_height`, when present
++  and > 0, must satisfy height+2 >= that tip.
+ - `/gd/names` is unchanged and works from the namespace alone.
+ 
+ Run: `python3 test_lazy_node.py` (binds 127.0.0.1 only).
+diff --git a/greatdane/tests/lazy_node/lazy_policy.py b/greatdane/tests/lazy_node/lazy_policy.py
+index 2739014..770a70e 100644
+--- a/greatdane/tests/lazy_node/lazy_policy.py
++++ b/greatdane/tests/lazy_node/lazy_policy.py
+@@ -4,6 +4,7 @@
+ # Keep these constants in sync. No Firefox runtime required.
+ 
+ import hashlib
++import os
+ import time
+ 
+ # Keeper/lazy-node: confirmed flags/env. Passed only when the pref is on.
+@@ -40,26 +41,82 @@ def lazy_node_env(data_dir, enabled=True):
+     }
+ 
+ 
+-def lazy_namespace_synced(st):
++# TEST ONLY. Pref greatdane.node.lazyAllowPreActivation (default false)
++# and env GREATDANE_LAZY_ALLOW_PRE_ACTIVATION=1. Never enable for users.
++def env_allow_pre_activation(explicit=None):
++    if explicit is not None:
++        return bool(explicit)
++    v = os.environ.get("GREATDANE_LAZY_ALLOW_PRE_ACTIVATION", "")
++    return v.lower() in ("1", "true", "yes")
++
++
++def activation_floor_ok(st, allow_pre=False):
++    if not isinstance(st, dict) or not (st.get("height") or 0):
++        return False
++    floor = st.get("activation") or 0
++    if st["height"] >= floor:
++        return True
++    return bool(allow_pre and st["height"] > 0)
++
++
++def best_known_ok(st):
++    if not isinstance(st, dict):
++        return False
++    b = st.get("best_known_height")
++    if not isinstance(b, (int, float)) or b <= 0:
++        return True
++    return (st.get("height") or 0) + 2 >= b
++
++
++def full_namespace_synced(st):
++    """Mirrors GreatDANE.fullNamespaceSynced (full mode and lazy fallback)."""
++    if not isinstance(st, dict):
++        return False
++    if not activation_floor_ok(st, False):
++        return False
++    if not best_known_ok(st):
++        return False
++    peer = st.get("peer_height") or 0
++    if peer > 0:
++        return (st.get("height") or 0) + 2 >= peer
++    return (st.get("passes") or 0) >= 1
++
++
++def lazy_namespace_synced(st, allow_pre_activation=None):
+     """Mirrors GreatDANE.lazyNamespaceSynced (lazy mode _synced).
+ 
+-    Follows the live namespace_synced flag; never latches. Does not
+-    re-apply the height < activation gate: an offline lazy node can be
+-    synced at a fixture tip below activation. Older nodes that omit the
+-    flag fall back to height catch-up (height>0, then peer tip or true).
++    Follows the live namespace_synced flag; never latches. Restores the
++    height >= activation floor unless the test-only override is on.
++    Fallback for a missing flag matches full mode (floor + passes >= 1
++    or peer catch-up). Also requires height+2 >= best_known_height when
++    that field is present and > 0.
+     """
+     if not isinstance(st, dict):
+         return False
++    if allow_pre_activation is None:
++        allow = env_allow_pre_activation()
++    else:
++        allow = bool(allow_pre_activation)
++    if not activation_floor_ok(st, allow):
++        return False
++    if not best_known_ok(st):
++        return False
+     flag = st.get("namespace_synced")
+     if isinstance(flag, bool):
+         return flag
+-    height = st.get("height") or 0
+-    if not height:
++    return full_namespace_synced(st)
++
++
++def lazy_mode_active(chain, live_pref=False):
++    """Mirrors GreatDANE._lazyModeActive: spawn/status mode, not live pref."""
++    st = (chain or {}).get("status") or {}
++    if st.get("lazy") in (1, True):
++        return True
++    if st.get("lazy") in (0, False) and "lazy" in st:
+         return False
+-    peer = st.get("peer_height") or 0
+-    if peer > 0:
+-        return height + 2 >= peer
+-    return True
++    if isinstance((chain or {}).get("lazy"), bool):
++        return chain["lazy"]
++    return bool(live_pref)
+ 
+ 
+ def namespace_sync_cell(st, state=""):
+@@ -181,6 +238,9 @@ def classify_chain_failure(tlsa, tls_fail=None, block=None, proxy_loading=False)
+     """Same decision as GreatDANEAbout.classifyChainFailure."""
+     if block:
+         return block
++    # A cert/NSS failure is never relabelled as loading.
++    if tls_fail is True:
++        return "GD_TLS_UNTRUSTED"
+     if proxy_loading:
+         return "GD_ZONE_LOADING"
+     if tlsa is None:
+diff --git a/greatdane/tests/lazy_node/test_lazy_node.py b/greatdane/tests/lazy_node/test_lazy_node.py
+index 92761bd..c749a18 100755
+--- a/greatdane/tests/lazy_node/test_lazy_node.py
++++ b/greatdane/tests/lazy_node/test_lazy_node.py
+@@ -46,6 +46,8 @@ from lazy_policy import (
+     is_lazy_loading_status,
+     is_proxy_loading,
+     loading_retry_sec,
++    full_namespace_synced,
++    lazy_mode_active,
+     lazy_namespace_synced,
+     lazy_node_args,
+     lazy_node_env,
+@@ -159,7 +161,7 @@ class PolicyConstantsTests(unittest.TestCase):
+ 
+     def test_namespace_synced_is_followed_live_not_latched(self):
+         # Offline fixture: height 1000, activation 1130000, no peers.
+-        # The node says synced; Dane must not re-apply the activation gate.
++        # Default Dane rule restores the activation floor.
+         offline = {
+             "height": 1000,
+             "activation": 1_130_000,
+@@ -169,31 +171,68 @@ class PolicyConstantsTests(unittest.TestCase):
+             "namespace_sync_basis": "offline",
+             "best_known_height": 0,
+         }
+-        self.assertTrue(lazy_namespace_synced(offline))
++        self.assertFalse(lazy_namespace_synced(offline, allow_pre_activation=False))
++        # Test-only override (pref/env) allows the fixture tip.
++        self.assertTrue(lazy_namespace_synced(offline, allow_pre_activation=True))
+         self.assertEqual(namespace_sync_cell(offline, "ready"), "ready (offline)")
+         self.assertEqual(peer_best_cell(offline), "0 / 0")
+ 
+-        # A later peer with a higher tip flips the live flag back to false.
+-        behind = dict(offline, namespace_synced=False, namespace_sync_basis="none",
+-                      peer_height=5000, best_known_height=5000)
+-        self.assertFalse(lazy_namespace_synced(behind))
++        # At or past activation, follow the live flag (never latch).
++        at_tip = dict(offline, height=1_130_000)
++        self.assertTrue(lazy_namespace_synced(at_tip, allow_pre_activation=False))
++        behind = dict(at_tip, namespace_synced=False, namespace_sync_basis="none",
++                      peer_height=2_000_000, best_known_height=2_000_000)
++        self.assertFalse(lazy_namespace_synced(behind, allow_pre_activation=False))
+         self.assertEqual(namespace_sync_cell(behind, "syncing"), "syncing (none)")
+-        self.assertEqual(peer_best_cell(behind), "5000 / 5000")
++        self.assertEqual(peer_best_cell(behind), "2000000 / 2000000")
+ 
+-        # Online at tip.
+-        peers = dict(offline, namespace_synced=True, namespace_sync_basis="peers",
+-                     peer_height=1000, best_known_height=1000)
++        # Online at tip, activation satisfied.
++        peers = dict(offline, height=1_130_000, namespace_synced=True,
++                     namespace_sync_basis="peers",
++                     peer_height=1_130_000, best_known_height=1_130_000)
+         self.assertTrue(lazy_namespace_synced(peers))
+         self.assertEqual(namespace_sync_cell(peers, "ready"), "ready (peers)")
+ 
+-        # Missing flag: height catch-up fallback, never treat height 0 as synced.
++        # best_known_height present and ahead of us: not synced, even if
++        # the node flag is true and we are past activation.
++        stale = dict(peers, height=1_130_000, best_known_height=2_000_000,
++                     namespace_synced=True)
++        self.assertFalse(lazy_namespace_synced(stale))
++
++        # Missing flag: identical to full mode (floor + passes>=1 / peers).
+         self.assertFalse(lazy_namespace_synced({"height": 0, "peer_height": 0}))
+-        self.assertTrue(lazy_namespace_synced({"height": 100, "peer_height": 0}))
+-        self.assertTrue(lazy_namespace_synced({"height": 100, "peer_height": 100}))
+-        self.assertFalse(lazy_namespace_synced({"height": 100, "peer_height": 200}))
++        self.assertFalse(lazy_namespace_synced(
++            {"height": 100, "activation": 1000, "peer_height": 0, "passes": 5}))
++        # Past activation, no flag, no peers, no pass: not synced (full-mode).
++        self.assertFalse(lazy_namespace_synced(
++            {"height": 100, "activation": 1, "peer_height": 0, "passes": 0}))
++        self.assertTrue(lazy_namespace_synced(
++            {"height": 100, "activation": 1, "peer_height": 0, "passes": 1}))
++        self.assertTrue(lazy_namespace_synced(
++            {"height": 100, "activation": 1, "peer_height": 100}))
++        self.assertFalse(lazy_namespace_synced(
++            {"height": 100, "activation": 1, "peer_height": 200}))
++        self.assertEqual(full_namespace_synced(
++            {"height": 100, "activation": 1, "peer_height": 0, "passes": 1}), True)
++        self.assertEqual(full_namespace_synced(
++            {"height": 100, "activation": 1000, "passes": 1}), False)
+         self.assertEqual(peer_best_cell({}), "- / -")
+         self.assertEqual(namespace_sync_cell({}, "ready"), "ready")
+ 
++    def test_lazy_rules_follow_spawned_mode_not_live_pref(self):
++        # M3: a running non-lazy node must not pick up lazy rules just because
++        # the live pref flipped; a running lazy node keeps lazy rules.
++        nonlazy = {"lazy": False, "status": {"lazy": 0, "height": 100,
++                                            "activation": 1, "passes": 0}}
++        self.assertFalse(lazy_mode_active(nonlazy, live_pref=True))
++        lazy_chain = {"lazy": True, "status": {"lazy": 1, "height": 100,
++                                               "activation": 1, "passes": 0,
++                                               "namespace_synced": True}}
++        self.assertTrue(lazy_mode_active(lazy_chain, live_pref=False))
++        # Spawn flag used when status.lazy is absent (older node).
++        self.assertTrue(lazy_mode_active({"lazy": True, "status": {}}, live_pref=False))
++        self.assertFalse(lazy_mode_active({"lazy": False, "status": {}}, live_pref=True))
++
+     def test_http_status_loading_is_loading(self):
+         self.assertTrue(is_lazy_loading_status({"status": "loading"}))
+         self.assertTrue(is_lazy_loading_status(LOADING_14))
+@@ -217,7 +256,11 @@ class PolicyConstantsTests(unittest.TestCase):
+         self.assertEqual(classify_chain_failure("loading"), "GD_ZONE_LOADING")
+         self.assertEqual(
+             classify_chain_failure("loading", tls_fail=True),
+-            "GD_ZONE_LOADING",
++            "GD_TLS_UNTRUSTED",
++        )
++        self.assertEqual(
++            classify_chain_failure(None, tls_fail=True, proxy_loading=True),
++            "GD_TLS_UNTRUSTED",
+         )
+         self.assertEqual(
+             classify_chain_failure(None, proxy_loading=True),
+diff --git a/greatdane/tests/lazy_node/test_lazy_node_e2e.py b/greatdane/tests/lazy_node/test_lazy_node_e2e.py
+index ebd2f21..c6e0648 100644
+--- a/greatdane/tests/lazy_node/test_lazy_node_e2e.py
++++ b/greatdane/tests/lazy_node/test_lazy_node_e2e.py
+@@ -363,9 +363,12 @@ class RealLazyNodeTests(unittest.TestCase):
+             self.assertTrue(n.alive(), "node died while waiting for namespace_synced")
+             self.assertIsNotNone(synced, f"namespace_synced never became true; last={n.status()}")
+             self.assertEqual(synced.get("namespace_sync_basis"), "offline")
+-            self.assertTrue(lazy_namespace_synced(synced))
+-            # height 1000 < activation 1130000 must not fail-close.
++            # Node may report namespace_synced true at a fixture tip
++            # below activation; Dane's default floor still fail-closes,
++            # unless the test-only override is on.
+             self.assertLess(synced.get("height") or 0, synced.get("activation") or 0)
++            self.assertFalse(lazy_namespace_synced(synced, allow_pre_activation=False))
++            self.assertTrue(lazy_namespace_synced(synced, allow_pre_activation=True))
+             print(
+                 f"\n[e2e] EDE22 last={last} synced={ {k: synced.get(k) for k in ('namespace_synced','namespace_sync_basis','best_known_height','height','passes')} }",
+                 file=sys.stderr,
+diff --git a/modules/libpref/init/StaticPrefList-greatdane-node.inc.yaml b/modules/libpref/init/StaticPrefList-greatdane-node.inc.yaml
+new file mode 100644
+index 0000000..cef2348
+--- /dev/null
++++ b/modules/libpref/init/StaticPrefList-greatdane-node.inc.yaml
+@@ -0,0 +1,22 @@
++# Fragment to merge into modules/libpref/init/StaticPrefList.yaml
++# (after the "gl." section, before "html5."). See StaticPrefList.yaml.patch.
++#---------------------------------------------------------------------------
++# Prefs starting with "greatdane."
++#---------------------------------------------------------------------------
++
++# Lazy node: sync only the namespace; fetch a name's DNS zone when a query
++# arrives, instead of syncing full zones up front. Default off.
++# These are mirror:always so the TLS verifier can read them off the cert
++# thread (Preferences::Get* is main-thread-only and would assert/crash).
++# Defaults are owned here; do not also pref() them in firefox.js.
++- name: greatdane.node.lazy
++  type: bool
++  value: false
++  mirror: always
++
++# Bounded wait (seconds) for a cold zone fetch. The C++ verifier still
++# clamps this to [1, 60].
++- name: greatdane.node.lazyTimeoutSec
++  type: int32_t
++  value: 10
++  mirror: always
+diff --git a/modules/libpref/init/StaticPrefList.yaml.patch b/modules/libpref/init/StaticPrefList.yaml.patch
+new file mode 100644
+index 0000000..90c3ef2
+--- /dev/null
++++ b/modules/libpref/init/StaticPrefList.yaml.patch
+@@ -0,0 +1,35 @@
++# Apply on top of the Firefox tree's modules/libpref/init/StaticPrefList.yaml
++# (sha256 ee74e0dce6aa309c088dd92f4ead119946a306e1032403fb99db692581e5aa03 in the dane-linux/src tree used for this branch).
++# This overlay does not vendor the 20k-line yaml; apply this patch when
++# building. Defaults: greatdane.node.lazy=false, lazyTimeoutSec=10, mirror:always.
++#
++--- a/modules/libpref/init/StaticPrefList.yaml
+++++ b/modules/libpref/init/StaticPrefList.yaml
++@@ -8707,6 +8707,27 @@
++   mirror: always
++ 
++ #---------------------------------------------------------------------------
+++# Prefs starting with "greatdane."
+++#---------------------------------------------------------------------------
+++
+++# Lazy node: sync only the namespace; fetch a name's DNS zone when a query
+++# arrives, instead of syncing full zones up front. Default off.
+++# These are mirror:always so the TLS verifier can read them off the cert
+++# thread (Preferences::Get* is main-thread-only and would assert/crash).
+++# Defaults are owned here; do not also pref() them in firefox.js.
+++- name: greatdane.node.lazy
+++  type: bool
+++  value: false
+++  mirror: always
+++
+++# Bounded wait (seconds) for a cold zone fetch. The C++ verifier still
+++# clamps this to [1, 60].
+++- name: greatdane.node.lazyTimeoutSec
+++  type: int32_t
+++  value: 10
+++  mirror: always
+++
+++#---------------------------------------------------------------------------
++ # Prefs starting with "html5."
++ #---------------------------------------------------------------------------
++ 
+diff --git a/security/manager/ssl/SSLServerCertVerification.cpp b/security/manager/ssl/SSLServerCertVerification.cpp
+index 5763aac..42af7cd 100644
+--- a/security/manager/ssl/SSLServerCertVerification.cpp
++++ b/security/manager/ssl/SSLServerCertVerification.cpp
+@@ -111,8 +111,8 @@
+ #include "prio.h"
+ #include "prnetdb.h"
+ #include "mozilla/Assertions.h"
+-#include "mozilla/Preferences.h"
+ #include "mozilla/RefPtr.h"
++#include "mozilla/StaticPrefs_greatdane.h"
+ #include "mozilla/StaticPrefs_security.h"
+ #include "mozilla/TimeStamp.h"
+ #include "prerror.h"
+@@ -1043,8 +1043,10 @@ static GreatDANEVerdict GreatDANEVerify(const nsACString& aHost,
+ 
+   // When lazy mode is off, keep the historical single 5s fetch. A loading
+   // signal is still never turned into a key-pinning failure (see below).
+-  bool lazy = Preferences::GetBool("greatdane.node.lazy", false);
+-  int32_t timeoutSec = Preferences::GetInt("greatdane.node.lazyTimeoutSec", 10);
++  // Read via StaticPrefs (mirror: always). libpref lookups are
++  // main-thread-only; this runs on the cert-verification thread pool.
++  bool lazy = StaticPrefs::greatdane_node_lazy();
++  int32_t timeoutSec = StaticPrefs::greatdane_node_lazyTimeoutSec();
+   if (timeoutSec < 1) timeoutSec = 10;
+   if (timeoutSec > 60) timeoutSec = 60;
+ 

@@ -46,6 +46,8 @@ from lazy_policy import (
     is_lazy_loading_status,
     is_proxy_loading,
     loading_retry_sec,
+    full_namespace_synced,
+    lazy_mode_active,
     lazy_namespace_synced,
     lazy_node_args,
     lazy_node_env,
@@ -159,7 +161,7 @@ class PolicyConstantsTests(unittest.TestCase):
 
     def test_namespace_synced_is_followed_live_not_latched(self):
         # Offline fixture: height 1000, activation 1130000, no peers.
-        # The node says synced; Dane must not re-apply the activation gate.
+        # Default Dane rule restores the activation floor.
         offline = {
             "height": 1000,
             "activation": 1_130_000,
@@ -169,30 +171,67 @@ class PolicyConstantsTests(unittest.TestCase):
             "namespace_sync_basis": "offline",
             "best_known_height": 0,
         }
-        self.assertTrue(lazy_namespace_synced(offline))
+        self.assertFalse(lazy_namespace_synced(offline, allow_pre_activation=False))
+        # Test-only override (pref/env) allows the fixture tip.
+        self.assertTrue(lazy_namespace_synced(offline, allow_pre_activation=True))
         self.assertEqual(namespace_sync_cell(offline, "ready"), "ready (offline)")
         self.assertEqual(peer_best_cell(offline), "0 / 0")
 
-        # A later peer with a higher tip flips the live flag back to false.
-        behind = dict(offline, namespace_synced=False, namespace_sync_basis="none",
-                      peer_height=5000, best_known_height=5000)
-        self.assertFalse(lazy_namespace_synced(behind))
+        # At or past activation, follow the live flag (never latch).
+        at_tip = dict(offline, height=1_130_000)
+        self.assertTrue(lazy_namespace_synced(at_tip, allow_pre_activation=False))
+        behind = dict(at_tip, namespace_synced=False, namespace_sync_basis="none",
+                      peer_height=2_000_000, best_known_height=2_000_000)
+        self.assertFalse(lazy_namespace_synced(behind, allow_pre_activation=False))
         self.assertEqual(namespace_sync_cell(behind, "syncing"), "syncing (none)")
-        self.assertEqual(peer_best_cell(behind), "5000 / 5000")
+        self.assertEqual(peer_best_cell(behind), "2000000 / 2000000")
 
-        # Online at tip.
-        peers = dict(offline, namespace_synced=True, namespace_sync_basis="peers",
-                     peer_height=1000, best_known_height=1000)
+        # Online at tip, activation satisfied.
+        peers = dict(offline, height=1_130_000, namespace_synced=True,
+                     namespace_sync_basis="peers",
+                     peer_height=1_130_000, best_known_height=1_130_000)
         self.assertTrue(lazy_namespace_synced(peers))
         self.assertEqual(namespace_sync_cell(peers, "ready"), "ready (peers)")
 
-        # Missing flag: height catch-up fallback, never treat height 0 as synced.
+        # best_known_height present and ahead of us: not synced, even if
+        # the node flag is true and we are past activation.
+        stale = dict(peers, height=1_130_000, best_known_height=2_000_000,
+                     namespace_synced=True)
+        self.assertFalse(lazy_namespace_synced(stale))
+
+        # Missing flag: identical to full mode (floor + passes>=1 / peers).
         self.assertFalse(lazy_namespace_synced({"height": 0, "peer_height": 0}))
-        self.assertTrue(lazy_namespace_synced({"height": 100, "peer_height": 0}))
-        self.assertTrue(lazy_namespace_synced({"height": 100, "peer_height": 100}))
-        self.assertFalse(lazy_namespace_synced({"height": 100, "peer_height": 200}))
+        self.assertFalse(lazy_namespace_synced(
+            {"height": 100, "activation": 1000, "peer_height": 0, "passes": 5}))
+        # Past activation, no flag, no peers, no pass: not synced (full-mode).
+        self.assertFalse(lazy_namespace_synced(
+            {"height": 100, "activation": 1, "peer_height": 0, "passes": 0}))
+        self.assertTrue(lazy_namespace_synced(
+            {"height": 100, "activation": 1, "peer_height": 0, "passes": 1}))
+        self.assertTrue(lazy_namespace_synced(
+            {"height": 100, "activation": 1, "peer_height": 100}))
+        self.assertFalse(lazy_namespace_synced(
+            {"height": 100, "activation": 1, "peer_height": 200}))
+        self.assertEqual(full_namespace_synced(
+            {"height": 100, "activation": 1, "peer_height": 0, "passes": 1}), True)
+        self.assertEqual(full_namespace_synced(
+            {"height": 100, "activation": 1000, "passes": 1}), False)
         self.assertEqual(peer_best_cell({}), "- / -")
         self.assertEqual(namespace_sync_cell({}, "ready"), "ready")
+
+    def test_lazy_rules_follow_spawned_mode_not_live_pref(self):
+        # M3: a running non-lazy node must not pick up lazy rules just because
+        # the live pref flipped; a running lazy node keeps lazy rules.
+        nonlazy = {"lazy": False, "status": {"lazy": 0, "height": 100,
+                                            "activation": 1, "passes": 0}}
+        self.assertFalse(lazy_mode_active(nonlazy, live_pref=True))
+        lazy_chain = {"lazy": True, "status": {"lazy": 1, "height": 100,
+                                               "activation": 1, "passes": 0,
+                                               "namespace_synced": True}}
+        self.assertTrue(lazy_mode_active(lazy_chain, live_pref=False))
+        # Spawn flag used when status.lazy is absent (older node).
+        self.assertTrue(lazy_mode_active({"lazy": True, "status": {}}, live_pref=False))
+        self.assertFalse(lazy_mode_active({"lazy": False, "status": {}}, live_pref=True))
 
     def test_http_status_loading_is_loading(self):
         self.assertTrue(is_lazy_loading_status({"status": "loading"}))
@@ -217,7 +256,11 @@ class PolicyConstantsTests(unittest.TestCase):
         self.assertEqual(classify_chain_failure("loading"), "GD_ZONE_LOADING")
         self.assertEqual(
             classify_chain_failure("loading", tls_fail=True),
-            "GD_ZONE_LOADING",
+            "GD_TLS_UNTRUSTED",
+        )
+        self.assertEqual(
+            classify_chain_failure(None, tls_fail=True, proxy_loading=True),
+            "GD_TLS_UNTRUSTED",
         )
         self.assertEqual(
             classify_chain_failure(None, proxy_loading=True),

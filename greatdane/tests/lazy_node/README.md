@@ -25,9 +25,13 @@ a real mesh node.
 - Stdio status adds `lazy`, `namespace_synced`, `zones_cached`,
   `zones_loading`, `zones_failed`, `namespace_sync_basis`
   (`peers`/`offline`/`none`), and `best_known_height`. In lazy mode
-  Dane follows the live `namespace_synced` flag and does not latch it
-  or re-apply the height < activation gate (an offline fixture tip
-  below activation can be synced).
+  Dane follows the live `namespace_synced` flag and does not latch it.
+  Lazy mode also restores the height >= activation floor (a test-only
+  pref/env, `greatdane.node.lazyAllowPreActivation` /
+  `GREATDANE_LAZY_ALLOW_PRE_ACTIVATION`, default off, is required for a
+  pre-activation fixture). A missing flag uses the full-mode rule
+  (`passes >= 1` and the same floor). `best_known_height`, when present
+  and > 0, must satisfy height+2 >= that tip.
 - `/gd/names` is unchanged and works from the namespace alone.
 
 Run: `python3 test_lazy_node.py` (binds 127.0.0.1 only).

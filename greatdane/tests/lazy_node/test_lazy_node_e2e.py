@@ -363,9 +363,12 @@ class RealLazyNodeTests(unittest.TestCase):
             self.assertTrue(n.alive(), "node died while waiting for namespace_synced")
             self.assertIsNotNone(synced, f"namespace_synced never became true; last={n.status()}")
             self.assertEqual(synced.get("namespace_sync_basis"), "offline")
-            self.assertTrue(lazy_namespace_synced(synced))
-            # height 1000 < activation 1130000 must not fail-close.
+            # Node may report namespace_synced true at a fixture tip
+            # below activation; Dane's default floor still fail-closes,
+            # unless the test-only override is on.
             self.assertLess(synced.get("height") or 0, synced.get("activation") or 0)
+            self.assertFalse(lazy_namespace_synced(synced, allow_pre_activation=False))
+            self.assertTrue(lazy_namespace_synced(synced, allow_pre_activation=True))
             print(
                 f"\n[e2e] EDE22 last={last} synced={ {k: synced.get(k) for k in ('namespace_synced','namespace_sync_basis','best_known_height','height','passes')} }",
                 file=sys.stderr,

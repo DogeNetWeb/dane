@@ -4,6 +4,7 @@
 # Keep these constants in sync. No Firefox runtime required.
 
 import hashlib
+import os
 import time
 
 # Keeper/lazy-node: confirmed flags/env. Passed only when the pref is on.
@@ -40,26 +41,82 @@ def lazy_node_env(data_dir, enabled=True):
     }
 
 
-def lazy_namespace_synced(st):
+# TEST ONLY. Pref greatdane.node.lazyAllowPreActivation (default false)
+# and env GREATDANE_LAZY_ALLOW_PRE_ACTIVATION=1. Never enable for users.
+def env_allow_pre_activation(explicit=None):
+    if explicit is not None:
+        return bool(explicit)
+    v = os.environ.get("GREATDANE_LAZY_ALLOW_PRE_ACTIVATION", "")
+    return v.lower() in ("1", "true", "yes")
+
+
+def activation_floor_ok(st, allow_pre=False):
+    if not isinstance(st, dict) or not (st.get("height") or 0):
+        return False
+    floor = st.get("activation") or 0
+    if st["height"] >= floor:
+        return True
+    return bool(allow_pre and st["height"] > 0)
+
+
+def best_known_ok(st):
+    if not isinstance(st, dict):
+        return False
+    b = st.get("best_known_height")
+    if not isinstance(b, (int, float)) or b <= 0:
+        return True
+    return (st.get("height") or 0) + 2 >= b
+
+
+def full_namespace_synced(st):
+    """Mirrors GreatDANE.fullNamespaceSynced (full mode and lazy fallback)."""
+    if not isinstance(st, dict):
+        return False
+    if not activation_floor_ok(st, False):
+        return False
+    if not best_known_ok(st):
+        return False
+    peer = st.get("peer_height") or 0
+    if peer > 0:
+        return (st.get("height") or 0) + 2 >= peer
+    return (st.get("passes") or 0) >= 1
+
+
+def lazy_namespace_synced(st, allow_pre_activation=None):
     """Mirrors GreatDANE.lazyNamespaceSynced (lazy mode _synced).
 
-    Follows the live namespace_synced flag; never latches. Does not
-    re-apply the height < activation gate: an offline lazy node can be
-    synced at a fixture tip below activation. Older nodes that omit the
-    flag fall back to height catch-up (height>0, then peer tip or true).
+    Follows the live namespace_synced flag; never latches. Restores the
+    height >= activation floor unless the test-only override is on.
+    Fallback for a missing flag matches full mode (floor + passes >= 1
+    or peer catch-up). Also requires height+2 >= best_known_height when
+    that field is present and > 0.
     """
     if not isinstance(st, dict):
+        return False
+    if allow_pre_activation is None:
+        allow = env_allow_pre_activation()
+    else:
+        allow = bool(allow_pre_activation)
+    if not activation_floor_ok(st, allow):
+        return False
+    if not best_known_ok(st):
         return False
     flag = st.get("namespace_synced")
     if isinstance(flag, bool):
         return flag
-    height = st.get("height") or 0
-    if not height:
+    return full_namespace_synced(st)
+
+
+def lazy_mode_active(chain, live_pref=False):
+    """Mirrors GreatDANE._lazyModeActive: spawn/status mode, not live pref."""
+    st = (chain or {}).get("status") or {}
+    if st.get("lazy") in (1, True):
+        return True
+    if st.get("lazy") in (0, False) and "lazy" in st:
         return False
-    peer = st.get("peer_height") or 0
-    if peer > 0:
-        return height + 2 >= peer
-    return True
+    if isinstance((chain or {}).get("lazy"), bool):
+        return chain["lazy"]
+    return bool(live_pref)
 
 
 def namespace_sync_cell(st, state=""):
@@ -181,6 +238,9 @@ def classify_chain_failure(tlsa, tls_fail=None, block=None, proxy_loading=False)
     """Same decision as GreatDANEAbout.classifyChainFailure."""
     if block:
         return block
+    # A cert/NSS failure is never relabelled as loading.
+    if tls_fail is True:
+        return "GD_TLS_UNTRUSTED"
     if proxy_loading:
         return "GD_ZONE_LOADING"
     if tlsa is None:
