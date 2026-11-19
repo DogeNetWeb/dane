@@ -27,10 +27,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -44,10 +44,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Set up Python
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
 
@@ -113,7 +113,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install build dependencies
         run: |
@@ -124,7 +124,7 @@ jobs:
             libssl-dev libsqlite3-dev \
             libgl1-mesa-dev libx11-dev libxi-dev libxcursor-dev \
             libdbus-1-dev libsecret-1-dev \
-            iproute2
+            iproute2 iptables
 
       - name: Fetch official lazy patch and verify sha256
         env:
@@ -195,14 +195,134 @@ jobs:
           cmake --build gdn/build --target greatdane-node
           test -x gdn/build/greatdane-node
 
-      - name: Run gd_node_test if a private netns is available
+      # gd_node_test.sh must normally run in a private netns (it binds the
+      # pep/doge chain ports on 0.0.0.0, and run_node without --seeds will
+      # dial the built-in seeds; --seeds still leaves DNS-seed fallbacks
+      # in the indexer). Prefer unshare -rn. On GitHub-hosted runners that
+      # cannot map a user ns, run directly on the throwaway VM: set the
+      # script's GD_TEST_NETNS_OK escape hatch, isolate HOME under
+      # RUNNER_TEMP, and install iptables/ip6tables chains that allow only
+      # loopback plus ESTABLISHED/RELATED (so the runner can still talk to
+      # GitHub) and reject any new non-loopback traffic. A background ss
+      # sample fails the step if greatdane-node reaches a non-loopback
+      # remote. The test itself already uses --data under mktemp and, where
+      # it passes --seeds, 127.0.0.1 only.
+      - name: Run gd_node_test (private netns, or direct on the hosted VM)
         run: |
           set -euo pipefail
           test -x gdn/build/greatdane-node
           if unshare -rn true && unshare -rn sh -c "ip link set lo up"; then
+            echo "gd_node_test mode: unshare -rn (private netns)"
             unshare -rn sh -c "ip link set lo up && ./gdn/test/gd_node_test.sh ./gdn/build/greatdane-node"
-          else
-            echo "unshare -rn (needed by gd_node_test.sh so the node does not"
-            echo "touch the host network) is not permitted on this runner."
-            echo "greatdane-node was built; gd_node_test was not run."
+            exit 0
           fi
+
+          echo "unshare -rn is not permitted on this runner (typically uid_map)."
+          echo "gd_node_test mode: direct (hosted throwaway VM)"
+          echo "Localhost-only enforcement: iptables/ip6tables GDCI chains"
+          echo "allow lo + ESTABLISHED/RELATED and reject new non-loopback"
+          echo "I/O; ss fails the step if greatdane-node opens a non-loopback"
+          echo "remote. HOME/TMPDIR/XDG_* are under RUNNER_TEMP."
+          echo "GD_TEST_NETNS_OK=1 (script escape hatch; the netns check"
+          echo "looks at non-lo interfaces, which exist on the hosted VM)."
+
+          command -v iptables >/dev/null
+          command -v ip6tables >/dev/null
+          command -v ss >/dev/null
+          sudo -n true
+
+          GD_HOME="$(mktemp -d "${RUNNER_TEMP}/gd-home.XXXXXX")"
+          GD_TMP="$(mktemp -d "${RUNNER_TEMP}/gd-tmp.XXXXXX")"
+          GD_GUARD="${RUNNER_TEMP}/gd-ss-guard.log"
+          : > "${GD_GUARD}"
+          SS_GUARD_PID=
+
+          cleanup_nets() {
+            if [ -n "${SS_GUARD_PID}" ]; then
+              kill "${SS_GUARD_PID}" 2>/dev/null || true
+              wait "${SS_GUARD_PID}" 2>/dev/null || true
+              SS_GUARD_PID=
+            fi
+            for ipt in iptables ip6tables; do
+              sudo -n "${ipt}" -D OUTPUT -j GDCI_OUT 2>/dev/null || true
+              sudo -n "${ipt}" -F GDCI_OUT 2>/dev/null || true
+              sudo -n "${ipt}" -X GDCI_OUT 2>/dev/null || true
+              sudo -n "${ipt}" -D INPUT -j GDCI_IN 2>/dev/null || true
+              sudo -n "${ipt}" -F GDCI_IN 2>/dev/null || true
+              sudo -n "${ipt}" -X GDCI_IN 2>/dev/null || true
+            done
+          }
+          trap cleanup_nets EXIT INT TERM
+
+          install_chains() {
+            local ipt="$1"
+            sudo -n "${ipt}" -N GDCI_OUT
+            sudo -n "${ipt}" -A GDCI_OUT -o lo -j RETURN
+            if ! sudo -n "${ipt}" -A GDCI_OUT -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN; then
+              sudo -n "${ipt}" -A GDCI_OUT -m state --state ESTABLISHED,RELATED -j RETURN
+            fi
+            sudo -n "${ipt}" -A GDCI_OUT -j REJECT
+            sudo -n "${ipt}" -I OUTPUT 1 -j GDCI_OUT
+            sudo -n "${ipt}" -N GDCI_IN
+            sudo -n "${ipt}" -A GDCI_IN -i lo -j RETURN
+            if ! sudo -n "${ipt}" -A GDCI_IN -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN; then
+              sudo -n "${ipt}" -A GDCI_IN -m state --state ESTABLISHED,RELATED -j RETURN
+            fi
+            sudo -n "${ipt}" -A GDCI_IN -j DROP
+            sudo -n "${ipt}" -I INPUT 1 -j GDCI_IN
+          }
+          install_chains iptables
+          install_chains ip6tables
+          echo "iptables/ip6tables GDCI chains installed"
+
+          # Sample sockets while the test runs. Ignore LISTEN / UNCONN.
+          # The node may SYN-SENT built-in seeds; those must be rejected
+          # by the chains and must not reach ESTAB / TIME-WAIT / etc.
+          (
+            while true; do
+              ss -H -tunp 2>/dev/null | awk '
+                index($0, "greatdane-node") == 0 { next }
+                {
+                  state=$2; peer=$6;
+                  if (state=="LISTEN" || state=="UNCONN") next;
+                  if (peer ~ /^127\./) next;
+                  if (peer ~ /^\[?::1\]?:/) next;
+                  if (peer ~ /^\[?::ffff:127\./) next;
+                  if (peer=="*" || peer ~ /^\*:/ || peer=="0.0.0.0:*" || peer=="[::]:*") next;
+                  if (state=="ESTAB" || state=="ESTABLISHED" || state ~ /WAIT/ || state=="CLOSING" || state=="LAST-ACK")
+                    print "ESTAB_OR_OPEN " $0;
+                  else
+                    print "ATTEMPT " $0;
+                }
+              ' >> "${GD_GUARD}" || true
+              sleep 0.2
+            done
+          ) &
+          SS_GUARD_PID=$!
+
+          export HOME="${GD_HOME}"
+          export TMPDIR="${GD_TMP}"
+          export XDG_DATA_HOME="${GD_HOME}/.local/share"
+          export XDG_CONFIG_HOME="${GD_HOME}/.config"
+          export XDG_CACHE_HOME="${GD_HOME}/.cache"
+          mkdir -p "${XDG_DATA_HOME}" "${XDG_CONFIG_HOME}" "${XDG_CACHE_HOME}"
+          export GD_TEST_NETNS_OK=1
+
+          set +e
+          ./gdn/test/gd_node_test.sh ./gdn/build/greatdane-node
+          test_rc=$?
+          set -e
+          sleep 0.3
+
+          if grep -q "^ESTAB_OR_OPEN " "${GD_GUARD}"; then
+            echo "CI guard failed: greatdane-node opened a non-loopback connection:"
+            grep "^ESTAB_OR_OPEN " "${GD_GUARD}" | sort -u || true
+            exit 1
+          fi
+          if grep -q "^ATTEMPT " "${GD_GUARD}"; then
+            echo "CI guard: non-loopback attempts (blocked, not established):"
+            grep "^ATTEMPT " "${GD_GUARD}" | sort -u || true
+          else
+            echo "CI guard: no non-loopback remotes observed on greatdane-node."
+          fi
+          exit "${test_rc}"
