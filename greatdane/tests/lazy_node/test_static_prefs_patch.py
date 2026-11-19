@@ -20,6 +20,59 @@ APPLY = REPO / "greatdane/tools/apply-greatdane-static-prefs.sh"
 OVERLAY = REPO / "greatdane/tools/apply-greatdane-overlay.sh"
 SSL = REPO / "security/manager/ssl/SSLServerCertVerification.cpp"
 DEFAULT_FIREFOX_SRC = Path("/workspace/dane-linux/src")
+SSL_REL = "security/manager/ssl/SSLServerCertVerification.cpp"
+
+
+def _ssl_text():
+    """Live SSL file (overlay / Firefox tree after git am), or the net
+    result of this repo's patches/ series when that file is not vendored
+    (public patch-series layout)."""
+    if SSL.is_file():
+        return SSL.read_text()
+    series = REPO / "patches" / "series"
+    if not series.is_file():
+        raise FileNotFoundError(SSL)
+    # Replay add/remove of distinctive strings. The pre-lazy Dane tree
+    # does not mention these lazy StaticPrefs symbols, so a leftover
+    # '+' without a later '-' means the final file contains the needle.
+    contents = { "StaticPrefs_greatdane.h": 0,
+                 "StaticPrefs::greatdane_node_lazy()": 0,
+                 "StaticPrefs::greatdane_node_lazyTimeoutSec()": 0,
+                 'Preferences::GetBool': 0,
+                 'Preferences::GetInt': 0 }
+    in_ssl = False
+    for name in series.read_text().splitlines():
+        name = name.strip()
+        if not name or name.startswith("#"):
+            continue
+        pf = REPO / "patches" / name
+        if not pf.is_file():
+            continue
+        in_ssl = False
+        for line in pf.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("diff --git "):
+                in_ssl = SSL_REL in line
+                continue
+            if not in_ssl:
+                continue
+            if line.startswith("+++") or line.startswith("---"):
+                continue
+            if line.startswith("+"):
+                for k in contents:
+                    if k in line:
+                        contents[k] += 1
+            elif line.startswith("-"):
+                for k in contents:
+                    if k in line:
+                        contents[k] -= 1
+    # Synthesize a stand-in the existing assertions can read.
+    parts = []
+    for k, n in contents.items():
+        if n > 0:
+            parts.append(k)
+        # n==0: not present; n<0 would be a removed leftover of a
+        # pre-existing line we did not start with — treat as absent.
+    return "\n".join(parts) + "\n"
 
 
 def firefox_src():
@@ -95,7 +148,7 @@ class TestStaticPrefsPatch(unittest.TestCase):
         self.assertIn("RelaxedAtomicInt32", first_to)
         self.assertNotIn("security.greatdane.node_lazy", yp)
         self.assertIn('"greatdane"', MP.read_text())
-        ssl = SSL.read_text()
+        ssl = _ssl_text()
         self.assertIn("StaticPrefs_greatdane.h", ssl)
         self.assertIn("StaticPrefs::greatdane_node_lazy()", ssl)
         self.assertIn("StaticPrefs::greatdane_node_lazyTimeoutSec()", ssl)

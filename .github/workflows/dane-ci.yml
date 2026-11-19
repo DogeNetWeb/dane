@@ -1,0 +1,218 @@
+# Free-runner CI for the public Dane patch-series repo (greatdane/,
+# patches/, and the StaticPrefs helper patches under modules/libpref/).
+# Does not run a full Firefox / mach build.
+name: dane-ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dane-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Published Dane apply-base (ESR 153 + 29 later upstream commits).
+  # Documented in DogeNetWeb/dane README on main (c1142fb).
+  FIREFOX_LIBPREF_COMMIT: 3bd39ccf6af8b2c836e2f96d928bc9282adaf28e
+
+jobs:
+  stub-tests:
+    name: lazy-node stub tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Run test_lazy_node.py
+        working-directory: greatdane/tests/lazy_node
+        run: python3 test_lazy_node.py -v
+
+  static-prefs:
+    name: StaticPrefs patch tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+
+      - name: Fetch Firefox libpref files (sparse / raw)
+        id: ff
+        env:
+          COMMIT: ${{ env.FIREFOX_LIBPREF_COMMIT }}
+        run: |
+          set -euo pipefail
+          DEST="${RUNNER_TEMP}/ff-libpref"
+          mkdir -p "${DEST}/modules/libpref/init"
+          BASE="https://raw.githubusercontent.com/mozilla-firefox/firefox/${COMMIT}"
+          echo "Fetching modules/libpref from mozilla-firefox/firefox@${COMMIT}"
+          if curl -fsSL "${BASE}/modules/libpref/init/StaticPrefList.yaml" \
+               -o "${DEST}/modules/libpref/init/StaticPrefList.yaml" \
+             && curl -fsSL "${BASE}/modules/libpref/moz.build" \
+               -o "${DEST}/modules/libpref/moz.build"; then
+            test -s "${DEST}/modules/libpref/init/StaticPrefList.yaml"
+            test -s "${DEST}/modules/libpref/moz.build"
+            {
+              echo "src=${DEST}"
+              echo "ok=1"
+            } >> "$GITHUB_OUTPUT"
+            echo "Fetched libpref files into ${DEST}"
+          else
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+            echo "Could not fetch mozilla-firefox/firefox@${COMMIT} libpref files."
+            echo "Skipping StaticPrefs apply tests. Set GREATDANE_FIREFOX_SRC or restore network access."
+          fi
+
+      - name: Run test_static_prefs_patch.py
+        if: steps.ff.outputs.ok == '1'
+        env:
+          GREATDANE_FIREFOX_SRC: ${{ steps.ff.outputs.src }}
+        run: python3 greatdane/tests/lazy_node/test_static_prefs_patch.py -v
+
+      - name: Skip StaticPrefs tests (Firefox libpref unavailable)
+        if: steps.ff.outputs.ok != '1'
+        env:
+          COMMIT: ${{ env.FIREFOX_LIBPREF_COMMIT }}
+        run: |
+          echo "Skipped test_static_prefs_patch.py: Firefox libpref files were not available."
+          echo "The apply tests need modules/libpref/init/StaticPrefList.yaml and modules/libpref/moz.build"
+          echo "from mozilla-firefox/firefox at ${COMMIT}."
+
+  # greatdane-node: official recipe from DogeNetWeb/dogenet-dns
+  # docs/lazy/README-greatdane-node.md (commit pinned below):
+  #   git checkout 35047fd && git apply greatdane-node-lazy-35047fd.patch
+  #   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+  #   cmake --build build --target greatdane-node
+  # The v3 patch is public on DogeNetWeb/dogenet-dns at the pinned commit
+  # (keeper/lazy-node tip). The patch applies to a clean PepeNet desktop
+  # monorepo at 35047fd5c988 ("dnsd: L3 live relays ahead of an
+  # anti-entropy catch-up"). Do not overlay DogeNet dns/mesh/indexer
+  # trees onto a PepeNet desktop tree (different lineage).
+  # PepeNetWeb/pepenet-dns@f5dd5cea21be is the dns/ subtree replay of
+  # 35047fd, not the monorepo. If 35047fd is not fetchable from the
+  # pinned desktop repo, this job fails (it is not skipped).
+  greatdane-node:
+    name: greatdane-node build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config \
+            libssl-dev libsqlite3-dev \
+            libgl1-mesa-dev libx11-dev libxi-dev libxcursor-dev \
+            libdbus-1-dev libsecret-1-dev \
+            iproute2
+
+      - name: Fetch official lazy patch and verify sha256
+        env:
+          DOGENET_DNS_REPO: ${{ vars.DOGENET_DNS_REPO || 'https://github.com/DogeNetWeb/dogenet-dns' }}
+          DOGENET_DNS_COMMIT: ${{ vars.DOGENET_DNS_COMMIT || '23f928535890c61cab812728080b7837aae1ebaa' }}
+          LAZY_PATCH_PATH: docs/lazy/greatdane-node-lazy-35047fd.patch
+          LAZY_PATCH_SHA256: 265a5eec6137842c14b5e20087080d8634ae53d351660d8bcd3c41fe4ee27b83
+        run: |
+          set -euo pipefail
+          case "${DOGENET_DNS_REPO}" in
+            *://*) REPO_URL="${DOGENET_DNS_REPO}" ;;
+            *) REPO_URL="https://github.com/${DOGENET_DNS_REPO}" ;;
+          esac
+          # Clone the pinned commit (full SHA) and take the official patch
+          # from it, rather than trusting a floating branch name.
+          git init dogenet-dns
+          git -C dogenet-dns remote add origin "${REPO_URL}"
+          if ! GIT_TERMINAL_PROMPT=0 git -C dogenet-dns fetch --depth=1 origin "${DOGENET_DNS_COMMIT}"; then
+            GIT_TERMINAL_PROMPT=0 git -C dogenet-dns fetch --depth=1 origin refs/heads/keeper/lazy-node
+          fi
+          git -C dogenet-dns checkout --force FETCH_HEAD
+          GOT="$(git -C dogenet-dns rev-parse HEAD)"
+          if [ "${GOT}" != "${DOGENET_DNS_COMMIT}" ]; then
+            echo "dogenet-dns HEAD ${GOT} does not match pinned ${DOGENET_DNS_COMMIT}"
+            exit 1
+          fi
+          PATCH="dogenet-dns/${LAZY_PATCH_PATH}"
+          test -f "${PATCH}"
+          GOT_SHA="$(sha256sum "${PATCH}" | awk '{print $1}')"
+          if [ "${GOT_SHA}" != "${LAZY_PATCH_SHA256}" ]; then
+            echo "greatdane-node-lazy-35047fd.patch sha256 mismatch"
+            echo "  expected: ${LAZY_PATCH_SHA256}"
+            echo "  got:      ${GOT_SHA}"
+            exit 1
+          fi
+          echo "Verified ${LAZY_PATCH_PATH} sha256 ${GOT_SHA} at ${DOGENET_DNS_COMMIT}"
+          cp -a "${PATCH}" "${RUNNER_TEMP}/greatdane-node-lazy-35047fd.patch"
+
+      - name: Fetch 35047fd, apply patch, build greatdane-node
+        env:
+          DESKTOP_REPO: ${{ vars.GREATDANE_NODE_REPO || 'https://github.com/PepeNetWeb/pepenet-desktop.git' }}
+          DESKTOP_COMMIT: ${{ vars.GREATDANE_NODE_COMMIT || '35047fd5c988977f944d04a5da7b2f11fe14172a' }}
+          PATCH: ${{ runner.temp }}/greatdane-node-lazy-35047fd.patch
+        run: |
+          set -euo pipefail
+          case "${DESKTOP_REPO}" in
+            *://*) REPO_URL="${DESKTOP_REPO}" ;;
+            *) REPO_URL="https://github.com/${DESKTOP_REPO}" ;;
+          esac
+          echo "Fetching PepeNet desktop monorepo ${DESKTOP_COMMIT} from ${REPO_URL}"
+          git init gdn
+          git -C gdn remote add origin "${REPO_URL}"
+          if ! GIT_TERMINAL_PROMPT=0 git -C gdn fetch --depth=1 origin "${DESKTOP_COMMIT}"; then
+            echo "Could not fetch ${DESKTOP_COMMIT} from ${REPO_URL}."
+            echo "The official recipe needs the PepeNet desktop monorepo at"
+            echo "35047fd5c988977f944d04a5da7b2f11fe14172a"
+            echo "(\"dnsd: L3 live relays ahead of an anti-entropy catch-up\")."
+            echo "PepeNetWeb/pepenet-desktop currently publishes an older tip"
+            echo "(ee4adbc, no greatdane-node target). PepeNetWeb/pepenet-dns"
+            echo "commit f5dd5cea21be301df93e4117e0546a48922544f9 is the dns/"
+            echo "subtree replay of 35047fd, not the monorepo."
+            echo "DogeNetWeb/dogenet-dns@23f928535890c61cab812728080b7837aae1ebaa,"
+            echo "dogenet-mesh@f17f074f89a0a5a6f93ebcf51a9c586f4918badb, and"
+            echo "namespace-indexer@69217a8a1168b0f9a56d083ca8a12a7fad4b969f"
+            echo "are the public DogeNet lazy-node component tips that ship the"
+            echo "official patch; do not overlay them onto a PepeNet tree."
+            echo "Set repo variable GREATDANE_NODE_REPO (and optionally"
+            echo "GREATDANE_NODE_COMMIT) when the monorepo commit is public."
+            exit 1
+          fi
+          git -C gdn checkout --force FETCH_HEAD
+          GOT="$(git -C gdn rev-parse HEAD)"
+          if [ "${GOT}" != "${DESKTOP_COMMIT}" ]; then
+            echo "desktop HEAD ${GOT} does not match pinned ${DESKTOP_COMMIT}"
+            exit 1
+          fi
+          git -C gdn apply "${PATCH}"
+          cmake -S gdn -B gdn/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build gdn/build --target greatdane-node
+          test -x gdn/build/greatdane-node
+
+      - name: Run gd_node_test if a private netns is available
+        run: |
+          set -euo pipefail
+          test -x gdn/build/greatdane-node
+          if unshare -rn true && unshare -rn sh -c "ip link set lo up"; then
+            unshare -rn sh -c "ip link set lo up && ./gdn/test/gd_node_test.sh ./gdn/build/greatdane-node"
+          else
+            echo "unshare -rn (needed by gd_node_test.sh so the node does not"
+            echo "touch the host network) is not permitted on this runner."
+            echo "greatdane-node was built; gd_node_test was not run."
+          fi
