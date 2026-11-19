@@ -39,6 +39,49 @@ def lazy_node_env(data_dir, enabled=True):
         LAZY_CACHE_DIR_ENV_NAME: data_dir,
     }
 
+
+def lazy_namespace_synced(st):
+    """Mirrors GreatDANE.lazyNamespaceSynced (lazy mode _synced).
+
+    Follows the live namespace_synced flag; never latches. Does not
+    re-apply the height < activation gate: an offline lazy node can be
+    synced at a fixture tip below activation. Older nodes that omit the
+    flag fall back to height catch-up (height>0, then peer tip or true).
+    """
+    if not isinstance(st, dict):
+        return False
+    flag = st.get("namespace_synced")
+    if isinstance(flag, bool):
+        return flag
+    height = st.get("height") or 0
+    if not height:
+        return False
+    peer = st.get("peer_height") or 0
+    if peer > 0:
+        return height + 2 >= peer
+    return True
+
+
+def namespace_sync_cell(st, state=""):
+    """about:dane Node cell: 'ready (offline)' when a basis is present."""
+    basis = ""
+    if isinstance(st, dict):
+        basis = str(st.get("namespace_sync_basis") or "").strip()
+    if basis in ("peers", "offline", "none"):
+        return f"{state} ({basis})" if state else basis
+    return state or "-"
+
+
+def peer_best_cell(st):
+    """about:dane Peer / best known cell."""
+    if not isinstance(st, dict):
+        return "- / -"
+    peer = st.get("peer_height")
+    best = st.get("best_known_height")
+    a = "-" if peer is None else str(peer)
+    b = "-" if best is None else str(best)
+    return f"{a} / {b}"
+
 RCODE_NOERROR = 0
 RCODE_SERVFAIL = 2
 RCODE_NXDOMAIN = 3

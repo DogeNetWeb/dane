@@ -23,8 +23,11 @@ a real mesh node.
   `503` + `Retry-After: 1` + `X-GreatDANE-Status: loading`. Dane shows
   `GD_ZONE_LOADING` and auto-retries; this is not a security error.
 - Stdio status adds `lazy`, `namespace_synced`, `zones_cached`,
-  `zones_loading`, `zones_failed`. In lazy mode Dane uses
-  `namespace_synced` when present.
+  `zones_loading`, `zones_failed`, `namespace_sync_basis`
+  (`peers`/`offline`/`none`), and `best_known_height`. In lazy mode
+  Dane follows the live `namespace_synced` flag and does not latch it
+  or re-apply the height < activation gate (an offline fixture tip
+  below activation can be synced).
 - `/gd/names` is unchanged and works from the namespace alone.
 
 Run: `python3 test_lazy_node.py` (binds 127.0.0.1 only).
@@ -35,7 +38,11 @@ real seeds/mesh):
     unshare -Urn -- sh -c 'ip link set lo up && \
       GREATDANE_NODE=/path/to/greatdane-node python3 test_lazy_node_e2e.py'
 
-The e2e covers launch, `namespace_synced` on stdio, `/gd/names`,
-`/gd/tlsa` loading (EDE 14), unowned, and CONNECT 503 loading. Loading
-then ok, and a bad-TLSA reject, stay stubbed in `test_lazy_node.py`
-(seeding a fetched zone into an isolated node is out of scope).
+The e2e covers launch, a healthy fixture (height > 0, seller/buyer
+zeroblob), default 3000 ms and 300 ms waits with no crash, `--lazy-wait-ms`
+reaching the proxy and beating the env, `/gd/names`, `/gd/tlsa` loading
+(EDE 14, then EDE 22 if the node emits it), unowned, CONNECT 503 loading,
+and offline `namespace_synced` becoming true after the sync grace.
+Loading then ok, and a bad-TLSA reject, stay stubbed in
+`test_lazy_node.py` (seeding a fetched zone into an isolated node is
+out of scope).

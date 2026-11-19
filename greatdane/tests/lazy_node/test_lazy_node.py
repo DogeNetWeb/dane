@@ -46,9 +46,12 @@ from lazy_policy import (
     is_lazy_loading_status,
     is_proxy_loading,
     loading_retry_sec,
+    lazy_namespace_synced,
     lazy_node_args,
     lazy_node_env,
     lazy_retry_ms,
+    namespace_sync_cell,
+    peer_best_cell,
     wait_for_tlsa,
     _spki_sha256_hex,
 )
@@ -153,6 +156,43 @@ class PolicyConstantsTests(unittest.TestCase):
             self.assertNotIn("wait-ms", token)
             self.assertNotIn("max-names", token)
             self.assertNotIn("max-mb", token)
+
+    def test_namespace_synced_is_followed_live_not_latched(self):
+        # Offline fixture: height 1000, activation 1130000, no peers.
+        # The node says synced; Dane must not re-apply the activation gate.
+        offline = {
+            "height": 1000,
+            "activation": 1_130_000,
+            "peer_height": 0,
+            "passes": 1,
+            "namespace_synced": True,
+            "namespace_sync_basis": "offline",
+            "best_known_height": 0,
+        }
+        self.assertTrue(lazy_namespace_synced(offline))
+        self.assertEqual(namespace_sync_cell(offline, "ready"), "ready (offline)")
+        self.assertEqual(peer_best_cell(offline), "0 / 0")
+
+        # A later peer with a higher tip flips the live flag back to false.
+        behind = dict(offline, namespace_synced=False, namespace_sync_basis="none",
+                      peer_height=5000, best_known_height=5000)
+        self.assertFalse(lazy_namespace_synced(behind))
+        self.assertEqual(namespace_sync_cell(behind, "syncing"), "syncing (none)")
+        self.assertEqual(peer_best_cell(behind), "5000 / 5000")
+
+        # Online at tip.
+        peers = dict(offline, namespace_synced=True, namespace_sync_basis="peers",
+                     peer_height=1000, best_known_height=1000)
+        self.assertTrue(lazy_namespace_synced(peers))
+        self.assertEqual(namespace_sync_cell(peers, "ready"), "ready (peers)")
+
+        # Missing flag: height catch-up fallback, never treat height 0 as synced.
+        self.assertFalse(lazy_namespace_synced({"height": 0, "peer_height": 0}))
+        self.assertTrue(lazy_namespace_synced({"height": 100, "peer_height": 0}))
+        self.assertTrue(lazy_namespace_synced({"height": 100, "peer_height": 100}))
+        self.assertFalse(lazy_namespace_synced({"height": 100, "peer_height": 200}))
+        self.assertEqual(peer_best_cell({}), "- / -")
+        self.assertEqual(namespace_sync_cell({}, "ready"), "ready")
 
     def test_http_status_loading_is_loading(self):
         self.assertTrue(is_lazy_loading_status({"status": "loading"}))
