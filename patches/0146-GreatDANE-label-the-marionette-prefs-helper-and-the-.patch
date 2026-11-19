@@ -4,36 +4,36 @@ Date: Tue, 10 Nov 2026 21:01:55 -0600
 Subject: [PATCH 146/155] GreatDANE: label the marionette prefs helper and the
  x.com tippytop override (round 5b)
 
-5A-L1: browser/components/greatdane/test/marionette/run_gd_prefs.py is
-the Windows working tree's uncommitted blob 25de2431, not 067014d89b
-(ec3c5d1b). The one-line difference enables shouldInitializeFeeds on
-the throwaway Marionette profile. It is test-only and is labelled
-rather than reverted.
+5A-L1: label browser/components/greatdane/test/marionette/run_gd_prefs.py.
+The published pre-image after patch 0143 (round 5a tile retarget) is
+blob 3f9e131, not the private blob 91fd858 named in the original index
+line. A previous note described a one-line shouldInitializeFeeds
+difference versus a Windows working-tree blob; that pref is not in the
+public file. This patch only adds a short label; it does not change
+the helper's behaviour.
 
 5A-L2: the x-com tippytop icons are Dane's 27 October 2026 X-logo
 override (GreatDANE commit 86a3f48e66), not a stock Firefox asset.
 Upstream 3bd39ccf6a has only twitter-com. youtube.com and amazon.com
 remain stock tippytop from that snapshot. ICON-SOURCES is updated.
 ---
- .../greatdane/test/marionette/run_gd_prefs.py   |  7 +++++++
+ .../greatdane/test/marionette/run_gd_prefs.py   |  5 +++++
  greatdane/tippytop-ICON-SOURCES.md              | 17 +++++++++++++----
- 2 files changed, 20 insertions(+), 4 deletions(-)
+ 2 files changed, 22 insertions(+), 4 deletions(-)
 
 diff --git a/browser/components/greatdane/test/marionette/run_gd_prefs.py b/browser/components/greatdane/test/marionette/run_gd_prefs.py
-index 91fd858..0723989 100644
+index 3f9e131..5b72187 100644
 --- a/browser/components/greatdane/test/marionette/run_gd_prefs.py
 +++ b/browser/components/greatdane/test/marionette/run_gd_prefs.py
-@@ -3,6 +3,13 @@
+@@ -3,6 +3,11 @@
  # sections are hidden, Sync is visible by default and hidden by
  # greatdane.prefs.hideSync, and the first-run update window logic.
  #   python3 run_gd_prefs.py [path/to/greatdane] [screens_dir]
 +#
-+# Round 5b (NGD 5A-L1): this copy is the Windows working tree's uncommitted
-+# blob 25de2431, not the 067014d89b file (blob ec3c5d1b). The one-line
-+# difference adds
-+#   user_pref("browser.newtabpage.activity-stream.testing.shouldInitializeFeeds", true)
-+# to the throwaway Marionette test profile. It is test-only and is kept
-+# labelled rather than reverted.
++# Round 5b (NGD 5A-L1): label this marionette prefs helper. The public
++# pre-image is blob 3f9e131 (after the round 5a tile retarget). A previous
++# label incorrectly cited a private pre-image and a shouldInitializeFeeds
++# one-line difference; that pref is not in this file.
  import os, shutil, subprocess, sys, tempfile, time
  from marionette_driver.marionette import Marionette
  HERE = os.path.dirname(os.path.abspath(__file__))
