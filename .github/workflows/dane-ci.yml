@@ -201,12 +201,14 @@ jobs:
       # in the indexer). Prefer unshare -rn. On GitHub-hosted runners that
       # cannot map a user ns, run directly on the throwaway VM: set the
       # script's GD_TEST_NETNS_OK escape hatch, isolate HOME under
-      # RUNNER_TEMP, and install iptables/ip6tables chains that allow only
-      # loopback plus ESTABLISHED/RELATED (so the runner can still talk to
-      # GitHub) and reject any new non-loopback traffic. A background ss
-      # sample fails the step if greatdane-node reaches a non-loopback
-      # remote. The test itself already uses --data under mktemp and, where
-      # it passes --seeds, 127.0.0.1 only.
+      # RUNNER_TEMP, and install iptables/ip6tables chains that allow
+      # loopback, ESTABLISHED/RELATED (so the runner can still talk to
+      # GitHub), and DNS (53/853) so getaddrinfo of built-in seed names
+      # does not hang before idx_serve starts. All other new non-loopback
+      # traffic is rejected. A background ss sample fails the step if
+      # greatdane-node reaches a non-loopback remote. The test itself
+      # already uses --data under mktemp and, where it passes --seeds,
+      # 127.0.0.1 only.
       - name: Run gd_node_test (private netns, or direct on the hosted VM)
         run: |
           set -euo pipefail
@@ -220,9 +222,12 @@ jobs:
           echo "unshare -rn is not permitted on this runner (typically uid_map)."
           echo "gd_node_test mode: direct (hosted throwaway VM)"
           echo "Localhost-only enforcement: iptables/ip6tables GDCI chains"
-          echo "allow lo + ESTABLISHED/RELATED and reject new non-loopback"
-          echo "I/O; ss fails the step if greatdane-node opens a non-loopback"
-          echo "remote. HOME/TMPDIR/XDG_* are under RUNNER_TEMP."
+          echo "allow lo + ESTABLISHED/RELATED + DNS (udp/tcp 53, tcp 853)"
+          echo "and reject other new non-loopback I/O. DNS is allowed only"
+          echo "so getaddrinfo of built-in seed names returns quickly;"
+          echo "peer/seed TCP is still rejected. ss fails the step if"
+          echo "greatdane-node opens a non-loopback remote."
+          echo "HOME/TMPDIR/XDG_* are under RUNNER_TEMP."
           echo "GD_TEST_NETNS_OK=1 (script escape hatch; the netns check"
           echo "looks at non-lo interfaces, which exist on the hosted VM)."
 
@@ -261,6 +266,14 @@ jobs:
             if ! sudo -n "${ipt}" -A GDCI_OUT -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN; then
               sudo -n "${ipt}" -A GDCI_OUT -m state --state ESTABLISHED,RELATED -j RETURN
             fi
+            # getaddrinfo of built-in seed hostnames runs in net_main BEFORE
+            # idx_serve sets listen ok/off/bind_failed. Blocking system DNS
+            # made those lookups hang (listen stayed "pending", lazy EDE 22
+            # and offline-sync never arrived). Allow DNS so resolution fails
+            # or returns quickly; still reject new non-lo peer/seed TCP.
+            sudo -n "${ipt}" -A GDCI_OUT -p udp --dport 53 -j RETURN
+            sudo -n "${ipt}" -A GDCI_OUT -p tcp --dport 53 -j RETURN
+            sudo -n "${ipt}" -A GDCI_OUT -p tcp --dport 853 -j RETURN
             sudo -n "${ipt}" -A GDCI_OUT -j REJECT
             sudo -n "${ipt}" -I OUTPUT 1 -j GDCI_OUT
             sudo -n "${ipt}" -N GDCI_IN
