@@ -1,0 +1,479 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Wed, 18 Nov 2026 20:13:23 -0600
+Subject: [PATCH 162/162] GreatDANE: N1 overlay hook, N2 idempotent apply,
+ warn-once banner
+
+N1: add greatdane/tools/apply-greatdane-overlay.sh as the in-repo
+overlay apply hook; it execs apply-greatdane-static-prefs.sh (line 26).
+The historical dane-linux pin sequences live outside this repo and
+were not modified. They still need a call to the hook after product
+git am and before mach configure.
+
+N2: apply-greatdane-static-prefs.sh is idempotent and all-or-nothing.
+Both patches are git apply --check'd before any write; already-applied
+(git apply --reverse --check) is a no-op success; a partial pre-state
+fails before writing; a failed second apply rolls the first back.
+Tests cover a double run (no-op, no duplicates) and a partial
+pre-state (nonzero, no writes).
+
+Nits: log the ignored lazyAllowPreActivation override only once per
+session; the about:dane banner uses the full pref name and tells the
+user to reset it in about:config.
+
+Local only, not pushed. No mach.
+---
+ .../components/greatdane/GreatDANE.sys.mjs    |  11 +-
+ greatdane/tests/lazy_node/README.md           |  13 +-
+ greatdane/tests/lazy_node/lazy_policy.py      |   4 +-
+ greatdane/tests/lazy_node/test_lazy_node.py   |   4 +
+ .../lazy_node/test_static_prefs_patch.py      | 145 ++++++++++++------
+ greatdane/tools/apply-greatdane-overlay.sh    |  26 ++++
+ .../tools/apply-greatdane-static-prefs.sh     |  84 ++++++++--
+ 7 files changed, 219 insertions(+), 68 deletions(-)
+ create mode 100755 greatdane/tools/apply-greatdane-overlay.sh
+
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index 489d665..becb2ef 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -125,15 +125,20 @@ export function preActivationStatus() {
+   if (!on) return { on: false, honoured: false, text: "" };
+   if (auto) {
+     return { on: true, honoured: true,
+-      text: "TEST ONLY: lazyAllowPreActivation is on and honoured (automation)." };
++      text: "TEST ONLY: greatdane.node.lazyAllowPreActivation is on and honoured (automation). Reset it in about:config if you did not mean to set it." };
+   }
+   return { on: true, honoured: false,
+-    text: "TEST ONLY: lazyAllowPreActivation is set in this profile but ignored (not in automation)." };
++    text: "TEST ONLY: greatdane.node.lazyAllowPreActivation is set in this profile but ignored (not in automation). Reset it in about:config." };
+ }
+ 
++// Warn at most once per session. allowPreActivation() is reached from
++// _synced on every chain-host proxy filter call and about:dane render.
++let _preActivationWarned = false;
++
+ export function allowPreActivation() {
+   let st = preActivationStatus();
+-  if (st.on && !st.honoured) {
++  if (st.on && !st.honoured && !_preActivationWarned) {
++    _preActivationWarned = true;
+     console.warn("GreatDANE: " + st.text);
+   }
+   return st.honoured;
+diff --git a/greatdane/tests/lazy_node/README.md b/greatdane/tests/lazy_node/README.md
+index 40cda02..48d457c 100644
+--- a/greatdane/tests/lazy_node/README.md
++++ b/greatdane/tests/lazy_node/README.md
+@@ -29,7 +29,9 @@ a real mesh node.
+   Lazy mode also restores the height >= activation floor. The
+   test-only pref `greatdane.node.lazyAllowPreActivation` (default off)
+   is honoured only under automation (`Cu.isInAutomation`); if set
+-  outside automation it is ignored, logged, and shown on about:dane.
++  outside automation it is ignored, logged once per session, and
++  shown on about:dane with the full pref name and an about:config
++  reset hint.
+   The env alias `GREATDANE_LAZY_ALLOW_PRE_ACTIVATION` is for these
+   Python tests only. A missing `namespace_synced` flag uses the
+   full-mode rule (`passes >= 1` and the same floor). `best_known_height`
+@@ -40,9 +42,12 @@ a real mesh node.
+   `greatdane.node.lazyTimeoutSec` (RelaxedAtomicBool /
+   RelaxedAtomicInt32, mirror: always) plus the `greatdane` entry in
+   `modules/libpref/moz.build` `pref_groups` are applied to a Firefox
+-  tree with `greatdane/tools/apply-greatdane-static-prefs.sh`. The
+-  script fails loudly if the patches do not apply or the result is
+-  missing the prefs / group. Names stay under `greatdane.*`.
++  tree with `greatdane/tools/apply-greatdane-overlay.sh` (N1 hook,
++  which calls `apply-greatdane-static-prefs.sh`). The apply is
++  idempotent and all-or-nothing: a second run is a no-op success;
++  a partial pre-state fails before any write. The script fails
++  loudly if the patches do not apply or the result is missing or
++  duplicated. Names stay under `greatdane.*`.
+ - `/gd/names` is unchanged and works from the namespace alone.
+ 
+ Run: `python3 test_lazy_node.py` (binds 127.0.0.1 only).
+diff --git a/greatdane/tests/lazy_node/lazy_policy.py b/greatdane/tests/lazy_node/lazy_policy.py
+index af5c1db..3729ea6 100644
+--- a/greatdane/tests/lazy_node/lazy_policy.py
++++ b/greatdane/tests/lazy_node/lazy_policy.py
+@@ -65,9 +65,9 @@ def pre_activation_status(pref_on, in_automation=False):
+         return {"on": False, "honoured": False, "text": ""}
+     if in_automation:
+         return {"on": True, "honoured": True,
+-                "text": "TEST ONLY: lazyAllowPreActivation is on and honoured (automation)."}
++                "text": "TEST ONLY: greatdane.node.lazyAllowPreActivation is on and honoured (automation). Reset it in about:config if you did not mean to set it."}
+     return {"on": True, "honoured": False,
+-            "text": "TEST ONLY: lazyAllowPreActivation is set in this profile but ignored (not in automation)."}
++            "text": "TEST ONLY: greatdane.node.lazyAllowPreActivation is set in this profile but ignored (not in automation). Reset it in about:config."}
+ 
+ 
+ def activation_floor_ok(st, allow_pre=False):
+diff --git a/greatdane/tests/lazy_node/test_lazy_node.py b/greatdane/tests/lazy_node/test_lazy_node.py
+index 5ba5f64..6d78203 100755
+--- a/greatdane/tests/lazy_node/test_lazy_node.py
++++ b/greatdane/tests/lazy_node/test_lazy_node.py
+@@ -270,11 +270,15 @@ class PolicyConstantsTests(unittest.TestCase):
+         ignored = pre_activation_status(True, False)
+         self.assertTrue(ignored["on"])
+         self.assertFalse(ignored["honoured"])
++        self.assertIn("greatdane.node.lazyAllowPreActivation", ignored["text"])
+         self.assertIn("ignored", ignored["text"])
+         self.assertIn("not in automation", ignored["text"])
++        self.assertIn("about:config", ignored["text"])
+         honoured = pre_activation_status(True, True)
+         self.assertTrue(honoured["honoured"])
++        self.assertIn("greatdane.node.lazyAllowPreActivation", honoured["text"])
+         self.assertIn("honoured", honoured["text"])
++        self.assertIn("about:config", honoured["text"])
+         self.assertEqual(pre_activation_status(False, True)["text"], "")
+ 
+     def test_lazy_rules_follow_spawned_mode_not_live_pref(self):
+diff --git a/greatdane/tests/lazy_node/test_static_prefs_patch.py b/greatdane/tests/lazy_node/test_static_prefs_patch.py
+index 8451df0..0380379 100644
+--- a/greatdane/tests/lazy_node/test_static_prefs_patch.py
++++ b/greatdane/tests/lazy_node/test_static_prefs_patch.py
+@@ -1,7 +1,7 @@
+ #!/usr/bin/env python3
+-"""F1/F2/F4: the StaticPrefs patches must be complete, atomic-typed,
+-apply to the real Firefox tree, and fail loudly if they are not applied.
+-Never writes to the Firefox source tree; applies only to a temp copy."""
++"""F1/F2/F4/N2: the StaticPrefs patches must be complete, atomic-typed,
++idempotent, all-or-nothing, and fail loudly. Never writes to the Firefox
++source tree; applies only to a temp copy."""
+ from __future__ import annotations
+ 
+ import os
+@@ -17,6 +17,7 @@ YP = REPO / "modules/libpref/init/StaticPrefList.yaml.patch"
+ MP = REPO / "modules/libpref/moz.build.patch"
+ INC = REPO / "modules/libpref/init/StaticPrefList-greatdane-node.inc.yaml"
+ APPLY = REPO / "greatdane/tools/apply-greatdane-static-prefs.sh"
++OVERLAY = REPO / "greatdane/tools/apply-greatdane-overlay.sh"
+ SSL = REPO / "security/manager/ssl/SSLServerCertVerification.cpp"
+ DEFAULT_FIREFOX_SRC = Path("/workspace/dane-linux/src")
+ 
+@@ -31,6 +32,41 @@ def firefox_src():
+     return None
+ 
+ 
++def _copy_tree(src: Path) -> Path:
++    td = Path(tempfile.mkdtemp(prefix="gd-static-prefs-"))
++    (td / "modules/libpref/init").mkdir(parents=True)
++    shutil.copy(src / "modules/libpref/init/StaticPrefList.yaml",
++                td / "modules/libpref/init/StaticPrefList.yaml")
++    shutil.copy(src / "modules/libpref/moz.build",
++                td / "modules/libpref/moz.build")
++    subprocess.run(["git", "init", "-q"], cwd=td, check=True,
++                   capture_output=True)
++    return td
++
++
++def _run_apply(*args):
++    return subprocess.run(
++        [str(APPLY), *args],
++        check=False, capture_output=True, text=True,
++    )
++
++
++def _pref_count(yaml: str, name: str) -> int:
++    # Exact name only: "greatdane.node.lazy" is a prefix of lazyTimeoutSec.
++    needle = f"name: {name}"
++    return sum(1 for ln in yaml.splitlines() if ln.strip() == needle or ln.strip() == f"- {needle}")
++
++
++def _counts(td: Path):
++    yaml = (td / "modules/libpref/init/StaticPrefList.yaml").read_text()
++    return (
++        _pref_count(yaml, "greatdane.node.lazy"),
++        _pref_count(yaml, "greatdane.node.lazyTimeoutSec"),
++        yaml,
++        (td / "modules/libpref/moz.build").read_text(),
++    )
++
++
+ class TestStaticPrefsPatch(unittest.TestCase):
+     def test_inc_yaml_fragment_is_gone(self):
+         self.assertFalse(INC.exists(), "F4: drop the .inc.yaml fragment")
+@@ -39,17 +75,18 @@ class TestStaticPrefsPatch(unittest.TestCase):
+         self.assertTrue(YP.is_file(), YP)
+         self.assertTrue(MP.is_file(), MP)
+         self.assertTrue(APPLY.is_file() and os.access(APPLY, os.X_OK), APPLY)
++        self.assertTrue(OVERLAY.is_file() and os.access(OVERLAY, os.X_OK), OVERLAY)
++        # N1: the overlay hook calls the static-prefs script.
++        hook = OVERLAY.read_text()
++        self.assertIn("apply-greatdane-static-prefs.sh", hook)
++        self.assertIn('exec "$AS"', hook)
+ 
+     def test_pref_names_stay_greatdane_and_types_are_atomic(self):
+-        # F1 naming: keep internal greatdane.* names; add the group in
+-        # moz.build rather than renaming into security.greatdane.*.
+         yp = YP.read_text()
+         self.assertIn("name: greatdane.node.lazy", yp)
+         self.assertIn("name: greatdane.node.lazyTimeoutSec", yp)
+         self.assertIn("type: RelaxedAtomicBool", yp)
+         self.assertIn("type: RelaxedAtomicInt32", yp)
+-        # The new entries must not use the non-atomic types that
+-        # MOZ_DIAGNOSTIC_ASSERT against off the main thread.
+         after_lazy = yp.split("name: greatdane.node.lazy", 1)[1]
+         first_type = [ln for ln in after_lazy.splitlines() if "type:" in ln][0]
+         self.assertIn("RelaxedAtomicBool", first_type)
+@@ -57,60 +94,78 @@ class TestStaticPrefsPatch(unittest.TestCase):
+         first_to = [ln for ln in after_to.splitlines() if "type:" in ln][0]
+         self.assertIn("RelaxedAtomicInt32", first_to)
+         self.assertNotIn("security.greatdane.node_lazy", yp)
+-        mp = MP.read_text()
+-        self.assertIn('"greatdane"', mp)
++        self.assertIn('"greatdane"', MP.read_text())
+         ssl = SSL.read_text()
+-        self.assertIn('StaticPrefs_greatdane.h', ssl)
++        self.assertIn("StaticPrefs_greatdane.h", ssl)
+         self.assertIn("StaticPrefs::greatdane_node_lazy()", ssl)
+         self.assertIn("StaticPrefs::greatdane_node_lazyTimeoutSec()", ssl)
+         self.assertNotIn("Preferences::GetBool", ssl)
+         self.assertNotIn("Preferences::GetInt", ssl)
+ 
+-    def test_apply_script_check_and_temp_apply_fail_loudly(self):
++    def test_apply_script_check_against_firefox_tree(self):
+         src = firefox_src()
+         if src is None:
+             self.skipTest("no Firefox tree (set GREATDANE_FIREFOX_SRC)")
+-        # --check must not write.
+-        r = subprocess.run(
+-            [str(APPLY), "--check", str(src)],
+-            check=False, capture_output=True, text=True,
+-        )
+-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+-        self.assertIn("check OK", r.stdout)
+-
+-        td = Path(tempfile.mkdtemp(prefix="gd-static-prefs-"))
+-        try:
+-            (td / "modules/libpref/init").mkdir(parents=True)
+-            shutil.copy(src / "modules/libpref/init/StaticPrefList.yaml",
+-                        td / "modules/libpref/init/StaticPrefList.yaml")
+-            shutil.copy(src / "modules/libpref/moz.build",
+-                        td / "modules/libpref/moz.build")
+-            subprocess.run(["git", "init", "-q"], cwd=td, check=True,
+-                           capture_output=True)
++        # --check must not write. Use both the overlay hook and AS.
++        for tool in (APPLY, OVERLAY):
+             r = subprocess.run(
+-                [str(APPLY), str(td)],
++                [str(tool), "--check", str(src)],
+                 check=False, capture_output=True, text=True,
+             )
+             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+-            yaml = (td / "modules/libpref/init/StaticPrefList.yaml").read_text()
+-            moz = (td / "modules/libpref/moz.build").read_text()
+-            self.assertIn("name: greatdane.node.lazy", yaml)
+-            self.assertIn("name: greatdane.node.lazyTimeoutSec", yaml)
+-            self.assertIn("RelaxedAtomicBool", yaml)
+-            self.assertIn("RelaxedAtomicInt32", yaml)
+-            self.assertIn('"greatdane"', moz)
+-
+-            # Loud failure if the result is missing a pref (simulate).
+-            broken = td / "modules/libpref/init/StaticPrefList.yaml"
+-            broken.write_text(yaml.replace("greatdane.node.lazy", "x.node.lazy"))
++            self.assertIn("check OK", r.stdout)
++
++    def test_double_run_is_noop_success(self):
++        src = firefox_src()
++        if src is None:
++            self.skipTest("no Firefox tree (set GREATDANE_FIREFOX_SRC)")
++        td = _copy_tree(src)
++        try:
++            r1 = _run_apply(str(td))
++            self.assertEqual(r1.returncode, 0, r1.stdout + r1.stderr)
++            self.assertIn("applied and verified", r1.stdout)
++            n1, t1, yaml1, moz1 = _counts(td)
++            self.assertEqual((n1, t1), (1, 1))
++            self.assertIn('"greatdane"', moz1)
++
++            r2 = _run_apply(str(td))
++            self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
++            self.assertIn("already applied", r2.stdout)
++            n2, t2, yaml2, moz2 = _counts(td)
++            self.assertEqual((n2, t2), (1, 1), "second run must not duplicate entries")
++            self.assertEqual(yaml1, yaml2)
++            self.assertEqual(moz1, moz2)
++
++            r3 = _run_apply("--check", str(td))
++            self.assertEqual(r3.returncode, 0, r3.stdout + r3.stderr)
++            self.assertIn("already applied", r3.stdout)
++            self.assertEqual(_counts(td)[2], yaml1)
++        finally:
++            shutil.rmtree(td, ignore_errors=True)
++
++    def test_partial_pre_state_fails_before_any_write(self):
++        src = firefox_src()
++        if src is None:
++            self.skipTest("no Firefox tree (set GREATDANE_FIREFOX_SRC)")
++        td = _copy_tree(src)
++        try:
++            # Apply only the yaml patch, leaving moz.build unpatched.
+             r = subprocess.run(
+-                ["sh", "-c",
+-                 'grep -q "name: greatdane.node.lazy$" "$1" || '
+-                 '{ echo "missing pref" >&2; exit 1; }',
+-                 "check", str(broken)],
++                ["git", "-C", str(td), "apply", str(YP)],
+                 check=False, capture_output=True, text=True,
+             )
+-            self.assertNotEqual(r.returncode, 0)
++            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
++            n0, t0, yaml0, moz0 = _counts(td)
++            self.assertEqual((n0, t0), (1, 1))
++            self.assertNotIn('"greatdane"', moz0)
++
++            r = _run_apply(str(td))
++            self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
++            self.assertIn("partial pre-state", r.stderr)
++            n1, t1, yaml1, moz1 = _counts(td)
++            self.assertEqual(yaml0, yaml1, "must not write yaml on partial pre-state")
++            self.assertEqual(moz0, moz1, "must not write moz.build on partial pre-state")
++            self.assertEqual((n1, t1), (1, 1), "must not duplicate yaml entries")
+         finally:
+             shutil.rmtree(td, ignore_errors=True)
+ 
+diff --git a/greatdane/tools/apply-greatdane-overlay.sh b/greatdane/tools/apply-greatdane-overlay.sh
+new file mode 100755
+index 0000000..0c065c3
+--- /dev/null
++++ b/greatdane/tools/apply-greatdane-overlay.sh
+@@ -0,0 +1,26 @@
++#!/bin/sh
++# In-repo GreatDANE overlay apply hook for a Firefox source tree.
++# Run this after the product commits have been git-am'd (or the overlay
++# files copied) and before mach configure / mach build.
++#
++# This is the hook that runs apply-greatdane-static-prefs.sh (N1).
++# The historical dane-linux pin sequences live outside this repo and
++# were not modified. What is still needed: one invocation of this
++# script against the Linux tree, after product git am and before
++# ./mach configure, at:
++#   /workspace/dane-linux/prepare-final-pin-sequence.sh:179
++#     (right after 'Product commits applied...') and again after v3
++#     before the clobber+configure block (~line 228);
++#   /workspace/dane-linux/prepare-final-pin-sequence-r9.sh:746
++#     (after 'git am of 5b-5e completed') and before
++#     run_mach configure at line 955
++# (and the same relative spots in the r3–r8 copies).
++#
++#   apply-greatdane-overlay.sh <firefox-src>
++#   apply-greatdane-overlay.sh --check <firefox-src>
++set -eu
++HERE=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
++AS="$HERE/greatdane/tools/apply-greatdane-static-prefs.sh"
++[ -x "$AS" ] || { echo "apply-greatdane-overlay: missing $AS" >&2; exit 1; }
++# N1 hook: apply (or verify) the StaticPrefs yaml + moz.build patches.
++exec "$AS" "$@"
+diff --git a/greatdane/tools/apply-greatdane-static-prefs.sh b/greatdane/tools/apply-greatdane-static-prefs.sh
+index c8c5283..b63b1d6 100755
+--- a/greatdane/tools/apply-greatdane-static-prefs.sh
++++ b/greatdane/tools/apply-greatdane-static-prefs.sh
+@@ -1,13 +1,21 @@
+ #!/bin/sh
+ # Apply the GreatDANE StaticPrefs patches (greatdane.node.lazy and
+ # lazyTimeoutSec, plus the "greatdane" pref_groups entry) to a Firefox
+-# source tree. Fails loudly if a patch does not apply or the result
+-# does not contain the prefs / group.
++# source tree. Idempotent and all-or-nothing:
++#   - git apply --check on both patches before any write;
++#   - already-applied (git apply --reverse --check) is a no-op success;
++#   - a partial pre-state (only one patch applied) fails before writing;
++#   - if the second apply fails, the first is reversed so the tree is
++#     not left half-patched.
++# Fails loudly if a patch does not apply or the result is missing the
++# prefs / group.
+ #
+ #   apply-greatdane-static-prefs.sh <firefox-src>
+ #   apply-greatdane-static-prefs.sh --check <firefox-src>   # no writes
+ #
+ # This overlay does not vendor StaticPrefList.yaml or moz.build.
++# Prefer the overlay hook greatdane/tools/apply-greatdane-overlay.sh,
++# which calls this script.
+ set -eu
+ CHECK=
+ if [ "${1:-}" = "--check" ]; then
+@@ -30,23 +38,71 @@ die() { echo "apply-greatdane-static-prefs: $*" >&2; exit 1; }
+ [ -f "$YAML" ] || die "missing $YAML"
+ [ -f "$MOZ" ] || die "missing $MOZ"
+ 
++# 1 if git apply $1 $2 succeeds (stdout/stderr discarded).
++can_apply() {
++  git -C "$TREE" apply "$@" >/dev/null 2>&1
++}
++
++already_yp=0
++already_mp=0
++can_yp=0
++can_mp=0
++if can_apply --reverse --check "$YP"; then already_yp=1; fi
++if can_apply --reverse --check "$MP"; then already_mp=1; fi
++if can_apply --check "$YP"; then can_yp=1; fi
++if can_apply --check "$MP"; then can_mp=1; fi
++
++# Partial pre-state: never write (a second yaml apply would duplicate
++# the insertion; a lone moz.build apply would leave the pair split).
++if [ "$already_yp" -ne "$already_mp" ]; then
++  die "partial pre-state (yaml already-applied=$already_yp moz.build already-applied=$already_mp); refusing to write"
++fi
++
++# Both already applied: idempotent no-op. Still verify the greps.
++if [ "$already_yp" -eq 1 ] && [ "$already_mp" -eq 1 ]; then
++  :
++else
++  # Neither is applied. Both must --check cleanly before any write.
++  if [ "$can_yp" -ne 1 ] || [ "$can_mp" -ne 1 ]; then
++    die "patches do not apply (yaml --check=$can_yp moz.build --check=$can_mp); refusing to write"
++  fi
++  if [ -n "$CHECK" ]; then
++    echo "apply-greatdane-static-prefs: --check OK"
++    exit 0
++  fi
++  # Apply yaml first; if moz.build then fails, roll yaml back.
++  git -C "$TREE" apply "$YP" || die "failed to apply StaticPrefList.yaml.patch"
++  if ! git -C "$TREE" apply "$MP"; then
++    if git -C "$TREE" apply --reverse "$YP"; then
++      die "failed to apply moz.build.patch; yaml rolled back"
++    fi
++    die "failed to apply moz.build.patch; yaml apply could not be rolled back"
++  fi
++fi
++
+ if [ -n "$CHECK" ]; then
+-  git -C "$TREE" apply --check "$YP" || die "StaticPrefList.yaml.patch does not apply"
+-  git -C "$TREE" apply --check "$MP" || die "moz.build.patch does not apply"
+-  echo "apply-greatdane-static-prefs: --check OK"
++  # Already-applied path in --check mode: no writes happened.
++  echo "apply-greatdane-static-prefs: --check OK (already applied)"
+   exit 0
+ fi
+ 
+-git -C "$TREE" apply "$YP" || die "failed to apply StaticPrefList.yaml.patch"
+-git -C "$TREE" apply "$MP" || die "failed to apply moz.build.patch"
+-
+-# Loud post-apply checks (no include mechanism; the generator reads only
+-# StaticPrefList.yaml, and headers exist only for pref_groups).
+-grep -q 'name: greatdane.node.lazy$' "$YAML" || die "greatdane.node.lazy missing from StaticPrefList.yaml after apply"
+-grep -q 'name: greatdane.node.lazyTimeoutSec$' "$YAML" || die "greatdane.node.lazyTimeoutSec missing after apply"
++# Loud post-apply (or already-applied) checks. The generator reads only
++# StaticPrefList.yaml, and headers exist only for pref_groups.
++# Count entries so a duplicate insertion is a hard failure.
++count_pref() {
++  grep -c "$1" "$YAML" || true
++}
++n_lazy=$(count_pref '^[[:space:]]*- name: greatdane.node.lazy$')
++n_to=$(count_pref '^[[:space:]]*- name: greatdane.node.lazyTimeoutSec$')
++[ "$n_lazy" -eq 1 ] || die "expected exactly one greatdane.node.lazy in StaticPrefList.yaml, found $n_lazy"
++[ "$n_to" -eq 1 ] || die "expected exactly one greatdane.node.lazyTimeoutSec, found $n_to"
+ awk '/name: greatdane.node.lazy$/{n=1} n&&/type:/{print; exit}' "$YAML" | grep -q RelaxedAtomicBool \
+   || die "greatdane.node.lazy must be RelaxedAtomicBool"
+ awk '/name: greatdane.node.lazyTimeoutSec$/{n=1} n&&/type:/{print; exit}' "$YAML" | grep -q RelaxedAtomicInt32 \
+   || die "greatdane.node.lazyTimeoutSec must be RelaxedAtomicInt32"
+-grep -q '"greatdane"' "$MOZ" || die "pref_groups is missing \"greatdane\" in moz.build after apply"
+-echo "apply-greatdane-static-prefs: applied and verified in $TREE"
++grep -q '"greatdane"' "$MOZ" || die "pref_groups is missing \"greatdane\" in moz.build"
++if [ "$already_yp" -eq 1 ]; then
++  echo "apply-greatdane-static-prefs: already applied, skipped in $TREE"
++else
++  echo "apply-greatdane-static-prefs: applied and verified in $TREE"
++fi

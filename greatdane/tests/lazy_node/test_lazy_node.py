@@ -270,11 +270,15 @@ class PolicyConstantsTests(unittest.TestCase):
         ignored = pre_activation_status(True, False)
         self.assertTrue(ignored["on"])
         self.assertFalse(ignored["honoured"])
+        self.assertIn("greatdane.node.lazyAllowPreActivation", ignored["text"])
         self.assertIn("ignored", ignored["text"])
         self.assertIn("not in automation", ignored["text"])
+        self.assertIn("about:config", ignored["text"])
         honoured = pre_activation_status(True, True)
         self.assertTrue(honoured["honoured"])
+        self.assertIn("greatdane.node.lazyAllowPreActivation", honoured["text"])
         self.assertIn("honoured", honoured["text"])
+        self.assertIn("about:config", honoured["text"])
         self.assertEqual(pre_activation_status(False, True)["text"], "")
 
     def test_lazy_rules_follow_spawned_mode_not_live_pref(self):

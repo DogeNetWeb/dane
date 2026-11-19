@@ -29,7 +29,9 @@ a real mesh node.
   Lazy mode also restores the height >= activation floor. The
   test-only pref `greatdane.node.lazyAllowPreActivation` (default off)
   is honoured only under automation (`Cu.isInAutomation`); if set
-  outside automation it is ignored, logged, and shown on about:dane.
+  outside automation it is ignored, logged once per session, and
+  shown on about:dane with the full pref name and an about:config
+  reset hint.
   The env alias `GREATDANE_LAZY_ALLOW_PRE_ACTIVATION` is for these
   Python tests only. A missing `namespace_synced` flag uses the
   full-mode rule (`passes >= 1` and the same floor). `best_known_height`
@@ -40,9 +42,12 @@ a real mesh node.
   `greatdane.node.lazyTimeoutSec` (RelaxedAtomicBool /
   RelaxedAtomicInt32, mirror: always) plus the `greatdane` entry in
   `modules/libpref/moz.build` `pref_groups` are applied to a Firefox
-  tree with `greatdane/tools/apply-greatdane-static-prefs.sh`. The
-  script fails loudly if the patches do not apply or the result is
-  missing the prefs / group. Names stay under `greatdane.*`.
+  tree with `greatdane/tools/apply-greatdane-overlay.sh` (N1 hook,
+  which calls `apply-greatdane-static-prefs.sh`). The apply is
+  idempotent and all-or-nothing: a second run is a no-op success;
+  a partial pre-state fails before any write. The script fails
+  loudly if the patches do not apply or the result is missing or
+  duplicated. Names stay under `greatdane.*`.
 - `/gd/names` is unchanged and works from the namespace alone.
 
 Run: `python3 test_lazy_node.py` (binds 127.0.0.1 only).

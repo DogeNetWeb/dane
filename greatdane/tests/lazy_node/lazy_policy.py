@@ -65,9 +65,9 @@ def pre_activation_status(pref_on, in_automation=False):
         return {"on": False, "honoured": False, "text": ""}
     if in_automation:
         return {"on": True, "honoured": True,
-                "text": "TEST ONLY: lazyAllowPreActivation is on and honoured (automation)."}
+                "text": "TEST ONLY: greatdane.node.lazyAllowPreActivation is on and honoured (automation). Reset it in about:config if you did not mean to set it."}
     return {"on": True, "honoured": False,
-            "text": "TEST ONLY: lazyAllowPreActivation is set in this profile but ignored (not in automation)."}
+            "text": "TEST ONLY: greatdane.node.lazyAllowPreActivation is set in this profile but ignored (not in automation). Reset it in about:config."}
 
 
 def activation_floor_ok(st, allow_pre=False):
