@@ -6,9 +6,12 @@
 import hashlib
 import time
 
-# Keeper/lazy-node: confirmed flag/env. Passed only when the pref is on.
+# Keeper/lazy-node: confirmed flags/env. Passed only when the pref is on.
+# Other tunables (--lazy-wait-ms, cache caps, TTLs) stay at node defaults.
 LAZY_NODE_CLI_FLAG = "--lazy"
 LAZY_NODE_ENV_NAME = "GREATDANE_NODE_LAZY"
+LAZY_CACHE_DIR_CLI_FLAG = "--lazy-cache-dir"
+LAZY_CACHE_DIR_ENV_NAME = "GREATDANE_NODE_LAZY_CACHE_DIR"
 
 # RFC 8914: 14 = Not Ready (fetch in flight); 22 = fetch failed, retrying.
 # Both are retryable loading. Plain SERVFAIL without these codes is not.
@@ -18,6 +21,23 @@ LAZY_LOADING_EDES = (LAZY_LOADING_EDE, LAZY_FETCH_FAILED_EDE)
 TLSA_STATUS_LOADING = "loading"
 DEFAULT_LAZY_TIMEOUT_SEC = 10
 DEFAULT_LAZY_RETRY_MS = 1000
+
+
+def lazy_node_args(data_dir, enabled=True):
+    """CLI args Dane passes when launching the node (mirrors _lazyArgs)."""
+    if not enabled:
+        return []
+    return [LAZY_NODE_CLI_FLAG, LAZY_CACHE_DIR_CLI_FLAG, data_dir]
+
+
+def lazy_node_env(data_dir, enabled=True):
+    """Env Dane appends on spawn when the lazy pref is on."""
+    if not enabled:
+        return {}
+    return {
+        LAZY_NODE_ENV_NAME: "1",
+        LAZY_CACHE_DIR_ENV_NAME: data_dir,
+    }
 
 RCODE_NOERROR = 0
 RCODE_SERVFAIL = 2
@@ -148,6 +168,7 @@ def verify_body(body, leaf_spki):
     status = body.get("status")
     if status == "unowned" or status == "bad_name":
         return UNOWNED
+    # Final only when the node returns this status (after 2 peers).
     if status == "no_tlsa":
         return NO_TLSA
     if status == "bad_record":

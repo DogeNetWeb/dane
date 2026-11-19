@@ -30,8 +30,11 @@ from lazy_policy import (
     FAIL,
     LAZY_FETCH_FAILED_EDE,
     LAZY_LOADING_EDE,
+    LAZY_CACHE_DIR_CLI_FLAG,
+    LAZY_CACHE_DIR_ENV_NAME,
     LAZY_NODE_CLI_FLAG,
     LAZY_NODE_ENV_NAME,
+    NO_TLSA,
     LOADING_TIMEOUT,
     MATCH,
     RCODE_NXDOMAIN,
@@ -43,6 +46,8 @@ from lazy_policy import (
     is_lazy_loading_status,
     is_proxy_loading,
     loading_retry_sec,
+    lazy_node_args,
+    lazy_node_env,
     lazy_retry_ms,
     wait_for_tlsa,
     _spki_sha256_hex,
@@ -125,9 +130,29 @@ class PolicyConstantsTests(unittest.TestCase):
     def test_confirmed_constants(self):
         self.assertEqual(LAZY_NODE_CLI_FLAG, "--lazy")
         self.assertEqual(LAZY_NODE_ENV_NAME, "GREATDANE_NODE_LAZY")
+        self.assertEqual(LAZY_CACHE_DIR_CLI_FLAG, "--lazy-cache-dir")
+        self.assertEqual(LAZY_CACHE_DIR_ENV_NAME, "GREATDANE_NODE_LAZY_CACHE_DIR")
         self.assertEqual(LAZY_LOADING_EDE, 14)
         self.assertEqual(LAZY_FETCH_FAILED_EDE, 22)
         self.assertEqual(DEFAULT_LAZY_TIMEOUT_SEC, 10)
+
+    def test_lazy_launch_passes_cache_dir_only_when_enabled(self):
+        data = "/tmp/greatdane-test-data"
+        self.assertEqual(
+            lazy_node_args(data, enabled=True),
+            ["--lazy", "--lazy-cache-dir", data],
+        )
+        self.assertEqual(
+            lazy_node_env(data, enabled=True),
+            {"GREATDANE_NODE_LAZY": "1", "GREATDANE_NODE_LAZY_CACHE_DIR": data},
+        )
+        self.assertEqual(lazy_node_args(data, enabled=False), [])
+        self.assertEqual(lazy_node_env(data, enabled=False), {})
+        # Other tunables stay at node defaults: not passed.
+        for token in lazy_node_args(data):
+            self.assertNotIn("wait-ms", token)
+            self.assertNotIn("max-names", token)
+            self.assertNotIn("max-mb", token)
 
     def test_http_status_loading_is_loading(self):
         self.assertTrue(is_lazy_loading_status({"status": "loading"}))
@@ -161,6 +186,11 @@ class PolicyConstantsTests(unittest.TestCase):
         self.assertEqual(classify_chain_failure("unowned"), "GD_NAME_UNOWNED")
         self.assertEqual(classify_chain_failure("ok", tls_fail=True), "GD_TLS_UNTRUSTED")
         self.assertEqual(classify_chain_failure(""), "GD_TLS_UNTRUSTED")
+        # no_tlsa is final only as an explicit node status, never inferred.
+        self.assertEqual(classify_chain_failure("no_tlsa"), "GD_NO_TLSA")
+        self.assertNotEqual(classify_chain_failure("loading"), "GD_NO_TLSA")
+        self.assertNotEqual(classify_chain_failure(None), "GD_NO_TLSA")
+        self.assertNotEqual(classify_chain_failure(""), "GD_NO_TLSA")
 
     def test_retry_ms_clamped_to_budget(self):
         self.assertEqual(lazy_retry_ms({"retry_ms": 1000}, 10_000), 1000)
@@ -335,6 +365,52 @@ class FakeNodeTests(unittest.TestCase):
         self.assertEqual(verdict, FAIL)
         self.assertLess(elapsed, 1.5)
         self.assertEqual(classify_chain_failure("ok", tls_fail=True), "GD_TLS_UNTRUSTED")
+
+    def test_no_tlsa_is_final_only_when_the_node_says_so(self):
+        # Explicit node status is final immediately; do not keep retrying.
+        calls = {"n": 0}
+
+        def fetch_final():
+            calls["n"] += 1
+            return ("ok", {"status": "no_tlsa"})
+
+        self.assertEqual(
+            wait_for_tlsa(fetch_final, LEAF_SPKI, lazy=True, timeout_sec=10,
+                          sleep=lambda _s: None, clock=lambda: 0.0),
+            NO_TLSA,
+        )
+        self.assertEqual(calls["n"], 1)
+
+        # A loading signal, then the node's no_tlsa: final after the node says so.
+        seq = [LOADING_14, {"status": "no_tlsa"}]
+        t = [0.0]
+
+        def clock():
+            return t[0]
+
+        def sleep(s):
+            t[0] += s
+
+        def fetch_then():
+            body = seq.pop(0) if seq else {"status": "no_tlsa"}
+            return ("ok", body)
+
+        self.assertEqual(
+            wait_for_tlsa(fetch_then, LEAF_SPKI, lazy=True, timeout_sec=10,
+                          sleep=sleep, clock=clock),
+            NO_TLSA,
+        )
+        self.assertEqual(seq, [])
+
+        # Budget exhausted without a no_tlsa answer is still-loading, not no_tlsa.
+        def fetch_loading():
+            return ("ok", LOADING_14)
+
+        self.assertEqual(
+            wait_for_tlsa(fetch_loading, LEAF_SPKI, lazy=True, timeout_sec=1,
+                          sleep=sleep, clock=clock),
+            LOADING_TIMEOUT,
+        )
 
     def test_plain_servfail_without_ede_is_existing_fail_path(self):
         verdict, _ = self._wait("lazytest-servfail.pepe", timeout_sec=5)

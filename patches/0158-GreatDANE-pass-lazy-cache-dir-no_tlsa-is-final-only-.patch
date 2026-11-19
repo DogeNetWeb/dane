@@ -1,0 +1,722 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Wed, 18 Nov 2026 18:23:34 -0600
+Subject: [PATCH 158/162] GreatDANE: pass --lazy-cache-dir; no_tlsa is final
+ only from the node
+
+In lazy mode the node is launched with --lazy-cache-dir set to the run's
+data dir (and GREATDANE_NODE_LAZY_CACHE_DIR). Other lazy tunables stay
+at the node's defaults. no_tlsa is treated as final only when the node
+returns that status; EDE 22 stays retryable loading.
+
+Adds a localhost e2e harness for a real lazy greatdane-node in a
+private netns, with synthetic names only.
+---
+ browser/app/profile/firefox.js                |   4 +-
+ .../components/greatdane/GreatDANE.sys.mjs    |  19 +-
+ .../greatdane/GreatDANEAbout.sys.mjs          |   2 +
+ greatdane/tests/lazy_node/README.md           |  21 +-
+ greatdane/tests/lazy_node/lazy_policy.py      |  23 +-
+ greatdane/tests/lazy_node/test_lazy_node.py   |  76 ++++
+ .../tests/lazy_node/test_lazy_node_e2e.py     | 383 ++++++++++++++++++
+ .../manager/ssl/SSLServerCertVerification.cpp |   4 +-
+ 8 files changed, 520 insertions(+), 12 deletions(-)
+ create mode 100644 greatdane/tests/lazy_node/test_lazy_node_e2e.py
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index c76f5a1..6736c1e 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -3641,7 +3641,9 @@ pref("greatdane.node.path", "");
+ pref("greatdane.node.dataDir", "");
+ // Lazy node: sync only the namespace; fetch a name's DNS zone when a
+ // query arrives, instead of syncing full zones up front. Default off.
+-// When on, the node is launched with --lazy and GREATDANE_NODE_LAZY=1.
++// When on, the node is launched with --lazy, GREATDANE_NODE_LAZY=1,
++// and --lazy-cache-dir <node data dir>. Other lazy tunables stay at
++// the node's defaults.
+ pref("greatdane.node.lazy", false);
+ // Bounded wait (seconds) for a cold zone fetch. The resolver and the
+ // TLSA verifier wait this long for SERVFAIL+EDE 14/22 or /gd/tlsa
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index cd17b81..3c7483c 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -15,6 +15,8 @@ const log = (...a) => console.log("GreatDANE:", ...a);
+ // greatdane.node.lazy is true. Do not pass either when the pref is off.
+ export const LAZY_NODE_CLI_FLAG = "--lazy";
+ export const LAZY_NODE_ENV_NAME = "GREATDANE_NODE_LAZY";
++export const LAZY_CACHE_DIR_CLI_FLAG = "--lazy-cache-dir";
++export const LAZY_CACHE_DIR_ENV_NAME = "GREATDANE_NODE_LAZY_CACHE_DIR";
+ 
+ // dnsd "zone still fetching" signals (RFC 8914):
+ //   14 = Not Ready (fetch in flight)
+@@ -122,10 +124,12 @@ export const GreatDANE = {
+     return Services.prefs.getBoolPref(PREF + "node.lazy", false);
+   },
+ 
+-  // Confirmed flag. Other lazy tunables (--lazy-wait-ms, cache caps, TTLs)
+-  // keep the node's defaults; the zone cache lives under --data.
++  // Confirmed flags. Other lazy tunables (--lazy-wait-ms, cache caps, TTLs)
++  // keep the node's defaults. --lazy-cache-dir points at this run's --data
++  // dir so the zone cache (lazy-zones-<coin>.db) stays with the profile.
+   _lazyArgs() {
+-    return this._lazyEnabled() ? [LAZY_NODE_CLI_FLAG] : [];
++    if (!this._lazyEnabled()) return [];
++    return [LAZY_NODE_CLI_FLAG, LAZY_CACHE_DIR_CLI_FLAG, this._dataDir()];
+   },
+ 
+   // Settings apply at spawn: stop the child; _spawn's exit path respawns it
+@@ -366,7 +370,10 @@ export const GreatDANE = {
+       // environmentAppend keeps the inherited environment otherwise unchanged.
+       if (this._lazyEnabled()) {
+         spawnOpts.environmentAppend = true;
+-        spawnOpts.environment = { [LAZY_NODE_ENV_NAME]: "1" };
++        spawnOpts.environment = {
++          [LAZY_NODE_ENV_NAME]: "1",
++          [LAZY_CACHE_DIR_ENV_NAME]: this._dataDir(),
++        };
+       }
+       c.proc = await Subprocess.call(spawnOpts);
+       // Kill on profile-before-change if the node is still alive (Subprocess docs).
+@@ -507,7 +514,9 @@ export const GreatDANE = {
+   // or null if the node can't be asked. "loading" is SERVFAIL+EDE 14/22
+   // (owned, zone not ready) and must not be treated as NXDOMAIN or a
+   // missing/bad TLSA. retry_ms is honored by the verifier and the
+-  // interstitial, inside the 10s budget.
++  // interstitial, inside the 10s budget. no_tlsa is final only when the
++  // node itself returns that status (it decides after 2 peers); EDE 22
++  // stays retryable loading and is never inferred as no_tlsa.
+   async tlsaInfo(host) {
+     let c = this._chainFor(host);
+     if (!c?.ports) return null;
+diff --git a/browser/components/greatdane/GreatDANEAbout.sys.mjs b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+index 4ef2ba3..c71f2be 100644
+--- a/browser/components/greatdane/GreatDANEAbout.sys.mjs
++++ b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+@@ -93,6 +93,8 @@ export function classifyChainFailure({ block = null, tlsa = null, tlsFail = null
+   // Zone still fetching: retryable, never a cert/TLSA rejection.
+   if (tlsa == TLSA_STATUS_LOADING || tlsa == "loading") return "GD_ZONE_LOADING";
+   if (tlsa == "unowned" || tlsa == "bad_name") return "GD_NAME_UNOWNED";
++  // Final only when the node says so (it waits for 2 peers). Never infer
++  // this from a loading signal, EDE 22, or a timeout.
+   if (tlsa == "no_tlsa") return "GD_NO_TLSA";
+   if (tlsa == "bad_record") return "GD_BAD_TLSA";
+   if (tlsa == "ok") return tlsFail === false ? "GD_SITE_UNREACHABLE" : "GD_TLS_UNTRUSTED";
+diff --git a/greatdane/tests/lazy_node/README.md b/greatdane/tests/lazy_node/README.md
+index 337a82c..a71443a 100644
+--- a/greatdane/tests/lazy_node/README.md
++++ b/greatdane/tests/lazy_node/README.md
+@@ -7,16 +7,18 @@ a real mesh node.
+ 
+ ## Confirmed contract
+ 
+-- Flag/env: `--lazy` and `GREATDANE_NODE_LAZY=1`, passed only when the
+-  pref is on. Other tunables (`--lazy-wait-ms`, cache caps, TTLs) keep
+-  the node's defaults. The zone cache lives under `--data`.
++- Flag/env: `--lazy` and `GREATDANE_NODE_LAZY=1`, plus
++  `--lazy-cache-dir <node data dir>` / `GREATDANE_NODE_LAZY_CACHE_DIR`,
++  passed only when the pref is on. Other tunables (`--lazy-wait-ms`,
++  cache caps, TTLs) keep the node's defaults.
+ - EDE 14 (Not Ready, still fetching) and EDE 22 (fetch failed,
+   retrying) are both retryable loading. Plain SERVFAIL is not.
+ - `/gd/tlsa` for an owned-but-not-ready name returns
+   `{status:"loading", rcode:"SERVFAIL", ede:14|22,
+   phase:"fetching"|"fetch_failed", retry_ms:1000}` and never
+   unowned/no_tlsa/bad_record. `retry_ms` is honored inside the 10s
+-  budget.
++  budget. `no_tlsa` is final only when the node itself returns that
++  status (it decides after 2 peers).
+ - A cold CONNECT through the PAC proxy waits, then returns
+   `503` + `Retry-After: 1` + `X-GreatDANE-Status: loading`. Dane shows
+   `GD_ZONE_LOADING` and auto-retries; this is not a security error.
+@@ -26,3 +28,14 @@ a real mesh node.
+ - `/gd/names` is unchanged and works from the namespace alone.
+ 
+ Run: `python3 test_lazy_node.py` (binds 127.0.0.1 only).
++
++Against a real `greatdane-node` (private netns, throwaway `--data`, no
++real seeds/mesh):
++
++    unshare -Urn -- sh -c 'ip link set lo up && \
++      GREATDANE_NODE=/path/to/greatdane-node python3 test_lazy_node_e2e.py'
++
++The e2e covers launch, `namespace_synced` on stdio, `/gd/names`,
++`/gd/tlsa` loading (EDE 14), unowned, and CONNECT 503 loading. Loading
++then ok, and a bad-TLSA reject, stay stubbed in `test_lazy_node.py`
++(seeding a fetched zone into an isolated node is out of scope).
+diff --git a/greatdane/tests/lazy_node/lazy_policy.py b/greatdane/tests/lazy_node/lazy_policy.py
+index fd0cb01..8c00bbd 100644
+--- a/greatdane/tests/lazy_node/lazy_policy.py
++++ b/greatdane/tests/lazy_node/lazy_policy.py
+@@ -6,9 +6,12 @@
+ import hashlib
+ import time
+ 
+-# Keeper/lazy-node: confirmed flag/env. Passed only when the pref is on.
++# Keeper/lazy-node: confirmed flags/env. Passed only when the pref is on.
++# Other tunables (--lazy-wait-ms, cache caps, TTLs) stay at node defaults.
+ LAZY_NODE_CLI_FLAG = "--lazy"
+ LAZY_NODE_ENV_NAME = "GREATDANE_NODE_LAZY"
++LAZY_CACHE_DIR_CLI_FLAG = "--lazy-cache-dir"
++LAZY_CACHE_DIR_ENV_NAME = "GREATDANE_NODE_LAZY_CACHE_DIR"
+ 
+ # RFC 8914: 14 = Not Ready (fetch in flight); 22 = fetch failed, retrying.
+ # Both are retryable loading. Plain SERVFAIL without these codes is not.
+@@ -19,6 +22,23 @@ TLSA_STATUS_LOADING = "loading"
+ DEFAULT_LAZY_TIMEOUT_SEC = 10
+ DEFAULT_LAZY_RETRY_MS = 1000
+ 
++
++def lazy_node_args(data_dir, enabled=True):
++    """CLI args Dane passes when launching the node (mirrors _lazyArgs)."""
++    if not enabled:
++        return []
++    return [LAZY_NODE_CLI_FLAG, LAZY_CACHE_DIR_CLI_FLAG, data_dir]
++
++
++def lazy_node_env(data_dir, enabled=True):
++    """Env Dane appends on spawn when the lazy pref is on."""
++    if not enabled:
++        return {}
++    return {
++        LAZY_NODE_ENV_NAME: "1",
++        LAZY_CACHE_DIR_ENV_NAME: data_dir,
++    }
++
+ RCODE_NOERROR = 0
+ RCODE_SERVFAIL = 2
+ RCODE_NXDOMAIN = 3
+@@ -148,6 +168,7 @@ def verify_body(body, leaf_spki):
+     status = body.get("status")
+     if status == "unowned" or status == "bad_name":
+         return UNOWNED
++    # Final only when the node returns this status (after 2 peers).
+     if status == "no_tlsa":
+         return NO_TLSA
+     if status == "bad_record":
+diff --git a/greatdane/tests/lazy_node/test_lazy_node.py b/greatdane/tests/lazy_node/test_lazy_node.py
+index 895a109..761632e 100755
+--- a/greatdane/tests/lazy_node/test_lazy_node.py
++++ b/greatdane/tests/lazy_node/test_lazy_node.py
+@@ -30,8 +30,11 @@ from lazy_policy import (
+     FAIL,
+     LAZY_FETCH_FAILED_EDE,
+     LAZY_LOADING_EDE,
++    LAZY_CACHE_DIR_CLI_FLAG,
++    LAZY_CACHE_DIR_ENV_NAME,
+     LAZY_NODE_CLI_FLAG,
+     LAZY_NODE_ENV_NAME,
++    NO_TLSA,
+     LOADING_TIMEOUT,
+     MATCH,
+     RCODE_NXDOMAIN,
+@@ -43,6 +46,8 @@ from lazy_policy import (
+     is_lazy_loading_status,
+     is_proxy_loading,
+     loading_retry_sec,
++    lazy_node_args,
++    lazy_node_env,
+     lazy_retry_ms,
+     wait_for_tlsa,
+     _spki_sha256_hex,
+@@ -125,10 +130,30 @@ class PolicyConstantsTests(unittest.TestCase):
+     def test_confirmed_constants(self):
+         self.assertEqual(LAZY_NODE_CLI_FLAG, "--lazy")
+         self.assertEqual(LAZY_NODE_ENV_NAME, "GREATDANE_NODE_LAZY")
++        self.assertEqual(LAZY_CACHE_DIR_CLI_FLAG, "--lazy-cache-dir")
++        self.assertEqual(LAZY_CACHE_DIR_ENV_NAME, "GREATDANE_NODE_LAZY_CACHE_DIR")
+         self.assertEqual(LAZY_LOADING_EDE, 14)
+         self.assertEqual(LAZY_FETCH_FAILED_EDE, 22)
+         self.assertEqual(DEFAULT_LAZY_TIMEOUT_SEC, 10)
+ 
++    def test_lazy_launch_passes_cache_dir_only_when_enabled(self):
++        data = "/tmp/greatdane-test-data"
++        self.assertEqual(
++            lazy_node_args(data, enabled=True),
++            ["--lazy", "--lazy-cache-dir", data],
++        )
++        self.assertEqual(
++            lazy_node_env(data, enabled=True),
++            {"GREATDANE_NODE_LAZY": "1", "GREATDANE_NODE_LAZY_CACHE_DIR": data},
++        )
++        self.assertEqual(lazy_node_args(data, enabled=False), [])
++        self.assertEqual(lazy_node_env(data, enabled=False), {})
++        # Other tunables stay at node defaults: not passed.
++        for token in lazy_node_args(data):
++            self.assertNotIn("wait-ms", token)
++            self.assertNotIn("max-names", token)
++            self.assertNotIn("max-mb", token)
++
+     def test_http_status_loading_is_loading(self):
+         self.assertTrue(is_lazy_loading_status({"status": "loading"}))
+         self.assertTrue(is_lazy_loading_status(LOADING_14))
+@@ -161,6 +186,11 @@ class PolicyConstantsTests(unittest.TestCase):
+         self.assertEqual(classify_chain_failure("unowned"), "GD_NAME_UNOWNED")
+         self.assertEqual(classify_chain_failure("ok", tls_fail=True), "GD_TLS_UNTRUSTED")
+         self.assertEqual(classify_chain_failure(""), "GD_TLS_UNTRUSTED")
++        # no_tlsa is final only as an explicit node status, never inferred.
++        self.assertEqual(classify_chain_failure("no_tlsa"), "GD_NO_TLSA")
++        self.assertNotEqual(classify_chain_failure("loading"), "GD_NO_TLSA")
++        self.assertNotEqual(classify_chain_failure(None), "GD_NO_TLSA")
++        self.assertNotEqual(classify_chain_failure(""), "GD_NO_TLSA")
+ 
+     def test_retry_ms_clamped_to_budget(self):
+         self.assertEqual(lazy_retry_ms({"retry_ms": 1000}, 10_000), 1000)
+@@ -336,6 +366,52 @@ class FakeNodeTests(unittest.TestCase):
+         self.assertLess(elapsed, 1.5)
+         self.assertEqual(classify_chain_failure("ok", tls_fail=True), "GD_TLS_UNTRUSTED")
+ 
++    def test_no_tlsa_is_final_only_when_the_node_says_so(self):
++        # Explicit node status is final immediately; do not keep retrying.
++        calls = {"n": 0}
++
++        def fetch_final():
++            calls["n"] += 1
++            return ("ok", {"status": "no_tlsa"})
++
++        self.assertEqual(
++            wait_for_tlsa(fetch_final, LEAF_SPKI, lazy=True, timeout_sec=10,
++                          sleep=lambda _s: None, clock=lambda: 0.0),
++            NO_TLSA,
++        )
++        self.assertEqual(calls["n"], 1)
++
++        # A loading signal, then the node's no_tlsa: final after the node says so.
++        seq = [LOADING_14, {"status": "no_tlsa"}]
++        t = [0.0]
++
++        def clock():
++            return t[0]
++
++        def sleep(s):
++            t[0] += s
++
++        def fetch_then():
++            body = seq.pop(0) if seq else {"status": "no_tlsa"}
++            return ("ok", body)
++
++        self.assertEqual(
++            wait_for_tlsa(fetch_then, LEAF_SPKI, lazy=True, timeout_sec=10,
++                          sleep=sleep, clock=clock),
++            NO_TLSA,
++        )
++        self.assertEqual(seq, [])
++
++        # Budget exhausted without a no_tlsa answer is still-loading, not no_tlsa.
++        def fetch_loading():
++            return ("ok", LOADING_14)
++
++        self.assertEqual(
++            wait_for_tlsa(fetch_loading, LEAF_SPKI, lazy=True, timeout_sec=1,
++                          sleep=sleep, clock=clock),
++            LOADING_TIMEOUT,
++        )
++
+     def test_plain_servfail_without_ede_is_existing_fail_path(self):
+         verdict, _ = self._wait("lazytest-servfail.pepe", timeout_sec=5)
+         self.assertEqual(verdict, FAIL)
+diff --git a/greatdane/tests/lazy_node/test_lazy_node_e2e.py b/greatdane/tests/lazy_node/test_lazy_node_e2e.py
+new file mode 100644
+index 0000000..023026b
+--- /dev/null
++++ b/greatdane/tests/lazy_node/test_lazy_node_e2e.py
+@@ -0,0 +1,383 @@
++#!/usr/bin/env python3
++"""End-to-end checks of Dane's lazy-node contract against a REAL greatdane-node.
++
++Localhost only, synthetic names (lazye2e-*.pepe), throwaway --data dir.
++Must run in a private netns so the node cannot reach any real seed/mesh:
++
++    unshare -Urn -- sh -c 'ip link set lo up && \\
++      GREATDANE_NODE=/path/to/greatdane-node python3 test_lazy_node_e2e.py'
++
++Never touches ~/.pepenet or ~/.local/share/greatdane. No mach.
++
++What is real vs stubbed is printed at the end:
++  REAL  — launch, stdio status, /gd/names, /gd/tlsa loading (EDE 14),
++          unowned, CONNECT 503 loading. EDE 22 if the node emits it.
++  STUB  — loading-then-ok and a bad-TLSA reject need a fetched zone
++          (isolated 2-node seed is out of scope); those stay in
++          test_lazy_node.py against the in-process fake node.
++"""
++
++from __future__ import annotations
++
++import json
++import os
++import signal
++import socket
++import sqlite3
++import subprocess
++import sys
++import tempfile
++import time
++import unittest
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++sys.path.insert(0, str(HERE))
++
++from lazy_policy import (  # noqa: E402
++    LAZY_FETCH_FAILED_EDE,
++    LAZY_LOADING_EDE,
++    classify_chain_failure,
++    is_lazy_loading_status,
++    is_proxy_loading,
++    lazy_node_args,
++    lazy_node_env,
++    wait_for_tlsa,
++    _spki_sha256_hex,
++)
++from test_lazy_node import BAD_TLSA, LEAF_SPKI, OK_TLSA, LOADING_14  # noqa: E402
++
++NODE = os.environ.get("GREATDANE_NODE", "")
++# Short wait avoids a confirmed SIGSEGV in the node at the default 3000 ms
++# wait when no peers can answer a lazy zget (see Keeper notes in the report).
++E2E_WAIT_MS = os.environ.get("GREATDANE_NODE_LAZY_WAIT_MS", "200")
++OWNED = "lazye2e-owned"
++UNOWNED = "lazye2e-nosuch"
++LEASE = 2_000_000_000  # well past now; owner_now is lease-gated
++
++
++def _in_private_netns():
++    if os.environ.get("GD_TEST_NETNS_OK"):
++        return True
++    try:
++        lines = Path("/proc/self/net/dev").read_text().splitlines()[2:]
++    except OSError:
++        return False
++    others = [ln for ln in lines if " lo:" not in ln]
++    return len(others) == 0
++
++
++def _http(port, path, timeout=8, method="GET", host="x"):
++    s = socket.create_connection(("127.0.0.1", int(port)), timeout)
++    s.settimeout(timeout)
++    req = f"{method} {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
++    s.sendall(req.encode())
++    b = b""
++    while True:
++        try:
++            d = s.recv(8192)
++        except socket.timeout:
++            break
++        if not d:
++            break
++        b += d
++    s.close()
++    raw = b.decode("utf-8", "replace")
++    if "\r\n\r\n" not in raw:
++        return 0, {}, raw
++    head, body = raw.split("\r\n\r\n", 1)
++    lines = head.split("\r\n")
++    status = int(lines[0].split()[1])
++    headers = {}
++    for ln in lines[1:]:
++        if ":" in ln:
++            k, v = ln.split(":", 1)
++            headers[k.strip().lower()] = v.strip()
++    return status, headers, body
++
++
++def _json_body(body):
++    body = body.strip()
++    return json.loads(body) if body else {}
++
++
++class RealLazyNode:
++    def __init__(self, node, wait_ms="200"):
++        self.node = node
++        self.wait_ms = str(wait_ms)
++        self.dir = None
++        self.proc = None
++        self.ready = None
++
++    def start(self, seed=True):
++        self.dir = tempfile.mkdtemp(prefix="dane-lazy-e2e-")
++        # First boot creates pep.db; seed a valid-lease name; restart.
++        self._spawn()
++        self._wait_ready()
++        pepdb = next(Path(self.dir).rglob("pep.db"))
++        if seed:
++            c = sqlite3.connect(str(pepdb))
++            c.execute(
++                "INSERT OR REPLACE INTO names(name,owner,owner_type,lease_expiry,st) "
++                "VALUES(?,?,0,?,1)",
++                (OWNED, bytes([0x22]) * 20, LEASE),
++            )
++            c.commit()
++            c.close()
++            self.stop()
++            self._spawn()
++            self._wait_ready()
++        return self
++
++    def _spawn(self):
++        env = os.environ.copy()
++        env.pop("PEPENET_DNS_LISTEN", None)
++        env["HOME"] = self.dir
++        env.update(lazy_node_env(self.dir, enabled=True))
++        env["GREATDANE_NODE_LAZY_WAIT_MS"] = self.wait_ms
++        args = [
++            self.node,
++            "--data", self.dir,
++            "--only", "pep",
++            "--ephemeral-ports",
++            "--dane-api",
++            "--stdio",
++            "--no-listen",
++            "--seeds", "127.0.0.1:9",
++            *lazy_node_args(self.dir, enabled=True),
++            "--lazy-wait-ms", self.wait_ms,
++        ]
++        self.out_path = Path(self.dir) / "node.out"
++        self.err_path = Path(self.dir) / "node.err"
++        self._out_f = open(self.out_path, "wb")
++        self._err_f = open(self.err_path, "wb")
++        self.proc = subprocess.Popen(
++            args,
++            stdin=subprocess.PIPE,
++            stdout=self._out_f,
++            stderr=self._err_f,
++            env=env,
++            cwd=self.dir,
++        )
++
++    def _wait_ready(self, secs=20):
++        deadline = time.time() + secs
++        while time.time() < deadline:
++            if self.out_path.exists():
++                for line in self.out_path.read_text(errors="replace").splitlines():
++                    if '"event":"ready"' in line:
++                        self.ready = json.loads(line)
++                        return
++            if self.proc.poll() is not None:
++                raise RuntimeError(
++                    f"node exited {self.proc.returncode}: {self.err_path.read_text()[-2000:]}"
++                )
++            time.sleep(0.05)
++        raise TimeoutError(
++            "no ready line\n" + self.out_path.read_text(errors="replace")[-2000:]
++            + "\n" + self.err_path.read_text(errors="replace")[-2000:]
++        )
++
++    def status(self):
++        st = None
++        for line in self.out_path.read_text(errors="replace").splitlines():
++            if '"event":"status"' in line:
++                try:
++                    st = json.loads(line)
++                except json.JSONDecodeError:
++                    pass
++        return st
++
++    def pac(self):
++        return int(self.ready["pac"])
++
++    def get(self, path, timeout=8, method="GET", host="x"):
++        return _http(self.pac(), path, timeout=timeout, method=method, host=host)
++
++    def stop(self):
++        if not self.proc:
++            return
++        if self.proc.stdin:
++            try:
++                self.proc.stdin.close()
++            except Exception:
++                pass
++        try:
++            self.proc.wait(timeout=4)
++        except subprocess.TimeoutExpired:
++            self.proc.send_signal(signal.SIGTERM)
++            try:
++                self.proc.wait(timeout=2)
++            except subprocess.TimeoutExpired:
++                self.proc.kill()
++                self.proc.wait(timeout=2)
++        self.proc = None
++        for fh in (getattr(self, "_out_f", None), getattr(self, "_err_f", None)):
++            if fh:
++                try:
++                    fh.close()
++                except Exception:
++                    pass
++        self._out_f = self._err_f = None
++
++
++@unittest.skipUnless(NODE and os.path.isfile(NODE) and os.access(NODE, os.X_OK),
++                     "set GREATDANE_NODE to a built greatdane-node")
++@unittest.skipUnless(_in_private_netns(),
++                     "refuse to run outside a private netns (unshare -Urn, lo up)")
++class RealLazyNodeTests(unittest.TestCase):
++    def test_real_node_lazy_contract(self):
++        """One sequential pass: the isolated node can SIGSEGV a few seconds
++        after a lazy zget starts with no peers (default 3s wait, or shortly
++        after a short-wait query). Do the contract checks immediately.
++        """
++        n = RealLazyNode(NODE, wait_ms=E2E_WAIT_MS)
++        try:
++            n.start()
++            self.assertEqual(n.proc.poll(), None, "node died during start")
++            ready = n.ready
++            self.assertEqual(ready.get("dane_api"), 1)
++            st = n.status()
++            self.assertIsNotNone(st)
++            self.assertEqual(st.get("lazy"), 1)
++            for k in ("namespace_synced", "zones_cached", "zones_loading", "zones_failed"):
++                self.assertIn(k, st)
++            # Isolated, no peers: height/peer_height are 0, so the node
++            # reports namespace_synced false. Dane honors the field.
++            self.assertIsInstance(st["namespace_synced"], bool)
++            cache = Path(n.dir) / "lazy-zones-pep.db"
++            self.assertTrue(cache.exists(), f"cache missing under --lazy-cache-dir: {cache}")
++            err = n.err_path.read_text(errors="replace")
++            self.assertIn("LAZY mode", err)
++            self.assertIn(f"cache_dir={n.dir}", err)
++
++            status, _, body = n.get("/gd/names?prefix=lazye2e&limit=20")
++            self.assertEqual(status, 200, body)
++            names = [row["name"] for row in _json_body(body).get("names", [])]
++            self.assertIn(OWNED, names)
++            self.assertNotIn(UNOWNED, names)
++
++            status, _, body = n.get(f"/gd/tlsa?host={UNOWNED}.pepe", timeout=5)
++            self.assertEqual(status, 200, body)
++            j = _json_body(body)
++            self.assertEqual(j.get("status"), "unowned")
++            self.assertFalse(is_lazy_loading_status(j), j)
++            self.assertEqual(classify_chain_failure("unowned"), "GD_NAME_UNOWNED")
++
++            status, _, body = n.get(f"/gd/tlsa?host={OWNED}.pepe", timeout=8)
++            self.assertEqual(status, 200, body)
++            j = _json_body(body)
++            self.assertTrue(is_lazy_loading_status(j), j)
++            self.assertEqual(j.get("status"), "loading")
++            self.assertEqual(j.get("rcode"), "SERVFAIL")
++            self.assertEqual(int(j.get("ede")), LAZY_LOADING_EDE)
++            self.assertEqual(j.get("phase"), "fetching")
++            self.assertEqual(int(j.get("retry_ms")), 1000)
++            self.assertEqual(classify_chain_failure(j["status"]), "GD_ZONE_LOADING")
++
++            status, headers, _ = n.get(
++                f"{OWNED}.pepe:443", timeout=8, method="CONNECT", host=f"{OWNED}.pepe"
++            )
++            self.assertEqual(status, 503, headers)
++            self.assertTrue(is_proxy_loading(status, headers), headers)
++            self.assertEqual(headers.get("x-greatdane-status", "").lower(), "loading")
++            self.assertEqual(headers.get("retry-after"), "1")
++            self.assertEqual(
++                classify_chain_failure(None, proxy_loading=True), "GD_ZONE_LOADING"
++            )
++
++            # Optional: if the node stays up, watch for EDE 22. A SIGSEGV
++            # here is a node bug (reported to Keeper), not a Dane regression.
++            saw22 = False
++            died = None
++            last = j
++            deadline = time.time() + 6
++            while time.time() < deadline:
++                rc = n.proc.poll()
++                if rc is not None:
++                    died = rc
++                    break
++                try:
++                    status, _, body = n.get(f"/gd/tlsa?host={OWNED}.pepe", timeout=8)
++                except OSError as e:
++                    died = n.proc.poll()
++                    print(f"\n[e2e] /gd/tlsa poll error {e!r} node_rc={died}", file=sys.stderr)
++                    break
++                if status != 200:
++                    print(f"\n[e2e] unexpected status {status} body={body!r}", file=sys.stderr)
++                    break
++                last = _json_body(body)
++                self.assertTrue(is_lazy_loading_status(last), last)
++                self.assertNotIn(last.get("status"), ("no_tlsa", "unowned"))
++                if int(last.get("ede") or 0) == LAZY_FETCH_FAILED_EDE:
++                    saw22 = True
++                    self.assertEqual(last.get("phase"), "fetch_failed")
++                    break
++                time.sleep(0.4)
++            print(
++                f"\n[e2e] EDE22={saw22} node_rc={died} last={last} "
++                f"final_status={n.status()}",
++                file=sys.stderr,
++            )
++            if died is not None:
++                # -11 == SIGSEGV; keep the earlier contract asserts as the pass/fail.
++                print(
++                    f"[e2e] node exited {died} after the loading query "
++                    f"(stderr follows)\n{n.err_path.read_text(errors='replace')}",
++                    file=sys.stderr,
++                )
++        finally:
++            n.stop()
++
++    def test_stubbed_ok_and_bad_tlsa_still_enforced_in_policy(self):
++        # Seeding a fetched zone into an isolated node is out of scope; the
++        # verifier policy itself is still checked here against synthetic bodies.
++        def fetch_ok():
++            return ("ok", OK_TLSA)
++
++        def fetch_bad():
++            return ("ok", BAD_TLSA)
++
++        def fetch_then_ok():
++            if not hasattr(fetch_then_ok, "n"):
++                fetch_then_ok.n = 0
++            fetch_then_ok.n += 1
++            return ("ok", LOADING_14 if fetch_then_ok.n == 1 else OK_TLSA)
++
++        t = [0.0]
++
++        def sleep(s):
++            t[0] += s
++
++        self.assertEqual(
++            wait_for_tlsa(fetch_ok, LEAF_SPKI, sleep=sleep, clock=lambda: t[0]),
++            "match",
++        )
++        t[0] = 0.0
++        self.assertEqual(
++            wait_for_tlsa(fetch_bad, LEAF_SPKI, sleep=sleep, clock=lambda: t[0]),
++            "fail",
++        )
++        t[0] = 0.0
++        self.assertEqual(
++            wait_for_tlsa(fetch_then_ok, LEAF_SPKI, sleep=sleep, clock=lambda: t[0]),
++            "match",
++        )
++        self.assertEqual(_spki_sha256_hex(LEAF_SPKI), OK_TLSA["data"])
++
++
++
++if __name__ == "__main__":
++    if not NODE:
++        sys.stderr.write(
++            "test_lazy_node_e2e: SKIP — set GREATDANE_NODE to the built binary\n"
++        )
++        sys.exit(0)
++    if not _in_private_netns():
++        sys.stderr.write(
++            "test_lazy_node_e2e: refusing to run outside a private netns\n"
++            "  unshare -Urn -- sh -c 'ip link set lo up && "
++            "GREATDANE_NODE=... python3 test_lazy_node_e2e.py'\n"
++        )
++        sys.exit(1)
++    unittest.main(verbosity=2)
+diff --git a/security/manager/ssl/SSLServerCertVerification.cpp b/security/manager/ssl/SSLServerCertVerification.cpp
+index 664ca72..5763aac 100644
+--- a/security/manager/ssl/SSLServerCertVerification.cpp
++++ b/security/manager/ssl/SSLServerCertVerification.cpp
+@@ -795,7 +795,9 @@ SECStatus SSLServerCertVerificationJob::Dispatch(
+ // "loading", or SERVFAIL plus EDE 14 / 22) is retried until
+ // greatdane.node.lazyTimeoutSec, sleeping retry_ms (default 1000) between
+ // attempts, and on timeout fails as a retryable I/O timeout — never as
+-// key pinning. Names/validity are ignored, as RFC 7671 says for EE.
++// key pinning. no_tlsa is a definitive node answer (the node decides
++// after 2 peers); EDE 22 stays retryable and is never treated as no_tlsa.
++// Names/validity are ignored, as RFC 7671 says for EE.
+ enum class GreatDANEVerdict { NotChain, Match, Fail, Loading };
+ 
+ // RFC 8914: 14 = Not Ready (fetch in flight), 22 = fetch failed / retrying.
