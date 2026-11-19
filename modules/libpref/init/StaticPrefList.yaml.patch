@@ -1,7 +1,15 @@
-# Apply on top of the Firefox tree's modules/libpref/init/StaticPrefList.yaml
-# (sha256 ee74e0dce6aa309c088dd92f4ead119946a306e1032403fb99db692581e5aa03 in the dane-linux/src tree used for this branch).
-# This overlay does not vendor the 20k-line yaml; apply this patch when
-# building. Defaults: greatdane.node.lazy=false, lazyTimeoutSec=10, mirror:always.
+# Apply to a Firefox tree with:
+#   greatdane/tools/apply-greatdane-static-prefs.sh <firefox-src>
+# This overlay does not vendor the 20k-line yaml. The apply script fails
+# loudly if the prefs or moz.build pref_groups entry are missing afterwards.
+# Base yaml sha256 ee74e0dce6aa309c088dd92f4ead119946a306e1032403fb99db692581e5aa03
+# (dane-linux/src at the tree used for this branch).
+# Naming: keep greatdane.node.lazy / greatdane.node.lazyTimeoutSec (internal
+# greatdane.* names). The "greatdane" pref group is added in moz.build.patch
+# so StaticPrefs_greatdane.h is generated and exported.
+# Types are RelaxedAtomic* because the TLS verifier reads them off the
+# main thread (mirror: always). Defaults: false, 10. C++ still clamps
+# lazyTimeoutSec to [1, 60].
 #
 --- a/modules/libpref/init/StaticPrefList.yaml
 +++ b/modules/libpref/init/StaticPrefList.yaml
@@ -18,14 +26,14 @@
 +# thread (Preferences::Get* is main-thread-only and would assert/crash).
 +# Defaults are owned here; do not also pref() them in firefox.js.
 +- name: greatdane.node.lazy
-+  type: bool
++  type: RelaxedAtomicBool
 +  value: false
 +  mirror: always
 +
 +# Bounded wait (seconds) for a cold zone fetch. The C++ verifier still
 +# clamps this to [1, 60].
 +- name: greatdane.node.lazyTimeoutSec
-+  type: int32_t
++  type: RelaxedAtomicInt32
 +  value: 10
 +  mirror: always
 +

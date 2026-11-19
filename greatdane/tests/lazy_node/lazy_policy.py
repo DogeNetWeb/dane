@@ -42,12 +42,32 @@ def lazy_node_env(data_dir, enabled=True):
 
 
 # TEST ONLY. Pref greatdane.node.lazyAllowPreActivation (default false)
-# and env GREATDANE_LAZY_ALLOW_PRE_ACTIVATION=1. Never enable for users.
+# and env GREATDANE_LAZY_ALLOW_PRE_ACTIVATION=1. The env is read only
+# by these Python tests (a stand-in for the hook itself). In the
+# product, GreatDANE.allowPreActivation() honours the pref only when
+# Cu.isInAutomation is true; otherwise it is ignored, logged, and
+# shown on about:dane. Never enable for users.
 def env_allow_pre_activation(explicit=None):
     if explicit is not None:
         return bool(explicit)
     v = os.environ.get("GREATDANE_LAZY_ALLOW_PRE_ACTIVATION", "")
     return v.lower() in ("1", "true", "yes")
+
+
+def pre_activation_honoured(pref_on, in_automation=False):
+    """Mirrors GreatDANE.allowPreActivation(): pref AND automation."""
+    return bool(pref_on) and bool(in_automation)
+
+
+def pre_activation_status(pref_on, in_automation=False):
+    """Mirrors GreatDANE.preActivationStatus() (about:dane banner)."""
+    if not pref_on:
+        return {"on": False, "honoured": False, "text": ""}
+    if in_automation:
+        return {"on": True, "honoured": True,
+                "text": "TEST ONLY: lazyAllowPreActivation is on and honoured (automation)."}
+    return {"on": True, "honoured": False,
+            "text": "TEST ONLY: lazyAllowPreActivation is set in this profile but ignored (not in automation)."}
 
 
 def activation_floor_ok(st, allow_pre=False):
@@ -69,12 +89,15 @@ def best_known_ok(st):
 
 
 def full_namespace_synced(st):
-    """Mirrors GreatDANE.fullNamespaceSynced (full mode and lazy fallback)."""
+    """Mirrors GreatDANE.fullNamespaceSynced (full mode and lazy fallback).
+
+    Activation floor, then peer_height (if > 0) or passes >= 1.
+    Must not consult best_known_height (unvalidated, never-decreasing;
+    a hostile tip must not stall non-lazy mode).
+    """
     if not isinstance(st, dict):
         return False
     if not activation_floor_ok(st, False):
-        return False
-    if not best_known_ok(st):
         return False
     peer = st.get("peer_height") or 0
     if peer > 0:
@@ -86,10 +109,14 @@ def lazy_namespace_synced(st, allow_pre_activation=None):
     """Mirrors GreatDANE.lazyNamespaceSynced (lazy mode _synced).
 
     Follows the live namespace_synced flag; never latches. Restores the
-    height >= activation floor unless the test-only override is on.
-    Fallback for a missing flag matches full mode (floor + passes >= 1
-    or peer catch-up). Also requires height+2 >= best_known_height when
-    that field is present and > 0.
+    height >= activation floor unless the test-only override is on
+    (callers pass allow_pre_activation=True only to model the hook;
+    the product honours it only under automation).
+    height+2 >= best_known_height applies only when
+    namespace_sync_basis == "offline", matching the node's ns_offline
+    rule. Online (peers) lazy and full mode ignore that field so a
+    hostile tip cannot stall them. A missing flag uses the full-mode
+    rule (floor + passes >= 1 or peer catch-up).
     """
     if not isinstance(st, dict):
         return False
@@ -99,7 +126,7 @@ def lazy_namespace_synced(st, allow_pre_activation=None):
         allow = bool(allow_pre_activation)
     if not activation_floor_ok(st, allow):
         return False
-    if not best_known_ok(st):
+    if st.get("namespace_sync_basis") == "offline" and not best_known_ok(st):
         return False
     flag = st.get("namespace_synced")
     if isinstance(flag, bool):

@@ -26,12 +26,23 @@ a real mesh node.
   `zones_loading`, `zones_failed`, `namespace_sync_basis`
   (`peers`/`offline`/`none`), and `best_known_height`. In lazy mode
   Dane follows the live `namespace_synced` flag and does not latch it.
-  Lazy mode also restores the height >= activation floor (a test-only
-  pref/env, `greatdane.node.lazyAllowPreActivation` /
-  `GREATDANE_LAZY_ALLOW_PRE_ACTIVATION`, default off, is required for a
-  pre-activation fixture). A missing flag uses the full-mode rule
-  (`passes >= 1` and the same floor). `best_known_height`, when present
-  and > 0, must satisfy height+2 >= that tip.
+  Lazy mode also restores the height >= activation floor. The
+  test-only pref `greatdane.node.lazyAllowPreActivation` (default off)
+  is honoured only under automation (`Cu.isInAutomation`); if set
+  outside automation it is ignored, logged, and shown on about:dane.
+  The env alias `GREATDANE_LAZY_ALLOW_PRE_ACTIVATION` is for these
+  Python tests only. A missing `namespace_synced` flag uses the
+  full-mode rule (`passes >= 1` and the same floor). `best_known_height`
+  is applied only in lazy mode when `namespace_sync_basis` is
+  `offline` (`height+2 >=` that tip). Full mode and online (peers)
+  lazy ignore it, so a hostile high-water mark cannot stall them.
+- Static prefs `greatdane.node.lazy` and
+  `greatdane.node.lazyTimeoutSec` (RelaxedAtomicBool /
+  RelaxedAtomicInt32, mirror: always) plus the `greatdane` entry in
+  `modules/libpref/moz.build` `pref_groups` are applied to a Firefox
+  tree with `greatdane/tools/apply-greatdane-static-prefs.sh`. The
+  script fails loudly if the patches do not apply or the result is
+  missing the prefs / group. Names stay under `greatdane.*`.
 - `/gd/names` is unchanged and works from the namespace alone.
 
 Run: `python3 test_lazy_node.py` (binds 127.0.0.1 only).

@@ -47,6 +47,8 @@ from lazy_policy import (
     is_proxy_loading,
     loading_retry_sec,
     full_namespace_synced,
+    pre_activation_honoured,
+    pre_activation_status,
     lazy_mode_active,
     lazy_namespace_synced,
     lazy_node_args,
@@ -193,11 +195,14 @@ class PolicyConstantsTests(unittest.TestCase):
         self.assertTrue(lazy_namespace_synced(peers))
         self.assertEqual(namespace_sync_cell(peers, "ready"), "ready (peers)")
 
-        # best_known_height present and ahead of us: not synced, even if
-        # the node flag is true and we are past activation.
-        stale = dict(peers, height=1_130_000, best_known_height=2_000_000,
-                     namespace_synced=True)
+        # Offline basis + a best_known_height far ahead: not synced,
+        # even if the node flag is true and we are past activation.
+        stale = dict(at_tip, height=1_130_000, best_known_height=2_000_000,
+                     namespace_synced=True, namespace_sync_basis="offline")
         self.assertFalse(lazy_namespace_synced(stale))
+        # Same heights, best_known within +2: still ok.
+        self.assertTrue(lazy_namespace_synced(
+            dict(stale, best_known_height=1_130_002)))
 
         # Missing flag: identical to full mode (floor + passes>=1 / peers).
         self.assertFalse(lazy_namespace_synced({"height": 0, "peer_height": 0}))
@@ -218,6 +223,59 @@ class PolicyConstantsTests(unittest.TestCase):
             {"height": 100, "activation": 1000, "passes": 1}), False)
         self.assertEqual(peer_best_cell({}), "- / -")
         self.assertEqual(namespace_sync_cell({}, "ready"), "ready")
+
+    def test_hostile_best_known_height_does_not_stall_full_or_online_lazy(self):
+        # F3: a one-shot, unvalidated, never-decreasing best_known_height
+        # must not become a permanent "still syncing" block in full mode
+        # or in online (peers) lazy mode.
+        hostile = 2_000_000_000
+        full = {
+            "height": 1_130_000,
+            "activation": 1_130_000,
+            "peer_height": 1_130_000,
+            "passes": 1,
+            "best_known_height": hostile,
+        }
+        self.assertTrue(full_namespace_synced(full),
+                        "full mode ignores best_known_height")
+        # Full-mode fallback (no namespace_synced flag) is the same rule.
+        self.assertTrue(lazy_namespace_synced(full),
+                        "lazy fallback to full mode also ignores it")
+
+        online = {
+            "height": 1_130_000,
+            "activation": 1_130_000,
+            "peer_height": 1_130_000,
+            "passes": 1,
+            "namespace_synced": True,
+            "namespace_sync_basis": "peers",
+            "best_known_height": hostile,
+        }
+        self.assertTrue(lazy_namespace_synced(online),
+                        "online lazy (basis=peers) ignores best_known_height")
+
+        # Offline lazy still applies the node's ns_offline check.
+        offline = dict(online, namespace_sync_basis="offline", peer_height=0)
+        self.assertFalse(lazy_namespace_synced(offline),
+                         "offline lazy still requires height+2 >= best_known")
+        self.assertTrue(lazy_namespace_synced(
+            dict(offline, best_known_height=1_130_000)))
+
+    def test_pre_activation_override_is_automation_only(self):
+        # F5: the pref does nothing unless we are in automation.
+        self.assertFalse(pre_activation_honoured(False, False))
+        self.assertFalse(pre_activation_honoured(False, True))
+        self.assertFalse(pre_activation_honoured(True, False))
+        self.assertTrue(pre_activation_honoured(True, True))
+        ignored = pre_activation_status(True, False)
+        self.assertTrue(ignored["on"])
+        self.assertFalse(ignored["honoured"])
+        self.assertIn("ignored", ignored["text"])
+        self.assertIn("not in automation", ignored["text"])
+        honoured = pre_activation_status(True, True)
+        self.assertTrue(honoured["honoured"])
+        self.assertIn("honoured", honoured["text"])
+        self.assertEqual(pre_activation_status(False, True)["text"], "")
 
     def test_lazy_rules_follow_spawned_mode_not_live_pref(self):
         # M3: a running non-lazy node must not pick up lazy rules just because

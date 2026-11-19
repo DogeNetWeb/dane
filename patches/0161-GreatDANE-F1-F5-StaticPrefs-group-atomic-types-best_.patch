@@ -1,0 +1,715 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: nowon <nowon@noreply.pepecoin.surf>
+Date: Wed, 18 Nov 2026 20:00:07 -0600
+Subject: [PATCH 161/162] GreatDANE: F1-F5 StaticPrefs group, atomic types,
+ best_known, apply script
+
+F1: keep greatdane.node.lazy / lazyTimeoutSec and add "greatdane" to
+pref_groups (moz.build.patch) so StaticPrefs_greatdane.h is generated
+and exported. Least invasive way to keep internal greatdane.* names.
+F2: RelaxedAtomicBool / RelaxedAtomicInt32; the C++ [1, 60] clamp is
+unchanged.
+F3: drop bestKnownOk from full mode; lazy applies height+2 >=
+best_known_height only when namespace_sync_basis === "offline". Tests
+prove a hostile tip does not stall full mode or online-lazy.
+F4: drop the .inc.yaml fragment. apply-greatdane-static-prefs.sh
+applies the yaml + moz.build patches to a Firefox tree and fails
+loudly if the result is missing the prefs or group. A stub test
+dry-runs --check on the real tree and applies to a temp copy.
+F5: honour lazyAllowPreActivation only under Cu.isInAutomation; if
+the pref is set outside automation it is ignored, logged, and shown
+on about:dane.
+
+M2, M4 and M5 stay deferred (no mach). Local only, not pushed.
+---
+ browser/app/profile/firefox.js                |  16 ++-
+ .../components/greatdane/GreatDANE.sys.mjs    |  69 +++++++---
+ .../greatdane/GreatDANEAbout.sys.mjs          |  13 +-
+ greatdane/tests/lazy_node/README.md           |  23 +++-
+ greatdane/tests/lazy_node/lazy_policy.py      |  45 +++++--
+ greatdane/tests/lazy_node/test_lazy_node.py   |  66 +++++++++-
+ .../lazy_node/test_static_prefs_patch.py      | 119 ++++++++++++++++++
+ .../tools/apply-greatdane-static-prefs.sh     |  52 ++++++++
+ .../StaticPrefList-greatdane-node.inc.yaml    |  22 ----
+ .../libpref/init/StaticPrefList.yaml.patch    |  20 ++-
+ modules/libpref/moz.build.patch               |  15 +++
+ .../manager/ssl/SSLServerCertVerification.cpp |   4 +
+ 12 files changed, 396 insertions(+), 68 deletions(-)
+ create mode 100644 greatdane/tests/lazy_node/test_static_prefs_patch.py
+ create mode 100755 greatdane/tools/apply-greatdane-static-prefs.sh
+ delete mode 100644 modules/libpref/init/StaticPrefList-greatdane-node.inc.yaml
+ create mode 100644 modules/libpref/moz.build.patch
+
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+index c26a550..4a9670f 100644
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -3646,14 +3646,20 @@ pref("greatdane.node.dataDir", "");
+ // the node's defaults.
+ // Defaults for greatdane.node.lazy (false) and
+ // greatdane.node.lazyTimeoutSec (10) live in
+-// modules/libpref/init/StaticPrefList.yaml (mirror: always) so the
+-// TLS verifier can read them off the cert thread. Do not pref() them
+-// here with different values. JS can still read them via Services.prefs.
++// modules/libpref/init/StaticPrefList.yaml (mirror: always,
++// RelaxedAtomicBool / RelaxedAtomicInt32) so the TLS verifier can
++// read them off the cert thread. Apply those yaml + moz.build
++// ("greatdane" pref group) patches with
++// greatdane/tools/apply-greatdane-static-prefs.sh <firefox-src>.
++// Do not pref() them here with different values. JS can still read
++// them via Services.prefs.
+ // TEST ONLY, default off. Lets lazy mode treat a pre-activation
+ // namespace_synced fixture (height > 0 but height < activation) as
+-// synced. Never enable for users. An env alias,
++// synced. Honoured only under automation (Cu.isInAutomation). If the
++// pref is set outside automation it is ignored, logged, and shown on
++// about:dane. Never enable for users. An env alias,
+ // GREATDANE_LAZY_ALLOW_PRE_ACTIVATION, exists for the Python policy
+-// tests only.
++// tests only (those tests are themselves automation).
+ pref("greatdane.node.lazyAllowPreActivation", false);
+ // Per-chain node on/off (Dane settings pane). Off = that TLD fails closed.
+ pref("greatdane.pep.enabled", true);
+diff --git a/browser/components/greatdane/GreatDANE.sys.mjs b/browser/components/greatdane/GreatDANE.sys.mjs
+index 99b190e..489d665 100644
+--- a/browser/components/greatdane/GreatDANE.sys.mjs
++++ b/browser/components/greatdane/GreatDANE.sys.mjs
+@@ -71,29 +71,74 @@ export function bestKnownOk(st) {
+ }
+ 
+ // Full-mode sync rule, also used as the fallback when a lazy node omits
+-// namespace_synced. Never weaker than full mode.
++// namespace_synced. Identical to the pre-lazy rule: activation floor,
++// then peer_height (if > 0) or sync passes >= 1. Must NOT consult
++// best_known_height — that field is an unvalidated, never-decreasing
++// high-water mark (one hostile peer tip would stall every chain name).
+ export function fullNamespaceSynced(st) {
+   if (!st || typeof st != "object") return false;
+   if (!activationFloorOk(st, false)) return false;
+-  if (!bestKnownOk(st)) return false;
+   if (st.peer_height > 0) return st.height + 2 >= st.peer_height;
+   return st.passes >= 1;
+ }
+ 
+ // Live lazy-mode sync decision (never latched). Follows the node's
+-// namespace_synced flag when present, plus the activation floor and
+-// best_known_height check. The test-only allowPreActivation override
+-// (greatdane.node.lazyAllowPreActivation / GREATDANE_LAZY_ALLOW_PRE_ACTIVATION)
+-// is the only way to accept a fixture tip below activation. Older nodes
+-// that omit the flag use the full-mode rule.
++// namespace_synced flag when present, plus the activation floor.
++// height+2 >= best_known_height applies only when the node itself
++// used the offline rule (namespace_sync_basis === "offline"), matching
++// the node's ns_offline check. Online (peers) lazy and full mode
++// ignore best_known_height so a hostile tip cannot stall them.
++// The test-only allowPreActivation override is honoured only under
++// automation (see allowPreActivation()). Older nodes that omit
++// namespace_synced use the full-mode rule.
+ export function lazyNamespaceSynced(st, { allowPreActivation = false } = {}) {
+   if (!st || typeof st != "object") return false;
+   if (!activationFloorOk(st, allowPreActivation)) return false;
+-  if (!bestKnownOk(st)) return false;
++  if (st.namespace_sync_basis === "offline" && !bestKnownOk(st)) return false;
+   if (typeof st.namespace_synced == "boolean") return st.namespace_synced;
+   return fullNamespaceSynced(st);
+ }
+ 
++// ChromeUtils / Cu is a global in this module. Honour the test-only
++// pre-activation override only under automation. If a profile sets the
++// pref outside automation it is ignored, logged, and shown on about:dane.
++export function inAutomation() {
++  try {
++    return Cu.isInAutomation === true;
++  } catch (e) {
++    return false;
++  }
++}
++
++export function preActivationPrefOn() {
++  try {
++    return Services.prefs.getBoolPref(PREF + "node.lazyAllowPreActivation", false);
++  } catch (e) {
++    return false;
++  }
++}
++
++// { on, honoured, text } for about:dane and tests.
++export function preActivationStatus() {
++  let on = preActivationPrefOn();
++  let auto = inAutomation();
++  if (!on) return { on: false, honoured: false, text: "" };
++  if (auto) {
++    return { on: true, honoured: true,
++      text: "TEST ONLY: lazyAllowPreActivation is on and honoured (automation)." };
++  }
++  return { on: true, honoured: false,
++    text: "TEST ONLY: lazyAllowPreActivation is set in this profile but ignored (not in automation)." };
++}
++
++export function allowPreActivation() {
++  let st = preActivationStatus();
++  if (st.on && !st.honoured) {
++    console.warn("GreatDANE: " + st.text);
++  }
++  return st.honoured;
++}
++
+ 
+ export function lazyTimeoutSec() {
+   let s = Services.prefs.getIntPref(PREF + "node.lazyTimeoutSec", DEFAULT_LAZY_TIMEOUT_SEC);
+@@ -167,13 +212,9 @@ export const GreatDANE = {
+     return Services.prefs.getBoolPref(PREF + "node.lazy", false);
+   },
+ 
+-  // TEST ONLY. Default false. See greatdane.node.lazyAllowPreActivation.
++  // TEST ONLY. Honoured only under automation (Cu.isInAutomation).
+   _allowPreActivation() {
+-    try {
+-      return Services.prefs.getBoolPref(PREF + "node.lazyAllowPreActivation", false);
+-    } catch (e) {
+-      return false;
+-    }
++    return allowPreActivation();
+   },
+ 
+   // Gate lazy sync rules on the mode this chain was actually started in
+diff --git a/browser/components/greatdane/GreatDANEAbout.sys.mjs b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+index f648357..8b6d315 100644
+--- a/browser/components/greatdane/GreatDANEAbout.sys.mjs
++++ b/browser/components/greatdane/GreatDANEAbout.sys.mjs
+@@ -3,7 +3,7 @@
+  * The page is generated in the parent, has no script and no override
+  * button; it meta-refreshes and auto-continues once the chain is usable. */
+ 
+-import { GreatDANE, TLSA_STATUS_LOADING, lazyTimeoutSec } from "resource:///modules/GreatDANE.sys.mjs";
++import { GreatDANE, TLSA_STATUS_LOADING, lazyTimeoutSec, preActivationStatus } from "resource:///modules/GreatDANE.sys.mjs";
+ 
+ const CID = Components.ID("{6d1b6f0e-5a7e-4f43-9e64-2f1c3c0de6a1}");
+ const CONTRACT = "@mozilla.org/network/protocol/about;1?what=greatdane";
+@@ -175,6 +175,15 @@ function chainRows() {
+   return rows;
+ }
+ 
++// Shown on about:dane whenever the test-only override pref is set,
++// whether or not it is honoured (automation-only).
++export function preActivationBanner() {
++  let st = preActivationStatus();
++  if (!st.on) return "";
++  let cls = st.honoured ? "syncing" : "down";
++  return `<p class="${cls} code">${esc(st.text)}</p>`;
++}
++
+ export function _render(uri) {
+   let q = new URLSearchParams(uri.query || "");
+   let code = q.get("e");
+@@ -218,7 +227,7 @@ table{border-collapse:collapse;width:100%}td,th{padding:6px 8px;border-bottom:1p
+ .ready{color:#6f6}.syncing{color:#fc4}.starting,.down{color:#f66}</style></head><body>
+ ${box}<h2>Chains</h2><table><tr><th>Chain</th><th>Node</th><th>Height</th><th>Peer / best known</th>
+ <th>PepeNet / known peers</th><th>Passes</th><th>DANE ok / fail</th><th>Port</th><th>Listen</th><th>Up</th><th>Restarts</th></tr>
+-${chainRows()}</table><p class="code">Updates every ${refresh} s.</p></body></html>`;
++${chainRows()}</table>${preActivationBanner()}<p class="code">Updates every ${refresh} s.</p></body></html>`;
+ }
+ 
+ const AboutGreatDANE = {
+diff --git a/greatdane/tests/lazy_node/README.md b/greatdane/tests/lazy_node/README.md
+index bfdd47d..40cda02 100644
+--- a/greatdane/tests/lazy_node/README.md
++++ b/greatdane/tests/lazy_node/README.md
+@@ -26,12 +26,23 @@ a real mesh node.
+   `zones_loading`, `zones_failed`, `namespace_sync_basis`
+   (`peers`/`offline`/`none`), and `best_known_height`. In lazy mode
+   Dane follows the live `namespace_synced` flag and does not latch it.
+-  Lazy mode also restores the height >= activation floor (a test-only
+-  pref/env, `greatdane.node.lazyAllowPreActivation` /
+-  `GREATDANE_LAZY_ALLOW_PRE_ACTIVATION`, default off, is required for a
+-  pre-activation fixture). A missing flag uses the full-mode rule
+-  (`passes >= 1` and the same floor). `best_known_height`, when present
+-  and > 0, must satisfy height+2 >= that tip.
++  Lazy mode also restores the height >= activation floor. The
++  test-only pref `greatdane.node.lazyAllowPreActivation` (default off)
++  is honoured only under automation (`Cu.isInAutomation`); if set
++  outside automation it is ignored, logged, and shown on about:dane.
++  The env alias `GREATDANE_LAZY_ALLOW_PRE_ACTIVATION` is for these
++  Python tests only. A missing `namespace_synced` flag uses the
++  full-mode rule (`passes >= 1` and the same floor). `best_known_height`
++  is applied only in lazy mode when `namespace_sync_basis` is
++  `offline` (`height+2 >=` that tip). Full mode and online (peers)
++  lazy ignore it, so a hostile high-water mark cannot stall them.
++- Static prefs `greatdane.node.lazy` and
++  `greatdane.node.lazyTimeoutSec` (RelaxedAtomicBool /
++  RelaxedAtomicInt32, mirror: always) plus the `greatdane` entry in
++  `modules/libpref/moz.build` `pref_groups` are applied to a Firefox
++  tree with `greatdane/tools/apply-greatdane-static-prefs.sh`. The
++  script fails loudly if the patches do not apply or the result is
++  missing the prefs / group. Names stay under `greatdane.*`.
+ - `/gd/names` is unchanged and works from the namespace alone.
+ 
+ Run: `python3 test_lazy_node.py` (binds 127.0.0.1 only).
+diff --git a/greatdane/tests/lazy_node/lazy_policy.py b/greatdane/tests/lazy_node/lazy_policy.py
+index 770a70e..af5c1db 100644
+--- a/greatdane/tests/lazy_node/lazy_policy.py
++++ b/greatdane/tests/lazy_node/lazy_policy.py
+@@ -42,7 +42,11 @@ def lazy_node_env(data_dir, enabled=True):
+ 
+ 
+ # TEST ONLY. Pref greatdane.node.lazyAllowPreActivation (default false)
+-# and env GREATDANE_LAZY_ALLOW_PRE_ACTIVATION=1. Never enable for users.
++# and env GREATDANE_LAZY_ALLOW_PRE_ACTIVATION=1. The env is read only
++# by these Python tests (a stand-in for the hook itself). In the
++# product, GreatDANE.allowPreActivation() honours the pref only when
++# Cu.isInAutomation is true; otherwise it is ignored, logged, and
++# shown on about:dane. Never enable for users.
+ def env_allow_pre_activation(explicit=None):
+     if explicit is not None:
+         return bool(explicit)
+@@ -50,6 +54,22 @@ def env_allow_pre_activation(explicit=None):
+     return v.lower() in ("1", "true", "yes")
+ 
+ 
++def pre_activation_honoured(pref_on, in_automation=False):
++    """Mirrors GreatDANE.allowPreActivation(): pref AND automation."""
++    return bool(pref_on) and bool(in_automation)
++
++
++def pre_activation_status(pref_on, in_automation=False):
++    """Mirrors GreatDANE.preActivationStatus() (about:dane banner)."""
++    if not pref_on:
++        return {"on": False, "honoured": False, "text": ""}
++    if in_automation:
++        return {"on": True, "honoured": True,
++                "text": "TEST ONLY: lazyAllowPreActivation is on and honoured (automation)."}
++    return {"on": True, "honoured": False,
++            "text": "TEST ONLY: lazyAllowPreActivation is set in this profile but ignored (not in automation)."}
++
++
+ def activation_floor_ok(st, allow_pre=False):
+     if not isinstance(st, dict) or not (st.get("height") or 0):
+         return False
+@@ -69,13 +89,16 @@ def best_known_ok(st):
+ 
+ 
+ def full_namespace_synced(st):
+-    """Mirrors GreatDANE.fullNamespaceSynced (full mode and lazy fallback)."""
++    """Mirrors GreatDANE.fullNamespaceSynced (full mode and lazy fallback).
++
++    Activation floor, then peer_height (if > 0) or passes >= 1.
++    Must not consult best_known_height (unvalidated, never-decreasing;
++    a hostile tip must not stall non-lazy mode).
++    """
+     if not isinstance(st, dict):
+         return False
+     if not activation_floor_ok(st, False):
+         return False
+-    if not best_known_ok(st):
+-        return False
+     peer = st.get("peer_height") or 0
+     if peer > 0:
+         return (st.get("height") or 0) + 2 >= peer
+@@ -86,10 +109,14 @@ def lazy_namespace_synced(st, allow_pre_activation=None):
+     """Mirrors GreatDANE.lazyNamespaceSynced (lazy mode _synced).
+ 
+     Follows the live namespace_synced flag; never latches. Restores the
+-    height >= activation floor unless the test-only override is on.
+-    Fallback for a missing flag matches full mode (floor + passes >= 1
+-    or peer catch-up). Also requires height+2 >= best_known_height when
+-    that field is present and > 0.
++    height >= activation floor unless the test-only override is on
++    (callers pass allow_pre_activation=True only to model the hook;
++    the product honours it only under automation).
++    height+2 >= best_known_height applies only when
++    namespace_sync_basis == "offline", matching the node's ns_offline
++    rule. Online (peers) lazy and full mode ignore that field so a
++    hostile tip cannot stall them. A missing flag uses the full-mode
++    rule (floor + passes >= 1 or peer catch-up).
+     """
+     if not isinstance(st, dict):
+         return False
+@@ -99,7 +126,7 @@ def lazy_namespace_synced(st, allow_pre_activation=None):
+         allow = bool(allow_pre_activation)
+     if not activation_floor_ok(st, allow):
+         return False
+-    if not best_known_ok(st):
++    if st.get("namespace_sync_basis") == "offline" and not best_known_ok(st):
+         return False
+     flag = st.get("namespace_synced")
+     if isinstance(flag, bool):
+diff --git a/greatdane/tests/lazy_node/test_lazy_node.py b/greatdane/tests/lazy_node/test_lazy_node.py
+index c749a18..5ba5f64 100755
+--- a/greatdane/tests/lazy_node/test_lazy_node.py
++++ b/greatdane/tests/lazy_node/test_lazy_node.py
+@@ -47,6 +47,8 @@ from lazy_policy import (
+     is_proxy_loading,
+     loading_retry_sec,
+     full_namespace_synced,
++    pre_activation_honoured,
++    pre_activation_status,
+     lazy_mode_active,
+     lazy_namespace_synced,
+     lazy_node_args,
+@@ -193,11 +195,14 @@ class PolicyConstantsTests(unittest.TestCase):
+         self.assertTrue(lazy_namespace_synced(peers))
+         self.assertEqual(namespace_sync_cell(peers, "ready"), "ready (peers)")
+ 
+-        # best_known_height present and ahead of us: not synced, even if
+-        # the node flag is true and we are past activation.
+-        stale = dict(peers, height=1_130_000, best_known_height=2_000_000,
+-                     namespace_synced=True)
++        # Offline basis + a best_known_height far ahead: not synced,
++        # even if the node flag is true and we are past activation.
++        stale = dict(at_tip, height=1_130_000, best_known_height=2_000_000,
++                     namespace_synced=True, namespace_sync_basis="offline")
+         self.assertFalse(lazy_namespace_synced(stale))
++        # Same heights, best_known within +2: still ok.
++        self.assertTrue(lazy_namespace_synced(
++            dict(stale, best_known_height=1_130_002)))
+ 
+         # Missing flag: identical to full mode (floor + passes>=1 / peers).
+         self.assertFalse(lazy_namespace_synced({"height": 0, "peer_height": 0}))
+@@ -219,6 +224,59 @@ class PolicyConstantsTests(unittest.TestCase):
+         self.assertEqual(peer_best_cell({}), "- / -")
+         self.assertEqual(namespace_sync_cell({}, "ready"), "ready")
+ 
++    def test_hostile_best_known_height_does_not_stall_full_or_online_lazy(self):
++        # F3: a one-shot, unvalidated, never-decreasing best_known_height
++        # must not become a permanent "still syncing" block in full mode
++        # or in online (peers) lazy mode.
++        hostile = 2_000_000_000
++        full = {
++            "height": 1_130_000,
++            "activation": 1_130_000,
++            "peer_height": 1_130_000,
++            "passes": 1,
++            "best_known_height": hostile,
++        }
++        self.assertTrue(full_namespace_synced(full),
++                        "full mode ignores best_known_height")
++        # Full-mode fallback (no namespace_synced flag) is the same rule.
++        self.assertTrue(lazy_namespace_synced(full),
++                        "lazy fallback to full mode also ignores it")
++
++        online = {
++            "height": 1_130_000,
++            "activation": 1_130_000,
++            "peer_height": 1_130_000,
++            "passes": 1,
++            "namespace_synced": True,
++            "namespace_sync_basis": "peers",
++            "best_known_height": hostile,
++        }
++        self.assertTrue(lazy_namespace_synced(online),
++                        "online lazy (basis=peers) ignores best_known_height")
++
++        # Offline lazy still applies the node's ns_offline check.
++        offline = dict(online, namespace_sync_basis="offline", peer_height=0)
++        self.assertFalse(lazy_namespace_synced(offline),
++                         "offline lazy still requires height+2 >= best_known")
++        self.assertTrue(lazy_namespace_synced(
++            dict(offline, best_known_height=1_130_000)))
++
++    def test_pre_activation_override_is_automation_only(self):
++        # F5: the pref does nothing unless we are in automation.
++        self.assertFalse(pre_activation_honoured(False, False))
++        self.assertFalse(pre_activation_honoured(False, True))
++        self.assertFalse(pre_activation_honoured(True, False))
++        self.assertTrue(pre_activation_honoured(True, True))
++        ignored = pre_activation_status(True, False)
++        self.assertTrue(ignored["on"])
++        self.assertFalse(ignored["honoured"])
++        self.assertIn("ignored", ignored["text"])
++        self.assertIn("not in automation", ignored["text"])
++        honoured = pre_activation_status(True, True)
++        self.assertTrue(honoured["honoured"])
++        self.assertIn("honoured", honoured["text"])
++        self.assertEqual(pre_activation_status(False, True)["text"], "")
++
+     def test_lazy_rules_follow_spawned_mode_not_live_pref(self):
+         # M3: a running non-lazy node must not pick up lazy rules just because
+         # the live pref flipped; a running lazy node keeps lazy rules.
+diff --git a/greatdane/tests/lazy_node/test_static_prefs_patch.py b/greatdane/tests/lazy_node/test_static_prefs_patch.py
+new file mode 100644
+index 0000000..8451df0
+--- /dev/null
++++ b/greatdane/tests/lazy_node/test_static_prefs_patch.py
+@@ -0,0 +1,119 @@
++#!/usr/bin/env python3
++"""F1/F2/F4: the StaticPrefs patches must be complete, atomic-typed,
++apply to the real Firefox tree, and fail loudly if they are not applied.
++Never writes to the Firefox source tree; applies only to a temp copy."""
++from __future__ import annotations
++
++import os
++import shutil
++import subprocess
++import tempfile
++import unittest
++from pathlib import Path
++
++HERE = Path(__file__).resolve().parent
++REPO = HERE.parents[2]
++YP = REPO / "modules/libpref/init/StaticPrefList.yaml.patch"
++MP = REPO / "modules/libpref/moz.build.patch"
++INC = REPO / "modules/libpref/init/StaticPrefList-greatdane-node.inc.yaml"
++APPLY = REPO / "greatdane/tools/apply-greatdane-static-prefs.sh"
++SSL = REPO / "security/manager/ssl/SSLServerCertVerification.cpp"
++DEFAULT_FIREFOX_SRC = Path("/workspace/dane-linux/src")
++
++
++def firefox_src():
++    env = os.environ.get("GREATDANE_FIREFOX_SRC")
++    p = Path(env) if env else DEFAULT_FIREFOX_SRC
++    yaml = p / "modules/libpref/init/StaticPrefList.yaml"
++    moz = p / "modules/libpref/moz.build"
++    if yaml.is_file() and moz.is_file():
++        return p
++    return None
++
++
++class TestStaticPrefsPatch(unittest.TestCase):
++    def test_inc_yaml_fragment_is_gone(self):
++        self.assertFalse(INC.exists(), "F4: drop the .inc.yaml fragment")
++
++    def test_patches_and_apply_script_exist(self):
++        self.assertTrue(YP.is_file(), YP)
++        self.assertTrue(MP.is_file(), MP)
++        self.assertTrue(APPLY.is_file() and os.access(APPLY, os.X_OK), APPLY)
++
++    def test_pref_names_stay_greatdane_and_types_are_atomic(self):
++        # F1 naming: keep internal greatdane.* names; add the group in
++        # moz.build rather than renaming into security.greatdane.*.
++        yp = YP.read_text()
++        self.assertIn("name: greatdane.node.lazy", yp)
++        self.assertIn("name: greatdane.node.lazyTimeoutSec", yp)
++        self.assertIn("type: RelaxedAtomicBool", yp)
++        self.assertIn("type: RelaxedAtomicInt32", yp)
++        # The new entries must not use the non-atomic types that
++        # MOZ_DIAGNOSTIC_ASSERT against off the main thread.
++        after_lazy = yp.split("name: greatdane.node.lazy", 1)[1]
++        first_type = [ln for ln in after_lazy.splitlines() if "type:" in ln][0]
++        self.assertIn("RelaxedAtomicBool", first_type)
++        after_to = yp.split("name: greatdane.node.lazyTimeoutSec", 1)[1]
++        first_to = [ln for ln in after_to.splitlines() if "type:" in ln][0]
++        self.assertIn("RelaxedAtomicInt32", first_to)
++        self.assertNotIn("security.greatdane.node_lazy", yp)
++        mp = MP.read_text()
++        self.assertIn('"greatdane"', mp)
++        ssl = SSL.read_text()
++        self.assertIn('StaticPrefs_greatdane.h', ssl)
++        self.assertIn("StaticPrefs::greatdane_node_lazy()", ssl)
++        self.assertIn("StaticPrefs::greatdane_node_lazyTimeoutSec()", ssl)
++        self.assertNotIn("Preferences::GetBool", ssl)
++        self.assertNotIn("Preferences::GetInt", ssl)
++
++    def test_apply_script_check_and_temp_apply_fail_loudly(self):
++        src = firefox_src()
++        if src is None:
++            self.skipTest("no Firefox tree (set GREATDANE_FIREFOX_SRC)")
++        # --check must not write.
++        r = subprocess.run(
++            [str(APPLY), "--check", str(src)],
++            check=False, capture_output=True, text=True,
++        )
++        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
++        self.assertIn("check OK", r.stdout)
++
++        td = Path(tempfile.mkdtemp(prefix="gd-static-prefs-"))
++        try:
++            (td / "modules/libpref/init").mkdir(parents=True)
++            shutil.copy(src / "modules/libpref/init/StaticPrefList.yaml",
++                        td / "modules/libpref/init/StaticPrefList.yaml")
++            shutil.copy(src / "modules/libpref/moz.build",
++                        td / "modules/libpref/moz.build")
++            subprocess.run(["git", "init", "-q"], cwd=td, check=True,
++                           capture_output=True)
++            r = subprocess.run(
++                [str(APPLY), str(td)],
++                check=False, capture_output=True, text=True,
++            )
++            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
++            yaml = (td / "modules/libpref/init/StaticPrefList.yaml").read_text()
++            moz = (td / "modules/libpref/moz.build").read_text()
++            self.assertIn("name: greatdane.node.lazy", yaml)
++            self.assertIn("name: greatdane.node.lazyTimeoutSec", yaml)
++            self.assertIn("RelaxedAtomicBool", yaml)
++            self.assertIn("RelaxedAtomicInt32", yaml)
++            self.assertIn('"greatdane"', moz)
++
++            # Loud failure if the result is missing a pref (simulate).
++            broken = td / "modules/libpref/init/StaticPrefList.yaml"
++            broken.write_text(yaml.replace("greatdane.node.lazy", "x.node.lazy"))
++            r = subprocess.run(
++                ["sh", "-c",
++                 'grep -q "name: greatdane.node.lazy$" "$1" || '
++                 '{ echo "missing pref" >&2; exit 1; }',
++                 "check", str(broken)],
++                check=False, capture_output=True, text=True,
++            )
++            self.assertNotEqual(r.returncode, 0)
++        finally:
++            shutil.rmtree(td, ignore_errors=True)
++
++
++if __name__ == "__main__":
++    unittest.main(verbosity=2)
+diff --git a/greatdane/tools/apply-greatdane-static-prefs.sh b/greatdane/tools/apply-greatdane-static-prefs.sh
+new file mode 100755
+index 0000000..c8c5283
+--- /dev/null
++++ b/greatdane/tools/apply-greatdane-static-prefs.sh
+@@ -0,0 +1,52 @@
++#!/bin/sh
++# Apply the GreatDANE StaticPrefs patches (greatdane.node.lazy and
++# lazyTimeoutSec, plus the "greatdane" pref_groups entry) to a Firefox
++# source tree. Fails loudly if a patch does not apply or the result
++# does not contain the prefs / group.
++#
++#   apply-greatdane-static-prefs.sh <firefox-src>
++#   apply-greatdane-static-prefs.sh --check <firefox-src>   # no writes
++#
++# This overlay does not vendor StaticPrefList.yaml or moz.build.
++set -eu
++CHECK=
++if [ "${1:-}" = "--check" ]; then
++  CHECK=1
++  shift
++fi
++if [ -z "${1:-}" ] || [ ! -d "$1" ]; then
++  echo "apply-greatdane-static-prefs: usage: $0 [--check] <firefox-src>" >&2
++  exit 2
++fi
++TREE=$(cd "$1" && pwd)
++HERE=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
++YP="$HERE/modules/libpref/init/StaticPrefList.yaml.patch"
++MP="$HERE/modules/libpref/moz.build.patch"
++YAML="$TREE/modules/libpref/init/StaticPrefList.yaml"
++MOZ="$TREE/modules/libpref/moz.build"
++die() { echo "apply-greatdane-static-prefs: $*" >&2; exit 1; }
++[ -f "$YP" ] || die "missing $YP"
++[ -f "$MP" ] || die "missing $MP"
++[ -f "$YAML" ] || die "missing $YAML"
++[ -f "$MOZ" ] || die "missing $MOZ"
++
++if [ -n "$CHECK" ]; then
++  git -C "$TREE" apply --check "$YP" || die "StaticPrefList.yaml.patch does not apply"
++  git -C "$TREE" apply --check "$MP" || die "moz.build.patch does not apply"
++  echo "apply-greatdane-static-prefs: --check OK"
++  exit 0
++fi
++
++git -C "$TREE" apply "$YP" || die "failed to apply StaticPrefList.yaml.patch"
++git -C "$TREE" apply "$MP" || die "failed to apply moz.build.patch"
++
++# Loud post-apply checks (no include mechanism; the generator reads only
++# StaticPrefList.yaml, and headers exist only for pref_groups).
++grep -q 'name: greatdane.node.lazy$' "$YAML" || die "greatdane.node.lazy missing from StaticPrefList.yaml after apply"
++grep -q 'name: greatdane.node.lazyTimeoutSec$' "$YAML" || die "greatdane.node.lazyTimeoutSec missing after apply"
++awk '/name: greatdane.node.lazy$/{n=1} n&&/type:/{print; exit}' "$YAML" | grep -q RelaxedAtomicBool \
++  || die "greatdane.node.lazy must be RelaxedAtomicBool"
++awk '/name: greatdane.node.lazyTimeoutSec$/{n=1} n&&/type:/{print; exit}' "$YAML" | grep -q RelaxedAtomicInt32 \
++  || die "greatdane.node.lazyTimeoutSec must be RelaxedAtomicInt32"
++grep -q '"greatdane"' "$MOZ" || die "pref_groups is missing \"greatdane\" in moz.build after apply"
++echo "apply-greatdane-static-prefs: applied and verified in $TREE"
+diff --git a/modules/libpref/init/StaticPrefList-greatdane-node.inc.yaml b/modules/libpref/init/StaticPrefList-greatdane-node.inc.yaml
+deleted file mode 100644
+index cef2348..0000000
+--- a/modules/libpref/init/StaticPrefList-greatdane-node.inc.yaml
++++ /dev/null
+@@ -1,22 +0,0 @@
+-# Fragment to merge into modules/libpref/init/StaticPrefList.yaml
+-# (after the "gl." section, before "html5."). See StaticPrefList.yaml.patch.
+-#---------------------------------------------------------------------------
+-# Prefs starting with "greatdane."
+-#---------------------------------------------------------------------------
+-
+-# Lazy node: sync only the namespace; fetch a name's DNS zone when a query
+-# arrives, instead of syncing full zones up front. Default off.
+-# These are mirror:always so the TLS verifier can read them off the cert
+-# thread (Preferences::Get* is main-thread-only and would assert/crash).
+-# Defaults are owned here; do not also pref() them in firefox.js.
+-- name: greatdane.node.lazy
+-  type: bool
+-  value: false
+-  mirror: always
+-
+-# Bounded wait (seconds) for a cold zone fetch. The C++ verifier still
+-# clamps this to [1, 60].
+-- name: greatdane.node.lazyTimeoutSec
+-  type: int32_t
+-  value: 10
+-  mirror: always
+diff --git a/modules/libpref/init/StaticPrefList.yaml.patch b/modules/libpref/init/StaticPrefList.yaml.patch
+index 90c3ef2..a436462 100644
+--- a/modules/libpref/init/StaticPrefList.yaml.patch
++++ b/modules/libpref/init/StaticPrefList.yaml.patch
+@@ -1,7 +1,15 @@
+-# Apply on top of the Firefox tree's modules/libpref/init/StaticPrefList.yaml
+-# (sha256 ee74e0dce6aa309c088dd92f4ead119946a306e1032403fb99db692581e5aa03 in the dane-linux/src tree used for this branch).
+-# This overlay does not vendor the 20k-line yaml; apply this patch when
+-# building. Defaults: greatdane.node.lazy=false, lazyTimeoutSec=10, mirror:always.
++# Apply to a Firefox tree with:
++#   greatdane/tools/apply-greatdane-static-prefs.sh <firefox-src>
++# This overlay does not vendor the 20k-line yaml. The apply script fails
++# loudly if the prefs or moz.build pref_groups entry are missing afterwards.
++# Base yaml sha256 ee74e0dce6aa309c088dd92f4ead119946a306e1032403fb99db692581e5aa03
++# (dane-linux/src at the tree used for this branch).
++# Naming: keep greatdane.node.lazy / greatdane.node.lazyTimeoutSec (internal
++# greatdane.* names). The "greatdane" pref group is added in moz.build.patch
++# so StaticPrefs_greatdane.h is generated and exported.
++# Types are RelaxedAtomic* because the TLS verifier reads them off the
++# main thread (mirror: always). Defaults: false, 10. C++ still clamps
++# lazyTimeoutSec to [1, 60].
+ #
+ --- a/modules/libpref/init/StaticPrefList.yaml
+ +++ b/modules/libpref/init/StaticPrefList.yaml
+@@ -18,14 +26,14 @@
+ +# thread (Preferences::Get* is main-thread-only and would assert/crash).
+ +# Defaults are owned here; do not also pref() them in firefox.js.
+ +- name: greatdane.node.lazy
+-+  type: bool
+++  type: RelaxedAtomicBool
+ +  value: false
+ +  mirror: always
+ +
+ +# Bounded wait (seconds) for a cold zone fetch. The C++ verifier still
+ +# clamps this to [1, 60].
+ +- name: greatdane.node.lazyTimeoutSec
+-+  type: int32_t
+++  type: RelaxedAtomicInt32
+ +  value: 10
+ +  mirror: always
+ +
+diff --git a/modules/libpref/moz.build.patch b/modules/libpref/moz.build.patch
+new file mode 100644
+index 0000000..e839999
+--- /dev/null
++++ b/modules/libpref/moz.build.patch
+@@ -0,0 +1,15 @@
++# Apply with greatdane/tools/apply-greatdane-static-prefs.sh <firefox-src>
++# Adds "greatdane" to pref_groups so StaticPrefs_greatdane.h is generated
++# and exported (EXPORTS.mozilla). Moz.build then sorts the list.
++# Base moz.build sha256 79b7b9fdffb590ce828fb127ad15780834e3faa1e3d3228cba7a55a401eb5392
++#
++--- a/modules/libpref/moz.build
+++++ b/modules/libpref/moz.build
++@@ -50,6 +50,7 @@
++     "geo",
++     "gfx",
++     "gl",
+++    "greatdane",
++     "html5",
++     "idle_period",
++     "image",
+diff --git a/security/manager/ssl/SSLServerCertVerification.cpp b/security/manager/ssl/SSLServerCertVerification.cpp
+index 42af7cd..6d0cd12 100644
+--- a/security/manager/ssl/SSLServerCertVerification.cpp
++++ b/security/manager/ssl/SSLServerCertVerification.cpp
+@@ -112,6 +112,10 @@
+ #include "prnetdb.h"
+ #include "mozilla/Assertions.h"
+ #include "mozilla/RefPtr.h"
++// StaticPrefs_greatdane.h is generated because "greatdane" is in
++// modules/libpref/moz.build pref_groups (see moz.build.patch and
++// greatdane/tools/apply-greatdane-static-prefs.sh). Types are
++// RelaxedAtomic* so these getters are safe on the cert thread.
+ #include "mozilla/StaticPrefs_greatdane.h"
+ #include "mozilla/StaticPrefs_security.h"
+ #include "mozilla/TimeStamp.h"

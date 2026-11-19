@@ -1,0 +1,15 @@
+# Apply with greatdane/tools/apply-greatdane-static-prefs.sh <firefox-src>
+# Adds "greatdane" to pref_groups so StaticPrefs_greatdane.h is generated
+# and exported (EXPORTS.mozilla). Moz.build then sorts the list.
+# Base moz.build sha256 79b7b9fdffb590ce828fb127ad15780834e3faa1e3d3228cba7a55a401eb5392
+#
+--- a/modules/libpref/moz.build
++++ b/modules/libpref/moz.build
+@@ -50,6 +50,7 @@
+     "geo",
+     "gfx",
+     "gl",
++    "greatdane",
+     "html5",
+     "idle_period",
+     "image",
