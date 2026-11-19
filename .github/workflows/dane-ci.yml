@@ -103,9 +103,10 @@ jobs:
   # monorepo at 35047fd5c988 ("dnsd: L3 live relays ahead of an
   # anti-entropy catch-up"). Do not overlay DogeNet dns/mesh/indexer
   # trees onto a PepeNet desktop tree (different lineage).
-  # PepeNetWeb/pepenet-dns@f5dd5cea21be is the dns/ subtree replay of
-  # 35047fd, not the monorepo. If 35047fd is not fetchable from the
-  # pinned desktop repo, this job fails (it is not skipped).
+  # The public base is PepeNetWeb/pepenet-desktop branch
+  # keeper/greatdane-node-base-35047fd at 127fda0c5d4f: one commit on
+  # ee4adbc whose tree equals 35047fd minus macOS ._* files.
+  # If the pinned base is not fetchable, this job fails (not skipped).
   greatdane-node:
     name: greatdane-node build
     runs-on: ubuntu-latest
@@ -162,10 +163,10 @@ jobs:
           echo "Verified ${LAZY_PATCH_PATH} sha256 ${GOT_SHA} at ${DOGENET_DNS_COMMIT}"
           cp -a "${PATCH}" "${RUNNER_TEMP}/greatdane-node-lazy-35047fd.patch"
 
-      - name: Fetch 35047fd, apply patch, build greatdane-node
+      - name: Fetch 35047fd-equivalent base, apply patch, build greatdane-node
         env:
           DESKTOP_REPO: ${{ vars.GREATDANE_NODE_REPO || 'https://github.com/PepeNetWeb/pepenet-desktop.git' }}
-          DESKTOP_COMMIT: ${{ vars.GREATDANE_NODE_COMMIT || '35047fd5c988977f944d04a5da7b2f11fe14172a' }}
+          DESKTOP_COMMIT: ${{ vars.GREATDANE_NODE_COMMIT || '127fda0c5d4f923394590e8cde990b0e189e3fc4' }}
           PATCH: ${{ runner.temp }}/greatdane-node-lazy-35047fd.patch
         run: |
           set -euo pipefail
@@ -178,20 +179,9 @@ jobs:
           git -C gdn remote add origin "${REPO_URL}"
           if ! GIT_TERMINAL_PROMPT=0 git -C gdn fetch --depth=1 origin "${DESKTOP_COMMIT}"; then
             echo "Could not fetch ${DESKTOP_COMMIT} from ${REPO_URL}."
-            echo "The official recipe needs the PepeNet desktop monorepo at"
-            echo "35047fd5c988977f944d04a5da7b2f11fe14172a"
-            echo "(\"dnsd: L3 live relays ahead of an anti-entropy catch-up\")."
-            echo "PepeNetWeb/pepenet-desktop currently publishes an older tip"
-            echo "(ee4adbc, no greatdane-node target). PepeNetWeb/pepenet-dns"
-            echo "commit f5dd5cea21be301df93e4117e0546a48922544f9 is the dns/"
-            echo "subtree replay of 35047fd, not the monorepo."
-            echo "DogeNetWeb/dogenet-dns@23f928535890c61cab812728080b7837aae1ebaa,"
-            echo "dogenet-mesh@f17f074f89a0a5a6f93ebcf51a9c586f4918badb, and"
-            echo "namespace-indexer@69217a8a1168b0f9a56d083ca8a12a7fad4b969f"
-            echo "are the public DogeNet lazy-node component tips that ship the"
-            echo "official patch; do not overlay them onto a PepeNet tree."
-            echo "Set repo variable GREATDANE_NODE_REPO (and optionally"
-            echo "GREATDANE_NODE_COMMIT) when the monorepo commit is public."
+            echo "Expected PepeNetWeb/pepenet-desktop branch"
+            echo "keeper/greatdane-node-base-35047fd (tree = 35047fd minus ._* files)."
+            echo "Override with repo variables GREATDANE_NODE_REPO / GREATDANE_NODE_COMMIT."
             exit 1
           fi
           git -C gdn checkout --force FETCH_HEAD
